@@ -19,13 +19,8 @@ never bars to reading or to citing evidence.
 Nothing here writes knowledge, calls a model or runs in the background: the
 knowledge WRITE lives on the ``induce`` path
 (:meth:`or_harness.strategy.induction.InductionEngine.submit_relation`) and
-the maintenance operations on the capability channel
-(``predict_capability_evolution`` / ``accept_capability_operation`` /
-``reject_capability_operation`` / ``bind_capability_maintenance`` /
-``evaluate_capability_effect``). A capability prediction's frozen scope is
-built from the evidence directly
-(:func:`or_harness.world_model.capability_evolution
-.learning_material_for_evidence`), not from a candidate generator.
+the existing rule-version maintenance interfaces. Frozen strategy predictions,
+execution bindings and H+ review receipts supply the learning evidence.
 
 The four observation angles the agent is prompted with — method contrast,
 recovery after an intervention, structural reproduction, advantage reversal
@@ -1008,84 +1003,59 @@ def _build_induction_material_detail(harness, *,
 
 
 def _joint_hplus_for(harness, records: Sequence[Any]) -> Dict[str, Any]:
-    """The SAVED joint H+ (capability-gain) stances of this batch.
+    """Read frozen H+ predictions, actual bindings and existing review receipts.
 
-    A strategy-outcome prediction carries BOTH the cost/benefit/risk AND the
-    candidate's H+ stance in ONE answer; that stance is archived as a
-    ``CapabilityTrace`` (see ``trace_archive``). This block surfaces it for
-    the reviewer, keyed by the executions they were made for — the SAME
-    binding the evidence uses (``trace.prediction_id`` ->
-    ``candidate.{task_id,episode_id}``; ``trace.bound_execution_ids``).
-
-    It does NOT call a model, does NOT touch the capability-evidence store
-    and does NOT gate anything: an EMPTY ``capability_predictions`` bank does
-    not mean "no H+ was predicted" — the joint block lives here. The FOUR
-    states are kept apart (``expected`` / ``none`` / ``insufficient_basis`` /
-    unstated), and an UNEXECUTED candidate keeps ``bound_execution_ids=[]``
-    with ``executed=False`` (no observation is fabricated).
+    This is a bounded material view, not a second trace archive or service.
+    Legacy stances retain their assessment; they do not become binary labels.
     """
-    batch_tasks = {str(r.task_id) for r in records if r is not None}
-    batch_execs = {str(r.execution_id) for r in records if r is not None}
-    if not batch_tasks and not batch_execs:
-        return {"items": [], "n": 0,
-                "note": "no executions in this batch to associate H+ with"}
-    try:
-        from or_harness.world_model.trace_archive import (
-            iter_capability_traces,
-        )
-        traces = iter_capability_traces(harness)
-    except Exception as exc:  # noqa: BLE001 - a degraded read is reported
-        return {"items": [], "n": 0,
-                "failure": {"reason": f"{type(exc).__name__}: {exc}",
-                            "note": ("the joint H+ archive could not be "
-                                     "read; that is NOT 'no gain was "
-                                     "predicted'")}}
-    items: List[Dict[str, Any]] = []
-    for trace in traces:
-        bound = {str(e) for e in (trace.bound_execution_ids or [])}
-        related = (str(trace.task_id) in batch_tasks) or bool(bound & batch_execs)
-        if not related:
-            continue
-        assessment = str(getattr(trace, "assessment", "") or "")
-        items.append({
-            "prediction_id": trace.prediction_id,
-            "strategy_id": trace.strategy_id,
-            "task_id": trace.task_id,
-            "episode_id": trace.episode_id,
-            "assessment": (assessment or "unstated"),
-            'decision':trace.hplus.get('decision') if trace.hplus else None,
-            'decision_status':trace.hplus.get('decision_status') if trace.hplus else 'legacy',
-            "claim": trace.claim,
-            "applies_to": list(trace.applies_to),
-            "expected_changes": copy.deepcopy(trace.expected_changes),
-            "verification_conditions": copy.deepcopy(
-                trace.verification_conditions),
-            "uncertainty": list(trace.uncertainty),
-            "bound_execution_ids": list(trace.bound_execution_ids),
-            "executed": bool(trace.bound_execution_ids),
-            "state": trace.state,
-            "effect_state": trace.effect_state,
-            "effect_verified": bool(trace.effect_verified),
-        })
-    return {
-        "items": items,
-        "n": len(items),
-        'n_positive':sum(i['decision']==1 for i in items),
-        'n_zero':sum(i['decision']==0 and i['decision_status']=='explicit' for i in items),
-        'n_missing_or_invalid':sum(i['decision_status'] in ('missing','invalid') for i in items),
-        "n_expected": sum(1 for i in items
-                          if i["assessment"] == "expected"),
-        "n_none": sum(1 for i in items if i["assessment"] == "none"),
-        "n_insufficient_basis": sum(1 for i in items
-                                    if i["assessment"] == "insufficient_basis"),
-        "n_unstated": sum(1 for i in items if i["assessment"] == "unstated"),
-        "note": ("the SAVED joint H+ stances of this batch's predictions, "
-                 "for the reviewer to weigh. EXPLANATORY ONLY: it does not "
-                 "gate induction, does not rank a candidate and is not a "
-                 "post-hoc effect proof. `expected` does not require "
-                 "publication, `none` does not forbid it, and an unexecuted "
-                 "candidate has no observation (`executed=false`)."),
-    }
+    from or_harness.world_model.hplus import jobs, receipt_observation
+    task_ids = {str(record.task_id) for record in records if record is not None}
+    items = []
+    for task_id in sorted(task_ids):
+        by_prediction = {job['prediction_id']: job for job in jobs(harness, task_id=task_id)}
+        for prediction in harness.strategy_predictions.query(task_id=task_id):
+            info = prediction.trace.model_info or {}
+            gain = prediction.capability_gain
+            signal = info.get('hplus') or {}
+            if not signal and gain is None:
+                continue
+            stated = gain.to_dict() if gain is not None else {}
+            job = by_prediction.get(prediction.prediction_id)
+            action = harness.actions.get(info['bound_action_id']) if info.get('bound_action_id') else None
+            bound = list(job.get('execution_ids') or []) if job else []
+            if (not bound and action is not None and action.action_type == 'execute_strategy'
+                    and action.source != 'hypothetical' and str(action.task_id) == task_id
+                    and action.episode_id == prediction.candidate.episode_id and action.linked_execution_id):
+                bound = [action.linked_execution_id]
+            observation = (receipt_observation(harness, job)
+                           if job and job.get('state') == 'completed' else {})
+            items.append({
+                'prediction_id': prediction.prediction_id, 'strategy_id': prediction.candidate.strategy_id,
+                'task_id': task_id, 'episode_id': prediction.candidate.episode_id,
+                'assessment': stated.get('assessment') or 'unstated',
+                'decision': signal.get('decision'), 'decision_status': signal.get('decision_status', 'legacy'),
+                'claim': signal.get('claim', stated.get('claim')),
+                'basis': copy.deepcopy(signal.get('basis', stated.get('basis', []))),
+                'applies_to': copy.deepcopy(signal.get('applies_to', stated.get('applies_to', []))),
+                'expected_changes': copy.deepcopy(stated.get('expected_changes') or []),
+                'uncertainty': copy.deepcopy(stated.get('uncertainty') or []),
+                'verification_conditions': copy.deepcopy(signal.get('verification_conditions', stated.get('verification_conditions', []))),
+                'bound_execution_ids': bound, 'executed': bool(bound),
+                'state': job['state'] if job else 'bound' if bound else 'unobserved',
+                'induction_id': job['induction_id'] if job else None,
+                'receipt_ref': job.get('receipt_ref') if job else None,
+                'learning_label': observation.get('label'),
+                'verification_state': observation.get('verification_state'),
+            })
+    return {'items': items, 'n': len(items),
+            'n_positive': sum(item['decision'] == 1 for item in items),
+            'n_zero': sum(item['decision'] == 0 and item['decision_status'] == 'explicit' for item in items),
+            'n_missing_or_invalid': sum(item['decision_status'] in ('missing', 'invalid') for item in items),
+            'n_expected': sum(item['assessment'] == 'expected' for item in items),
+            'n_none': sum(item['assessment'] == 'none' for item in items),
+            'n_insufficient_basis': sum(item['assessment'] == 'insufficient_basis' for item in items),
+            'n_unstated': sum(item['assessment'] == 'unstated' for item in items),
+            'note': 'Frozen signals and real bindings explain this material. Learning observations come from completed H+ reviews.'}
 
 
 def _stored_task_text(harness, record: Any) -> Optional[str]:

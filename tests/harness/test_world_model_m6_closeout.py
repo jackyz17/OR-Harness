@@ -596,25 +596,6 @@ class TestCapabilityFeedbackUsable(Base):
         scope_ids = sorted(m["execution_id"] for m in material["material"])
         self.assertTrue(scope_ids)
 
-    def test_binding_the_fact_never_verifies_the_effect(self):
-        """DEFECT 6's real discipline, in its surviving form: recording
-        that the maintenance OPERATION happened says nothing about whether
-        performance improved."""
-        h = self.make_harness(ScriptedProvider())
-        prediction = h.predict_capability_evolution(
-            {"operation_type": "induce", "strategy_id": "S01",
-             "description": "consolidate S01"},
-            evidence_scope={"execution_ids": ["ex1", "ex2"]},
-            horizon="next 10 tasks", horizon_tasks=10)
-        # No operation was accepted, so there is no fact to bind — and
-        # certainly no verified effect.
-        bound = h.bind_capability_maintenance(prediction.prediction_id)
-        self.assertFalse(bound.get("already_bound"))
-        self.assertNotEqual(bound.get("state"), "bound")
-        self.assertNotEqual(
-            (h.capability_effect_evaluation(prediction.prediction_id) or {})
-            .get("state"),
-            "observed_improvement")
 
 # ---------------------------------------------------------------------------
 # The consolidation verdict itself

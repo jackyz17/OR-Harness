@@ -79,8 +79,7 @@ class TestBinaryHplus(BinaryCase):
         self.assertEqual(closed['induction_gate']['source'],'frozen_hplus')
         from or_harness.world_model.hplus import configure
         with self.assertRaises(ValueError):configure(self.h,'frozen')
-        before=self.h.bind_capability_maintenance(p.prediction_id)
-        self.assertEqual(before['state'],'not_adopted')
+        self.assertIsNone(jobs(self.h)[0].get('receipt_ref'))
         calls=[]
         def review(material,job):
             calls.append(job['induction_id'])
@@ -95,12 +94,15 @@ class TestBinaryHplus(BinaryCase):
         self.assertEqual(action.action_type,'induce')
         self.assertNotEqual(action.action_id,job['solve_action_id'])
         self.assertIn(record.execution_id,action.outcome['execution_ids'])
-        self.assertEqual(self.h.capability_maintenance_binding(p.prediction_id)['adoption_action_id'],action.action_id)
+        self.assertEqual(get_value(self.h.store,job['receipt_ref'])['induction_action_id'],action.action_id)
         self.assertTrue(self.h.close_episode(record.task_id,record.task_id)['induction_schedule']['completed'])
         self.assertEqual(self.h.process_induction_jobs(review)['results'],[])
         self.assertEqual(len(self.h.actions.query(action_type='induce')),1)
         receipt=get_value(self.h.store,job['receipt_ref'])
         self.assertEqual(receipt['verification'][0]['state'],'unknown')
+        self.predict('unknown-review-followup',0)
+        feedback=self.provider.requests[-1]['prediction_context']['hplus_feedback']
+        self.assertIsNone(next(e for e in feedback['settled_examples'] if e['prediction_id']==p.prediction_id)['label'])
 
     def test_zero_missing_illegal_and_unexecuted_are_distinct_and_cannot_bypass(self):
         for n,value,state in [('zero',0,'explicit'),('missing',None,'missing'),('illegal','1','invalid')]:
@@ -287,6 +289,9 @@ class TestBinaryHplus(BinaryCase):
             'assessment':'No additional executable rule relative to this snapshot.',
             'evidence_refs':[j['source_fact_ref'],j['signal']['source_snapshot_ref']]})
         self.assertEqual(receipt_observation(self.h,jobs(self.h)[0])['label'],0)
+        self.predict('covered-review-followup',0)
+        feedback=self.provider.requests[-1]['prediction_context']['hplus_feedback']
+        self.assertEqual(next(e for e in feedback['settled_examples'] if e['prediction_id']==j['prediction_id'])['label'],0)
         _,r,c=self.closed('unsupported-negative')
         self.empty(c['induction_schedule']['pending_ids'][0],outcome='no_increment',comparison={'sufficient':True})
         self.assertIsNone(receipt_observation(self.h,jobs(self.h)[-1])['label'])
@@ -388,8 +393,7 @@ class TestBinaryHplus(BinaryCase):
         row=next(e for e in feedback['settled_examples'] if e['prediction_id']==result['induction_receipt']['prediction_id'])
         self.assertEqual(row['label'],1)
         self.assertEqual(row['rule_versions'][0]['version'],2)
-        binding=self.h.capability_maintenance_binding(p.prediction_id)
-        self.assertIsNone(binding) # zero-signal independent trial did not invent an induction action
+        self.assertFalse(any(j.get('action_id') for j in jobs(self.h) if j['prediction_id']==p.prediction_id))
 
     def test_no_implicit_negative_write_when_an_unrelated_positive_is_pending(self):
         _,zero,_=self.closed('zero-with-pending',0)

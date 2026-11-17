@@ -1,29 +1,8 @@
-"""Phase-C acceptance tests: online joint capability-gain (H+) prediction.
+"""Same-call capability-gain payload compatibility for strategy predictions.
 
-What this file asserts, one behaviour per class:
-
-1. **H+ rides the SAME call.** A candidate's capability gain is predicted in
-   the same wm-so/1 request/answer as benefit/cost/risk — no extra model
-   round.
-2. **It is explanatory, never the utility.** The score is benefit/cost/risk
-   only; a large H+ does not change a candidate's ranking, and the plan's
-   candidate list carries H+ as read-only information.
-3. **An absent or empty H+ does not invalidate the rest.** A prediction with
-   no gain block still scores benefit/cost/risk; the missing block is
-   recorded as an UNSTATED stance (never "no gain"), and an empty block
-   reads as "no gain claimed", never a default positive.
-4. **No invented composite score.** Each expected change names its own
-   metric and unit; there is no forced 0-1 "H+ number".
-5. **A predicted gain is never a verified capability.** Nothing in the
-   online path writes into the harness capability evidence; the gain stays a
-   prediction until the offline capability path observes it.
-6. **The framework's identity fields stay fixed.** A payload that tries to
-   rewrite the candidate is not read as content (the same discipline the
-   other prediction paths use).
-7. **The stance is explicit and observable.** Every candidate's H+ block
-   carries one of assessment=expected/none/insufficient_basis; a missing
-   block counts as unassessed, and the online-gain summary counts each
-   stance so a silent model is visible.
+Cover shared G/C/R independence, missing values, legacy assessment serialization,
+identity and capability evidence. Binary dispatch and receipt feedback are tested
+through the current workflow in test_hplus_binary.
 """
 
 from decision_fixtures import planned_prediction
@@ -265,10 +244,6 @@ class TestGainAbsence(HPlusCase):
         # The benefit/cost are unaffected.
         self.assertEqual(prediction.benefit.value, 0.8)
         self.assertIsNotNone(prediction.cost)
-        # And the missing stance is COUNTED as unassessed, not as "none".
-        summary = h.online_capability_gains()
-        self.assertEqual(summary["n_online_gains"], 0)
-        self.assertEqual(summary["n_unassessed"], 0)
 
     def test_an_empty_gain_block_is_no_gain_not_a_positive(self):
         provider = StubProvider(payload=dict(BASE_PAYLOAD,
@@ -375,7 +350,7 @@ class TestGainAssessment(HPlusCase):
         self.assertTrue(any("only the gain block is affected" in n
                             for n in prediction.notes))
 
-    def test_a_none_assessment_still_writes_a_trace(self):
+    def test_a_none_assessment_survives_prediction_storage(self):
         # A stated "no gain" is a real, falsifiable stance: it must be
         # archived like any other, or it would vanish exactly like a
         # silent null — the confusion the stance requirement removes.
@@ -383,57 +358,8 @@ class TestGainAssessment(HPlusCase):
         self.assertEqual(prediction.status, "valid")
         self.assertFalse(prediction.claims_capability_gain)
         self.assertEqual(prediction.capability_gain.assessment, "none")
-        from or_harness.world_model.trace_archive import (
-            get_capability_trace,
-        )
-        trace = get_capability_trace(h, prediction.prediction_id)
-        self.assertIsNotNone(trace)
-        self.assertEqual(trace.assessment, "none")
-        summary = h.online_capability_gains()
-        self.assertEqual(summary["n_online_gains"], 1)
-        self.assertEqual(summary["n_none"], 1)
-        self.assertEqual(summary["n_expected"], 0)
-        self.assertEqual(summary["n_unassessed"], 0)
-
-    def test_an_insufficient_basis_assessment_is_counted(self):
-        h, prediction = self._predict_with({"assessment":
-                                            "insufficient_basis"})
-        self.assertEqual(prediction.status, "valid")
-        summary = h.online_capability_gains()
-        self.assertEqual(summary["n_online_gains"], 1)
-        self.assertEqual(summary["n_insufficient_basis"], 1)
-        entry = summary["online_gains"][0]
-        self.assertEqual(entry["assessment"], "insufficient_basis")
-
-    def test_an_expected_assessment_is_counted(self):
-        h, prediction = self._predict_with(dict(GAIN_PAYLOAD))
-        summary = h.online_capability_gains()
-        self.assertEqual(summary["n_online_gains"], 1)
-        self.assertEqual(summary["n_expected"], 1)
-        entry = summary["online_gains"][0]
-        self.assertEqual(entry["assessment"], "expected")
-
-    def test_a_missing_block_counts_as_unassessed_in_the_summary(self):
-        # The summary counts only ARCHIVED stances; a missing block leaves
-        # no trace, so the unassessed count must come from the prediction
-        # side. The observable contract: the block's absence is recorded
-        # on the prediction (see TestGainAbsence) and a stated stance is
-        # never conflated with an unstated one.
-        provider = StubProvider(payload=dict(BASE_PAYLOAD))
-        h = ORHarness(home=self.home, world_model=provider,
-                      embedding=self.backend)
-        self.addCleanup(h.close)
-        planned_prediction(h,
-            TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        other = planned_prediction(h,
-            TASK, {"action_type": "execute_strategy", "strategy_id": "S02"},
-            "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        self.assertIsNone(other.capability_gain)
-        summary = h.online_capability_gains()
-        self.assertEqual(summary["n_online_gains"], 0)
-        self.assertEqual(summary["n_none"], 0)
-        self.assertEqual(summary["n_unassessed"], 0)
+        reloaded = h.get_strategy_outcome_prediction(prediction.prediction_id)
+        self.assertEqual(reloaded.capability_gain.assessment, "none")
 
     def test_an_old_payload_without_assessment_reads_as_unassessed(self):
         # An old payload (no assessment field) is NOT retroactively read
@@ -454,11 +380,7 @@ class TestGainAssessment(HPlusCase):
             prediction.prediction_id)
         self.assertEqual(reloaded.capability_gain.assessment, "")
         self.assertFalse(reloaded.capability_gain.assessed)
-        # The trace exists (a claim is present) and counts as unassessed.
-        summary = h.online_capability_gains()
-        self.assertEqual(summary["n_online_gains"], 1)
-        self.assertEqual(summary["n_unassessed"], 1)
-        self.assertEqual(summary["n_expected"], 0)
+
 
 
 # ---------------------------------------------------------------------------
@@ -469,11 +391,11 @@ class TestGainAssessment(HPlusCase):
 class TestGainIsNotVerifiedCapability(HPlusCase):
 
     def test_nothing_is_written_into_the_capability_evidence(self):
-        before = self.h.capability_evidence_with_effects().to_dict()
+        before = self.h.capability_evidence().to_dict()
         planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        after = self.h.capability_evidence_with_effects().to_dict()
+        after = self.h.capability_evidence().to_dict()
         # A prediction changed no capability SOURCE state (the evidence
         # carries read timestamps, so compare the substantive parts).
         def _sources(evidence):

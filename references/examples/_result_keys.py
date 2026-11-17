@@ -82,19 +82,6 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
                      "already_closed"},
         "conditional": set(),
     },
-    "compare-capability": {
-        "required": {"recommendation", "basis", "rule", "comparisons",
-                     "incomparable"},
-        "conditional": {"selected_prediction_id", "selected_operation_type"},
-    },
-    "evaluate-capability": {
-        "required": {"evaluation", "already_evaluated"},
-        "conditional": {"prediction_source"},
-    },
-    "bind-capability": {
-        "required": {"binding", "already_bound"},
-        "conditional": {"state", "prediction_source"},
-    },
     "induce": {
         "required": {"relations"},
         "conditional": {"action", "saved", "published", "business_result",
@@ -106,18 +93,6 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "conditional": {"tasks", "n_distinct_tasks", "check_states",
                         "total_completed", "n_attempts", "cross_task_hint",
                         "guidance", "related_history"},
-    },
-    "predict-capability": {
-        "required": {"prediction_id"},
-        "conditional": {"status", "expected_changes", "horizon"},
-    },
-    "accept-capability": {
-        "required": {"maintenance_binding"},
-        "conditional": {"adoption_action_id", "already_accepted"},
-    },
-    "reject-capability": {
-        "required": set(),
-        "conditional": {"rejected", "recommendation_id"},
     },
     "inspect": {
         "required": {"bank"},

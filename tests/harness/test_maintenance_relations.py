@@ -1,8 +1,7 @@
 """Regression tests for the maintenance-path defects (2026-09-29), part 2.
 
-Covers the accepted-operation relation dispatch (#1), the knowledge delta for
-relation edits (#6) and the retired-vector cleanup (#7), plus the purpose
-distinction between a statistical refresh and a method induction.
+Covers relation knowledge deltas, material content and retired-vector cleanup
+through the ordinary induction and rule-maintenance interfaces.
 
     PYTHONPATH=src python -m unittest tests.harness.test_maintenance_relations -q
 """
@@ -31,21 +30,6 @@ INTEGER_CAR_METHOD = {
     "name": "integer vehicle variable",
     "steps": ["int car", "boxes <= 10 * car", "min 100 * car"]}
 
-GOOD_PAYLOAD = {
-    "expected_changes": [
-        {"metric": "resource_cost", "unit": "s", "direction": "decrease",
-         "value": -1.5, "beneficial_direction": "decrease",
-         "value_kind": "absolute"},
-        {"metric": "normalized_solution_quality", "unit": "1-gap",
-         "direction": "unchanged", "beneficial_direction": "increase"},
-    ],
-    # The learning cost is in the SAVING's own unit and below it, so the
-    # prediction is net-positive over the declared window.
-    "learning_cost": {"solver_runtime_s": 0.2},
-    "verification_conditions": [
-        {"condition": "later tasks cost less", "evaluable": True}],
-    "evidence_basis": ["capability_evidence.sources.m"],
-}
 
 
 class StubProvider(WorldModelProvider):
@@ -56,9 +40,7 @@ class StubProvider(WorldModelProvider):
 
     def predict(self, request, timeout_s=None):
         self.requests.append(request)
-        return {"payload": GOOD_PAYLOAD,
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-                "error": None, "latency_s": 0.01}
+        raise AssertionError("Rule maintenance must not request a capability prediction")
 
 
 class MaintenanceCase(HarnessTestCase):
@@ -90,60 +72,8 @@ class MaintenanceCase(HarnessTestCase):
                 solver={"name": "highs"},
                 method_actual=INTEGER_CAR_METHOD))
 
-    def _accept(self, operation):
-        # The prediction is scoped to the evidence behind the seeded
-        # executions. The operation alone declares no scope, and an unscoped
-        # acceptance is refused, so the frozen evidence scope is read
-        # directly from the executions (there is no candidate generator).
-        scope = {"execution_ids": ["ex1", "ex2"], "tasks": ["T0", "T1"],
-                 "strategy_id": "S-decompose", "family": "routing"}
-        provider = StubProvider()
-        h = ORHarness(home=self.home, world_model=provider,
-                      embedding=self.backend)
-        self.addCleanup(h.close)
-        prediction = h.predict_capability_evolution(
-            operation, task=dict(TASK), evidence_scope=scope,
-            horizon="next 5 tasks", horizon_tasks=5)
-        recommendation = h.compare_capability_evolution(
-            [prediction.prediction_id], horizon_tasks=5)
-        self.assertEqual(recommendation["recommendation"], "accept")
-        return h.accept_capability_operation(recommendation)
 
 
-class TestAcceptedOperationRunsDeclaredRelations(MaintenanceCase):
-    def test_declared_relation_is_written_not_only_a_statistic(self):
-        """#1: the relations an operation DECLARES are the operation. The
-        accepted path must run them, not a bare statistical induction."""
-        self.seed()
-        operation = {
-            "operation_type": "induce", "strategy_id": "S-decompose",
-            "description": "record the integer-vehicle modeling rule",
-            "config": {"relations": [{
-                "subject": "principle:integer_vehicle_variable",
-                "claim": ("when the cost is per vehicle and the vehicle count "
-                          "must be integral, model an integer vehicle "
-                          "variable and link load to capacity; do not fold "
-                          "the per-vehicle cost into a linear per-unit rate"),
-                "conditions": {"predicates": {"family": "routing"}},
-                "evidence": [{"execution_id": "ex1", "role": "preserved"},
-                             {"execution_id": "ex2", "role": "preserved"}],
-            }]},
-        }
-        accepted = self._accept(operation)
-        # The claim was REALLY written — as a standalone entry whose stated
-        # claim carries the agent's own words.
-        entries = self.h.sbank.list()
-        self.assertTrue(entries)
-        claims = [e for e in entries if e.claim is not None]
-        self.assertTrue(claims, "the declared claim must reach the bank")
-        self.assertIn("integer vehicle variable", claims[0].claim["text"])
-        # The knowledge delta reports the created claim entry.
-        delta = accepted["operation_result"]["knowledge_delta"]
-        self.assertTrue(delta["entries_created"] or delta["entry_changes"])
-        # And NOT a bare statistical claim on the strategy id.
-        stats = [e for e in entries
-                 if e.strategy_id == "S-decompose" and e.support_n > 0]
-        self.assertFalse(stats, "a bare statistic was produced instead")
 
     # The fall-through (no relations declared -> the statistical induce runs)
     # is covered by test_capability_evolution.TestExplicitAcceptance, whose

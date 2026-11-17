@@ -1,11 +1,11 @@
-"""Unified world-model contracts: two prediction modules, one traceability shape.
+"""Strategy-outcome contracts and raw historical prediction compatibility.
 
 This module is the SINGLE AUTHORITY for the versioned prediction contracts.
 It adds no prediction service, no model call, and no new table: it defines
 what a prediction IS, how it is validated, how it round-trips, and how
 legacy payloads are read without being silently given new meaning.
 
-Two prediction modules over one shared frame
+Current strategy prediction over a shared frame
 --------------------------------------------
 
 - :class:`StrategyOutcomePrediction` — *OR strategy consequence prediction*:
@@ -15,18 +15,9 @@ Two prediction modules over one shared frame
   metric, unit and baseline, because "benefit" is not one arbitrary 0-1
   score: a validated task completion, a qualified solution quality, valid
   progress and a correct infeasibility diagnosis are different currencies.
-- :class:`CapabilityEvolutionPrediction` — *harness capability evolution
-  prediction*: from the current capability EVIDENCE, real experience and a
-  candidate learning operation u, how would future task performance change,
-  at what learning cost, with what degradation risk and what verification
-  conditions? It predicts OBSERVABLE consequences of H, never a latent
-  vector and never a composite "H score".
-
-Both share :class:`PredictionTrace` (protocol version, prediction type,
-input snapshot/version reference, generation time, evidence basis,
-unsupported fields with reasons, and the prediction call's own measured
-cost when one exists). Derivable information is derived — a caller never
-re-types the prediction type or the contract version.
+Retired capability-evolution records are read as raw payloads. This module
+does not build, validate or generate them. The strategy contract retains its
+shared trace and same-call capability_gain data.
 
 Three separations this module enforces
 --------------------------------------
@@ -73,7 +64,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.schema import (
@@ -106,15 +97,13 @@ LEGACY_CONTRACT_VERSION = "legacy/unversioned"
 SUPPORTED_CONTRACT_VERSIONS = (CONTRACT_VERSION,)
 
 #: Prediction module kinds.
-PREDICTION_KINDS = ("strategy_outcome", "capability_evolution")
+PREDICTION_KINDS = ("strategy_outcome",)
 
 #: Which prediction kinds this build has a real SERVICE for. A kind can have
 #: a fully implemented CONTRACT and no service — that is the whole point of
 #: the ``contract_only`` status, and the two must never be conflated:
-#: configuring a provider makes a provider AVAILABLE, it does not make a
-#: capability-evolution prediction service exist.
-SERVICE_IMPLEMENTED_KINDS: Tuple[str, ...] = ("strategy_outcome",
-                                              "capability_evolution")
+#: configuring a provider alone does not produce a prediction.
+SERVICE_IMPLEMENTED_KINDS: Tuple[str, ...] = ("strategy_outcome",)
 
 #: Which direction of an :class:`ExpectedChange` counts as an IMPROVEMENT
 #: for its metric. Fixed when the change is declared, never re-read after
@@ -210,7 +199,6 @@ CAPABILITY_EVIDENCE_STATUSES = ("no_evidence", "indirect_evidence",
 CAPABILITY_SOURCES = ("m", "w_or", "pi", "r", "t")
 
 #: What a learning operation does (the offline candidate vocabulary).
-LEARNING_OPERATION_TYPES = ("induce", "revise", "reverify", "retire")
 
 #: Measurement scopes a prediction may declare.
 PREDICTION_SCOPES = ("attempt", "strategy_window")
@@ -243,8 +231,8 @@ PAYLOAD_VERSION_UNKNOWN_PREFIX = "unknown/"
 #: longer the primary vocabulary a caller must learn.
 LEGACY_MODE_TO_KIND: Dict[str, Tuple[str, ...]] = {
     "x-b-only": ("strategy_outcome",),
-    "h-x-b": ("strategy_outcome", "capability_evolution"),
-    "h-x-b-value": ("strategy_outcome", "capability_evolution"),
+    "h-x-b": ("strategy_outcome",),
+    "h-x-b-value": ("strategy_outcome",),
 }
 
 #: Legacy field -> new-contract field, for the migration table in the docs
@@ -800,80 +788,6 @@ def capability_evidence_from_legacy_harness_state(
 # ---------------------------------------------------------------------------
 # candidate and scope
 # ---------------------------------------------------------------------------
-
-
-@dataclass
-class ExperienceScope:
-    """The real experience a prediction's evidence rests on.
-
-    Counts INDEPENDENT TASKS alongside executions, because repeating one
-    task is repetition, not reproduction — the same rule the induction gate
-    uses.
-    """
-
-    execution_ids: List[str] = field(default_factory=list)
-    task_ids: List[str] = field(default_factory=list)
-    family: Optional[str] = None
-    cell_token: Optional[str] = None
-    note: Optional[str] = None
-
-    @property
-    def distinct_tasks(self) -> int:
-        return len({t for t in self.task_ids if t})
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "execution_ids": list(self.execution_ids),
-            "task_ids": list(self.task_ids),
-            "distinct_tasks": self.distinct_tasks,
-            "family": self.family,
-            "cell_token": self.cell_token,
-            "note": self.note,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ExperienceScope":
-        data = data or {}
-        return cls(
-            execution_ids=[str(e) for e in (data.get("execution_ids") or [])],
-            task_ids=[str(t) for t in (data.get("task_ids") or [])],
-            family=(str(data["family"]) if data.get("family") else None),
-            cell_token=(str(data["cell_token"])
-                        if data.get("cell_token") else None),
-            note=(str(data["note"]) if data.get("note") else None),
-        )
-
-
-@dataclass
-class TaskTargeting:
-    """Which tasks a capability-evolution prediction speaks about."""
-
-    description: str = ""
-    family: Optional[str] = None
-    cell_token: Optional[str] = None
-    predicates: Dict[str, Any] = field(default_factory=dict)
-    task_ids: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "description": self.description,
-            "family": self.family,
-            "cell_token": self.cell_token,
-            "predicates": copy.deepcopy(self.predicates),
-            "task_ids": list(self.task_ids),
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TaskTargeting":
-        data = data or {}
-        return cls(
-            description=str(data.get("description", "")),
-            family=(str(data["family"]) if data.get("family") else None),
-            cell_token=(str(data["cell_token"])
-                        if data.get("cell_token") else None),
-            predicates=copy.deepcopy(dict(data.get("predicates") or {})),
-            task_ids=[str(t) for t in (data.get("task_ids") or [])],
-        )
 
 
 @dataclass
@@ -1673,55 +1587,6 @@ class UncertaintyStatement:
 
 
 @dataclass
-class LearningOperation:
-    """The candidate learning operation ``u`` an offline prediction is about.
-
-    The vocabulary is the EXISTING offline capability — the ``induce``
-    action's business outcomes (create / revise / reverify / retire). It
-    deliberately does not include automatically rewriting the planner,
-    upgrading a solver, or fine-tuning a model: those are not operations
-    this build can carry out, and predicting their consequences would be
-    predicting a service that does not exist.
-    """
-
-    operation_type: str
-    strategy_id: Optional[str] = None
-    description: str = ""
-    scope: Optional[ExperienceScope] = None
-    config: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if self.operation_type not in LEARNING_OPERATION_TYPES:
-            raise ValueError(
-                f"operation_type must be one of {LEARNING_OPERATION_TYPES}")
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "operation_type": self.operation_type,
-            "strategy_id": self.strategy_id,
-            "description": self.description,
-            "scope": (self.scope.to_dict() if self.scope is not None
-                      else None),
-            "config": copy.deepcopy(self.config),
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "LearningOperation":
-        if not isinstance(data, dict) or not data.get("operation_type"):
-            raise ValueError("LearningOperation.operation_type is required")
-        raw_scope = data.get("scope")
-        return cls(
-            operation_type=str(data["operation_type"]),
-            strategy_id=(str(data["strategy_id"])
-                         if data.get("strategy_id") else None),
-            description=str(data.get("description", "")),
-            scope=(ExperienceScope.from_dict(raw_scope)
-                   if isinstance(raw_scope, dict) else None),
-            config=copy.deepcopy(dict(data.get("config") or {})),
-        )
-
-
-@dataclass
 class ExpectedChange:
     """One predicted future-performance change, with its baseline.
 
@@ -1860,7 +1725,7 @@ class VerificationCondition:
 
 
 # ---------------------------------------------------------------------------
-# the two prediction contracts
+# strategy outcome and its same-call capability-gain statement
 # ---------------------------------------------------------------------------
 
 
@@ -2165,224 +2030,6 @@ class StrategyOutcomePrediction:
         )
 
 
-@dataclass
-class CapabilityEvolutionPrediction:
-    """Contract 2: how a candidate learning operation would change future
-    task performance.
-
-    H is inspected through these OBSERVABLE consequences — current
-    capability evidence, the candidate operation u, the experience scope it
-    uses, the task types it is evaluated on, the baseline and horizon, the
-    predicted performance change, the learning cost, the degradation risk,
-    and the conditions under which the prediction would be confirmed. No
-    latent vector, no composite score.
-
-    ``status`` of ``contract_only`` means exactly what it says: the
-    contract is implemented, the prediction service is not attached. It is
-    NOT a claim that a capability prediction was made.
-    """
-
-    current_evidence: HarnessCapabilityEvidence
-    candidate_operation: LearningOperation
-    prediction_id: str = field(default_factory=lambda: new_prediction_id("hp"))
-    prediction_type: str = "capability_evolution"
-    contract_version: str = CONTRACT_VERSION
-    status: str = "draft"
-    experience_scope: Optional[ExperienceScope] = None
-    task_targeting: Optional[TaskTargeting] = None
-    baseline: Optional[BaselineStatement] = None
-    #: The prediction horizon: what time/task window the change is claimed
-    #: over (e.g. "next 10 matching tasks"). Free text with a task count
-    #: when known, because a change with no horizon is unfalsifiable.
-    horizon: str = ""
-    horizon_tasks: Optional[int] = None
-    expected_changes: List[ExpectedChange] = field(default_factory=list)
-    learning_cost: Optional[ExpectedCost] = None
-    degradation_risk: Optional[RiskStatement] = None
-    uncertainty: Optional[UncertaintyStatement] = None
-    verification_conditions: List[VerificationCondition] = field(
-        default_factory=list)
-    #: The FRAMEWORK-FROZEN baselines, keyed by the metric they were taken
-    #: on. A model may CITE one of these for a change; it may not invent a
-    #: reference of its own, because a baseline the model chose after seeing
-    #: the evidence is not a baseline. ``baseline`` is the prediction-level
-    #: reference (the primary metric); this map carries the per-metric
-    #: references a comparison or an evaluation must use.
-    baselines_by_metric: Dict[str, BaselineStatement] = field(
-        default_factory=dict)
-    trace: Optional[PredictionTrace] = None
-    service_available: bool = False
-    #: A provider object is attached (weaker than ``service_available``).
-    provider_configured: bool = False
-    #: This build implements a capability-evolution service. It does NOT:
-    #: the contract exists, the service does not — so a configured provider
-    #: must never make this kind look available.
-    service_implemented: bool = False
-    notes: List[str] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        if self.prediction_type != "capability_evolution":
-            raise ValueError(
-                "prediction_type must be 'capability_evolution'")
-        if self.trace is None:
-            self.trace = PredictionTrace(
-                prediction_kind="capability_evolution",
-                input_snapshot_id="")
-        elif self.trace.prediction_kind != "capability_evolution":
-            raise ValueError("trace.prediction_kind must be "
-                             "'capability_evolution'")
-
-    @property
-    def prediction_made(self) -> bool:
-        """Whether a real capability prediction was produced.
-
-        A capability forecast needs its observable consequences, not just a
-        status: this requires ``valid`` AND at least one expected change.
-        """
-        return self.status == "valid" and bool(self.expected_changes)
-
-    def frozen_baseline_for(self, metric: str, *,
-                            unit: Optional[str] = None
-                            ) -> Optional[BaselineStatement]:
-        """The FRAMEWORK-frozen baseline for one metric, or None.
-
-        Resolution order, most specific first:
-
-        1. a DIMENSION-QUALIFIED key (``cost:solver_runtime_s``) when a
-           ``unit`` is supplied — several cost dimensions share the
-           ``resource_cost`` metric but their units do not convert, so the
-           reference must be the one taken on THAT dimension;
-        2. the metric's own key (``normalized_solution_quality``);
-        3. the prediction-level baseline when it declares the SAME metric.
-
-        A baseline that does not name the metric is never handed to a
-        different metric: a quality reference says nothing about seconds,
-        and a token count says nothing about runtime.
-        """
-        name = str(metric or "")
-        if unit:
-            normalized = str(unit).strip().lower()
-            for key, statement in self.baselines_by_metric.items():
-                if not key.startswith("cost:"):
-                    continue
-                dim_unit = str(statement.unit or "").strip().lower()
-                if dim_unit == normalized:
-                    return statement
-        direct = self.baselines_by_metric.get(name)
-        if direct is not None:
-            return direct
-        if self.baseline is not None:
-            declared = self.baseline.metric
-            if declared is None or declared == name:
-                return self.baseline
-        return None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "contract_version": self.contract_version,
-            "prediction_id": self.prediction_id,
-            "prediction_type": self.prediction_type,
-            "status": self.status,
-            "prediction_made": self.prediction_made,
-            "service_available": bool(self.service_available),
-            "provider_configured": bool(self.provider_configured),
-            "service_implemented": bool(self.service_implemented),
-            "current_evidence": self.current_evidence.to_dict(),
-            "candidate_operation": self.candidate_operation.to_dict(),
-            "experience_scope": (self.experience_scope.to_dict()
-                                 if self.experience_scope is not None
-                                 else None),
-            "task_targeting": (self.task_targeting.to_dict()
-                               if self.task_targeting is not None else None),
-            "baseline": (self.baseline.to_dict()
-                         if self.baseline is not None else None),
-            "baselines_by_metric": {
-                k: v.to_dict() for k, v in self.baselines_by_metric.items()},
-            "horizon": self.horizon,
-            "horizon_tasks": self.horizon_tasks,
-            "expected_changes": [c.to_dict() for c in self.expected_changes],
-            "learning_cost": (self.learning_cost.to_dict()
-                              if self.learning_cost is not None else None),
-            "degradation_risk": (self.degradation_risk.to_dict()
-                                 if self.degradation_risk is not None
-                                 else None),
-            "uncertainty": (self.uncertainty.to_dict()
-                            if self.uncertainty is not None else None),
-            "verification_conditions": [v.to_dict() for v
-                                        in self.verification_conditions],
-            "trace": self.trace.to_dict(),
-            "notes": list(self.notes),
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]
-                  ) -> "CapabilityEvolutionPrediction":
-        if not isinstance(data, dict):
-            raise ValueError(
-                "CapabilityEvolutionPrediction must be a JSON object")
-        version = str(data.get("contract_version", ""))
-        if version not in SUPPORTED_CONTRACT_VERSIONS:
-            raise UnsupportedContractVersion(version)
-        if not data.get("prediction_id"):
-            raise ValueError("prediction_id is required")
-        # Same read-time normalization as contract 1: an old service-side
-        # failure word is mapped onto its contract status and the original
-        # is preserved, never rejected and never silently relabelled as a
-        # success.
-        status, legacy_status = normalize_stored_status(
-            data.get("status", "draft"))
-        if status not in CONTRACT_STATUSES:
-            raise ValueError(f"status must be one of {CONTRACT_STATUSES}")
-        raw_scope = data.get("experience_scope")
-        raw_targeting = data.get("task_targeting")
-        raw_baseline = data.get("baseline")
-        raw_cost = data.get("learning_cost")
-        raw_risk = data.get("degradation_risk")
-        raw_unc = data.get("uncertainty")
-        return cls(
-            current_evidence=HarnessCapabilityEvidence.from_dict(
-                data.get("current_evidence") or {}),
-            candidate_operation=LearningOperation.from_dict(
-                data.get("candidate_operation") or {}),
-            prediction_id=str(data["prediction_id"]),
-            prediction_type=str(data.get("prediction_type",
-                                         "capability_evolution")),
-            contract_version=version,
-            status=status,
-            experience_scope=(ExperienceScope.from_dict(raw_scope)
-                              if isinstance(raw_scope, dict) else None),
-            task_targeting=(TaskTargeting.from_dict(raw_targeting)
-                            if isinstance(raw_targeting, dict) else None),
-            baseline=(BaselineStatement.from_dict(raw_baseline)
-                      if isinstance(raw_baseline, dict) else None),
-            horizon=str(data.get("horizon", "")),
-            horizon_tasks=(int(data["horizon_tasks"])
-                           if data.get("horizon_tasks") is not None
-                           else None),
-            expected_changes=[ExpectedChange.from_dict(c) for c
-                              in (data.get("expected_changes") or [])],
-            learning_cost=(ExpectedCost.from_dict(raw_cost)
-                           if isinstance(raw_cost, dict) else None),
-            degradation_risk=(RiskStatement.from_dict(raw_risk)
-                              if isinstance(raw_risk, dict) else None),
-            uncertainty=(UncertaintyStatement.from_dict(raw_unc)
-                         if isinstance(raw_unc, dict) else None),
-            verification_conditions=[VerificationCondition.from_dict(v)
-                                     for v in
-                                     (data.get("verification_conditions")
-                                      or [])],
-            baselines_by_metric={
-                str(k): BaselineStatement.from_dict(v)
-                for k, v in (data.get("baselines_by_metric") or {}).items()
-                if isinstance(v, dict)},
-            trace=_trace_with_legacy_status(data, legacy_status),
-            service_available=bool(data.get("service_available", False)),
-            provider_configured=bool(data.get("provider_configured", False)),
-            service_implemented=bool(data.get("service_implemented", False)),
-            notes=[str(n) for n in (data.get("notes") or [])],
-        )
-
-
 class UnsupportedContractVersion(ValueError):
     """Raised when a payload names a contract version this build cannot read.
 
@@ -2585,140 +2232,10 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
     return problems
 
 
-def validate_capability_evolution(prediction: CapabilityEvolutionPrediction
-                                  ) -> List[str]:
-    """Validate contract 2. Empty list = valid."""
-    problems: List[str] = []
-    if prediction.contract_version not in SUPPORTED_CONTRACT_VERSIONS:
-        problems.append(f"unsupported contract_version "
-                        f"{prediction.contract_version!r}")
-    if prediction.status not in CONTRACT_STATUSES:
-        problems.append(f"status {prediction.status!r} not in "
-                        f"{CONTRACT_STATUSES}")
-    if prediction.status == "valid" and not prediction.service_available:
-        problems.append(
-            "status='valid' requires a prediction service: a contract with "
-            "no service attached is 'contract_only'")
-    if prediction.status == "valid" and not prediction.prediction_made:
-        problems.append(
-            "status='valid' requires observable consequences: a capability "
-            "forecast with no expected_change is a SCHEMA object, not a "
-            "prediction")
-    if prediction.status == "contract_only" \
-            and prediction.service_available \
-            and prediction.expected_changes:
-        problems.append(
-            "status='contract_only' with expected changes and an available "
-            "service is contradictory: that is a 'valid' prediction")
-    problems.extend(
-        f"current_evidence: {p}" for p
-        in validate_capability_evidence(prediction.current_evidence))
-    if not prediction.horizon:
-        problems.append(
-            "horizon is required: a capability change with no horizon "
-            "cannot be falsified")
-    if prediction.status == "valid" and not prediction.expected_changes:
-        problems.append(
-            "a valid capability prediction requires at least one "
-            "expected_change (H is judged through observable consequences)")
-    if prediction.status == "valid" and not prediction.task_targeting:
-        problems.append(
-            "a valid capability prediction requires task_targeting: the "
-            "task types it is claimed over")
-    if prediction.status == "valid" and prediction.baseline is None:
-        problems.append(
-            "a valid capability prediction requires a baseline to measure "
-            "the change against")
-    if prediction.status == "valid" \
-            and not prediction.verification_conditions:
-        problems.append(
-            "a valid capability prediction requires verification_conditions: "
-            "predicting, binding and verifying are three different things")
-    for index, change in enumerate(prediction.expected_changes):
-        if not change.metric:
-            problems.append(f"expected_changes[{index}].metric is required")
-        if change.value is not None and not _finite(change.value):
-            problems.append(
-                f"expected_changes[{index}].value must be finite")
-        if change.direction == "unknown" and change.value is not None:
-            problems.append(
-                f"expected_changes[{index}]: a value with direction="
-                "'unknown' is contradictory")
-        if change.value is not None and change.baseline is None \
-                and prediction.baseline is None:
-            problems.append(
-                f"expected_changes[{index}]: a value requires a baseline "
-                "(its own or the prediction's): a change with nothing to "
-                "measure it against is not falsifiable")
-        # The baseline belongs to the FRAMEWORK. A change that carries its
-        # own reference must be citing one the framework froze for THAT
-        # metric (and, for a cost change, that UNIT): a model-chosen
-        # reference (or one frozen for a different metric or dimension) is
-        # a value the prediction can move after seeing the evidence, which
-        # makes the claim unfalsifiable.
-        if change.baseline is not None:
-            frozen = prediction.frozen_baseline_for(
-                change.metric, unit=(change.unit or None))
-            if frozen is None:
-                problems.append(
-                    f"expected_changes[{index}]: the change declares its own "
-                    f"baseline for metric {change.metric!r}"
-                    + (f" in unit {change.unit!r}" if change.unit else "")
-                    + ", but the framework froze none for that metric"
-                    + (" and unit" if change.unit else "")
-                    + " — a model may CITE a frozen baseline, never set one")
-            elif (change.baseline.value is not None
-                  and frozen.value is not None
-                  and abs(float(change.baseline.value)
-                          - float(frozen.value)) > 1e-9):
-                problems.append(
-                    f"expected_changes[{index}]: the change's baseline "
-                    f"({change.baseline.value}) does not match the "
-                    f"framework-frozen reference for {change.metric!r}"
-                    + (f" in unit {change.unit!r}" if change.unit else "")
-                    + f" ({frozen.value}): a baseline is fixed before the "
-                    "operation runs and is not the model's to restate")
-        if change.value_kind == "relative" and change.value is not None \
-                and not -1.0 <= float(change.value) <= 1.0:
-            problems.append(
-                f"expected_changes[{index}].value_kind='relative' requires "
-                "a RATIO in [-1, 1] (express 20% as 0.2); a relative "
-                "change outside that range is not a ratio, and a "
-                "percentage and a ratio must never be added together")
-    cost = prediction.learning_cost
-    if cost is not None and cost.expected is not None:
-        for dim in COST_DIMENSIONS:
-            value = getattr(cost.expected, dim)
-            if not _finite(value) or float(value) < 0:
-                problems.append(f"learning_cost.expected.{dim} must be "
-                                "finite and >= 0")
-    risk = prediction.degradation_risk
-    if risk is not None:
-        for index, event in enumerate(risk.events):
-            if event.probability is not None \
-                    and not _prob(event.probability):
-                problems.append(f"degradation_risk.events[{index}]."
-                                "probability must be in [0, 1]")
-    uncertainty = prediction.uncertainty
-    if uncertainty is not None:
-        for name in ("execution_randomness", "knowledge_gap"):
-            value = getattr(uncertainty, name)
-            if value is not None and not _prob(value):
-                problems.append(f"uncertainty.{name} must be in [0, 1]")
-    if prediction.trace is None:
-        problems.append("trace is required")
-    elif prediction.trace.prediction_kind != "capability_evolution":
-        problems.append("trace.prediction_kind must be "
-                        "'capability_evolution'")
-    return problems
-
-
 def validate_contract(prediction) -> List[str]:
     """Dispatch validation by prediction type."""
     if isinstance(prediction, StrategyOutcomePrediction):
         return validate_strategy_outcome(prediction)
-    if isinstance(prediction, CapabilityEvolutionPrediction):
-        return validate_capability_evolution(prediction)
     return [f"unknown contract type {type(prediction).__name__}"]
 
 
@@ -2766,7 +2283,8 @@ def load_contract_payload(payload: Any):
     if kind == "strategy_outcome":
         return StrategyOutcomePrediction.from_dict(payload)
     if kind == "capability_evolution":
-        return CapabilityEvolutionPrediction.from_dict(payload)
+        # Retired records are displayed verbatim; no service or typed parser.
+        return copy.deepcopy(payload)
     raise ValueError(f"prediction_type {kind!r} not in {PREDICTION_KINDS}")
 
 

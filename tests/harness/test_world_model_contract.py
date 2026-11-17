@@ -28,7 +28,7 @@ from tests.harness.helpers import HarnessTestCase  # noqa: E402
 
 from or_harness.api import ORHarness  # noqa: E402
 from or_harness.core.schema import CostVector  # noqa: E402
-from or_harness.world_model.contracts import (  # noqa: E402
+from or_harness.world_model.contracts import (
     CONTRACT_VERSION,
     LEGACY_CONTRACT_VERSION,
     LEGACY_UNMAPPABLE,
@@ -36,20 +36,16 @@ from or_harness.world_model.contracts import (  # noqa: E402
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
-    CapabilityEvolutionPrediction,
     CapabilitySourceEvidence,
     EvidenceRef,
     ExpectedChange,
     ExpectedCost,
-    ExperienceScope,
     HarnessCapabilityEvidence,
-    LearningOperation,
     PredictionServiceStatus,
     PredictionTrace,
     RiskEvent,
     RiskStatement,
     StrategyOutcomePrediction,
-    TaskTargeting,
     UncertaintyStatement,
     UnsupportedContractVersion,
     VerificationCondition,
@@ -59,7 +55,6 @@ from or_harness.world_model.contracts import (  # noqa: E402
     legacy_prediction_view,
     load_contract_payload,
     prediction_kinds_for_mode,
-    validate_capability_evolution,
     validate_capability_evidence,
     validate_strategy_outcome,
 )
@@ -143,42 +138,6 @@ class TestContractRoundTrip(HarnessTestCase):
         reloaded = StrategyOutcomePrediction.from_dict(dumped)
         self.assertEqual(reloaded.to_dict(), dumped)
 
-    def test_capability_evolution_round_trip_is_lossless(self):
-        prediction = CapabilityEvolutionPrediction(
-            current_evidence=HarnessCapabilityEvidence(
-                version="cap1",
-                sources={"m": CapabilitySourceEvidence(
-                    source="m", status="indirect_evidence",
-                    evidence=[EvidenceRef("knowledge_layer", "verified")])}),
-            candidate_operation=LearningOperation(
-                operation_type="induce", strategy_id="S01",
-                scope=ExperienceScope(execution_ids=["ex_1"],
-                                      task_ids=["t1", "t2"])),
-            status="contract_only",
-            task_targeting=TaskTargeting(description="routing",
-                                         family="routing"),
-            baseline=BaselineStatement(kind="no_knowledge", value=0.5),
-            horizon="next 10 matching tasks", horizon_tasks=10,
-            expected_changes=[ExpectedChange(
-                metric="mean_quality", direction="increase", value=0.05,
-                baseline=BaselineStatement(kind="no_knowledge"))],
-            learning_cost=ExpectedCost(
-                expected=CostVector(llm_tokens=4000.0,
-                                    measured={"llm_tokens"}),
-                measured=["llm_tokens"]),
-            degradation_risk=RiskStatement(events=[RiskEvent(
-                event="overgeneralization", probability=0.3)]),
-            verification_conditions=[VerificationCondition(
-                condition="interval holds on 5 unseen tasks",
-                evaluable=True, check_basis="induce --verify")],
-            trace=PredictionTrace(prediction_kind="capability_evolution"),
-        )
-        dumped = prediction.to_dict()
-        reloaded = CapabilityEvolutionPrediction.from_dict(dumped)
-        self.assertEqual(reloaded.to_dict(), dumped)
-        # distinct-task count is DERIVED, never re-typed by the caller
-        self.assertEqual(
-            reloaded.candidate_operation.scope.distinct_tasks, 2)
 
     def test_unknown_is_never_a_measured_zero(self):
         """An absent benefit/cost stays absent; the measured mask survives."""
@@ -311,32 +270,8 @@ class TestValidationRules(HarnessTestCase):
         self.assertNotIn("cost", dumped["risk"])
         self.assertIsNone(dumped["cost"])
 
-    def test_capability_evolution_requires_horizon_and_conditions(self):
-        prediction = CapabilityEvolutionPrediction(
-            current_evidence=HarnessCapabilityEvidence(),
-            candidate_operation=LearningOperation(operation_type="induce"),
-            status="valid", service_available=True,
-            horizon="")
-        problems = validate_capability_evolution(prediction)
-        self.assertTrue(any("horizon" in p for p in problems))
-        self.assertTrue(any("task_targeting" in p for p in problems))
-        self.assertTrue(any("baseline" in p for p in problems))
-        self.assertTrue(any("verification_conditions" in p for p in problems))
-        self.assertTrue(any("expected_change" in p for p in problems))
 
-    def test_expected_change_value_with_unknown_direction_is_rejected(self):
-        prediction = CapabilityEvolutionPrediction(
-            current_evidence=HarnessCapabilityEvidence(),
-            candidate_operation=LearningOperation(operation_type="induce"),
-            status="contract_only", horizon="next task",
-            expected_changes=[ExpectedChange(metric="q", direction="unknown",
-                                             value=0.1)])
-        self.assertTrue(any("contradictory" in p for p in
-                            validate_capability_evolution(prediction)))
 
-    def test_invalid_operation_type_is_rejected(self):
-        with self.assertRaises(ValueError):
-            LearningOperation(operation_type="finetune_model")
 
     def test_invalid_scope_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -346,7 +281,7 @@ class TestValidationRules(HarnessTestCase):
         self.assertEqual(prediction_kinds_for_mode("x-b-only"),
                          ("strategy_outcome",))
         self.assertEqual(prediction_kinds_for_mode("h-x-b-value"),
-                         ("strategy_outcome", "capability_evolution"))
+                         ("strategy_outcome",))
         with self.assertRaises(ValueError):
             prediction_kinds_for_mode("nonsense")
 
@@ -386,20 +321,6 @@ class TestCapabilityEvidenceNoScore(HarnessTestCase):
         problems = validate_capability_evidence(evidence)
         self.assertTrue(any("direct_evidence" in p for p in problems))
 
-    def test_no_complete_model_still_builds_capability_contract(self):
-        """A task with no 'model' field is a normal state."""
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        self.assertNotIn("model", TASK)
-        prediction = h.build_capability_evolution_contract(
-            TASK, LearningOperation(operation_type="induce",
-                                    strategy_id="S01"),
-            horizon="next 10 matching tasks")
-        self.assertEqual(prediction.status, "contract_only")
-        self.assertFalse(prediction.service_available)
-        self.assertIn("contract_only", " ".join(prediction.notes))
-        self.assertEqual(prediction.current_evidence.score_scheme,
-                         "no_composite_score")
 
     def test_capability_evidence_without_task_says_not_consulted(self):
         h = ORHarness(home=self.home)
@@ -718,8 +639,8 @@ class TestApiContracts(HarnessTestCase):
     def test_service_availability_follows_the_provider(self):
         h = self._harness()
         self.assertFalse(h.prediction_service_available("strategy_outcome"))
-        self.assertFalse(
-            h.prediction_service_available("capability_evolution"))
+        with self.assertRaises(ValueError):
+            h.prediction_service_available("capability_evolution")
         with self.assertRaises(ValueError):
             h.prediction_service_available("nonsense")
 
@@ -733,24 +654,6 @@ class TestApiContracts(HarnessTestCase):
         candidate.config["time_limit"] = 9999
         self.assertEqual(prediction.candidate.config["time_limit"], 60)
 
-    def test_contract_never_writes_a_fact_or_knowledge(self):
-        """Building a contract must not touch the banks."""
-        h = self._harness()
-        before_exec = h.bank.count()
-        # The claim "no knowledge was written" must be READ, not guarded on a
-        # method that does not exist (an earlier version tested `hasattr(
-        # sbank, 'all')`, which is always false, so the strategy half of this
-        # assertion never ran).
-        before_entries = h.sbank.count()
-        h.build_strategy_outcome_contract(
-            TASK, CandidateRef(action_type="execute_strategy",
-                               strategy_id="S01"), "ep1")
-        h.build_capability_evolution_contract(
-            TASK, LearningOperation(operation_type="induce",
-                                    strategy_id="S01"),
-            horizon="next task")
-        self.assertEqual(h.bank.count(), before_exec)
-        self.assertEqual(h.sbank.count(), before_entries)
 
     def test_prediction_data_never_enters_execution_statistics(self):
         """A contract build leaves the conditional statistics untouched."""
@@ -821,44 +724,12 @@ class TestServiceStateIsThreeFacts(HarnessTestCase):
         self.assertTrue(prediction.prediction_made)
         self.assertEqual(validate_strategy_outcome(prediction), [])
 
-    def test_configured_provider_alone_does_not_make_a_prediction(self):
-        """A configured provider must not make an empty contract look like a
-        forecast — even now that BOTH kinds have services (M5).
 
-        The three facts stay separate: with a provider attached the service
-        IS available for both kinds, but no prediction has happened, so a
-        built contract is still ``contract_only`` and carries no numbers.
-        """
-        h = self._harness(_CountingProvider())
-        self.assertTrue(h.prediction_service_status(
-            "strategy_outcome").service_available)
-        status = h.prediction_service_status("capability_evolution")
-        self.assertTrue(status.provider_configured)
-        # M5 implemented the service: it is available with a provider...
-        self.assertTrue(status.service_implemented)
-        self.assertTrue(status.service_available)
-        self.assertTrue(
-            h.prediction_service_available("capability_evolution"))
-        # ...but "available" is NOT "a prediction happened": building a
-        # contract performs no model call and yields no forecast.
-        evolution = h.build_capability_evolution_contract(
-            TASK, horizon="next 10 matching tasks")
-        self.assertEqual(evolution.status, "contract_only")
-        self.assertTrue(evolution.service_available)
-        self.assertTrue(evolution.provider_configured)
-        self.assertTrue(evolution.service_implemented)
-        self.assertFalse(evolution.prediction_made)
-        self.assertEqual(evolution.expected_changes, [])
-
-    def test_capability_service_status_without_a_provider_is_unavailable(self):
-        """No provider attached: the service exists but nothing can serve
-        it, so it must not be reported available."""
+    def test_retired_capability_service_status_is_rejected(self):
+        """Provider configuration cannot restore the removed service."""
         h = self._harness(None)
-        status = h.prediction_service_status("capability_evolution")
-        self.assertFalse(status.provider_configured)
-        self.assertTrue(status.service_implemented)
-        self.assertFalse(status.service_available)
-        self.assertEqual(status.status, "contract_only")
+        with self.assertRaises(ValueError):
+            h.prediction_service_status("capability_evolution")
 
     def test_service_status_reports_the_three_facts(self):
         h = self._harness(_CountingProvider())
@@ -1140,18 +1011,6 @@ class TestCliContract(HarnessTestCase):
         self.assertEqual(code, 2)
         self.assertIn("error", payload["result"])
 
-    def test_contract_command_builds_capability_evolution(self):
-        code, payload = self._run([
-            "contract", "--kind", "capability_evolution",
-            "--operation", json.dumps({"operation_type": "induce",
-                                       "strategy_id": "S01"}),
-            "--horizon", "next 10 matching tasks",
-            "--verification", json.dumps({
-                "condition": "interval holds on unseen tasks",
-                "evaluable": True})])
-        self.assertEqual(code, 0)
-        self.assertEqual(payload["result"]["status"], "contract_only")
-        self.assertFalse(payload["result"]["service_available"])
 
     def test_contract_without_required_task_fails_cleanly(self):
         code, payload = self._run([

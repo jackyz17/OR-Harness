@@ -24,17 +24,10 @@ Design rules inherited from the research consensus:
   stateless invocation against an explicit home, like the rest of the
   harness.
 
-Prediction contracts (see :mod:`or_harness.world_model.contracts`):
-
-- :class:`StrategyOutcomePrediction` — a candidate strategy's benefit,
-  resource cost, risk and uncertainty;
-- :class:`CapabilityEvolutionPrediction` — how a candidate learning
-  operation would change future task performance, judged through
-  observable consequences of ``H = F(M, W_OR, Pi, R, T)``.
-
-Both are versioned, serializable and validatable, and both can be built
-BEFORE a prediction service exists: the resulting object says
-``contract_only`` rather than pretending a forecast was made.
+The current strategy-outcome service predicts G/C/R/H+ together. Frozen H+
+dispatches real induction reviews; their receipts supply later feedback.
+Retired capability-evolution payloads remain readable through generic
+prediction inspection without a service, typed parser or destructive migration.
 """
 
 from or_harness.world_model.actions import (
@@ -64,20 +57,16 @@ from or_harness.world_model.contracts import (
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
-    CapabilityEvolutionPrediction,
     CapabilitySourceEvidence,
     EvidenceRef,
     ExpectedChange,
     ExpectedCost,
-    ExperienceScope,
     HarnessCapabilityEvidence,
-    LearningOperation,
     PredictionServiceStatus,
     PredictionTrace,
     RiskEvent,
     RiskStatement,
     StrategyOutcomePrediction,
-    TaskTargeting,
     UncertaintyStatement,
     UnsupportedContractVersion,
     VerificationCondition,
@@ -87,7 +76,6 @@ from or_harness.world_model.contracts import (
     legacy_prediction_view,
     load_contract_payload,
     prediction_kinds_for_mode,
-    validate_capability_evolution,
     validate_capability_evidence,
     validate_strategy_outcome,
 )
@@ -178,37 +166,6 @@ from or_harness.world_model.episode_closeout import (
     republish_if_in_window,
     summarize_real_outcome,
 )
-from or_harness.world_model.capability_evolution import (
-    CAPABILITY_EVOLUTION_PROTOCOL_VERSION,
-    CAPABILITY_EVOLUTION_SYSTEM_PROMPT,
-    CapabilityEvolutionService,
-    build_capability_evolution_request,
-    learning_material_for_evidence,
-    parse_capability_evolution_payload,
-)
-from or_harness.world_model.maintenance_decision import (
-    CAPABILITY_EFFECT_VERSION,
-    EFFECT_FINAL_STATES,
-    EFFECT_STATES,
-    EXECUTABLE_LEARNING_OPERATIONS,
-    MAINTENANCE_COMPARISON_VERSION,
-    MAINTENANCE_RECOMMENDATIONS,
-    OBSERVABLE_CAPABILITY_METRICS,
-    CapabilityEffectEvaluation,
-    MaintenanceFactBinding,
-    MaintenanceRecommendation,
-    bind_maintenance_fact,
-    capability_effect_summary,
-    capability_evidence_from_effects,
-    compare_capability_predictions,
-    evaluate_capability_effect,
-    get_effect_evaluation,
-    get_maintenance_binding,
-    get_paired_evaluation,
-    record_effect_evaluation,
-    record_maintenance_binding,
-    record_paired_evaluation,
-)
 
 __all__ = [
     # state / actions / budget substrate
@@ -255,35 +212,6 @@ __all__ = [
     "republish_calibration",
     "republish_if_in_window",
     "summarize_real_outcome",
-    # capability-evolution prediction service (M5, wm-ce/1)
-    "CAPABILITY_EVOLUTION_PROTOCOL_VERSION",
-    "CAPABILITY_EVOLUTION_SYSTEM_PROMPT",
-    "CapabilityEvolutionService",
-    "build_capability_evolution_request",
-    "learning_material_for_evidence",
-    "parse_capability_evolution_payload",
-    # offline-improvement decision and two-stage capability feedback (M5)
-    "CAPABILITY_EFFECT_VERSION",
-    "EFFECT_FINAL_STATES",
-    "EFFECT_STATES",
-    "EXECUTABLE_LEARNING_OPERATIONS",
-    "MAINTENANCE_COMPARISON_VERSION",
-    "MAINTENANCE_RECOMMENDATIONS",
-    "OBSERVABLE_CAPABILITY_METRICS",
-    "CapabilityEffectEvaluation",
-    "MaintenanceFactBinding",
-    "MaintenanceRecommendation",
-    "bind_maintenance_fact",
-    "capability_effect_summary",
-    "capability_evidence_from_effects",
-    "compare_capability_predictions",
-    "evaluate_capability_effect",
-    "get_effect_evaluation",
-    "get_maintenance_binding",
-    "get_paired_evaluation",
-    "record_effect_evaluation",
-    "record_maintenance_binding",
-    "record_paired_evaluation",
     # execution window (attempt vs strategy window)
     "DEFAULT_AUXILIARY_ACTION_TYPES",
     "DEFAULT_IN_SCOPE_ACTION_TYPES",
@@ -347,7 +275,6 @@ __all__ = [
     "LEGACY_UNMAPPABLE_SCOPES",
     "PredictionServiceStatus",
     "StrategyOutcomePrediction",
-    "CapabilityEvolutionPrediction",
     "CandidateRef",
     "BenefitEstimate",
     "ExpectedCost",
@@ -358,14 +285,10 @@ __all__ = [
     "EvidenceRef",
     "HarnessCapabilityEvidence",
     "CapabilitySourceEvidence",
-    "LearningOperation",
-    "ExperienceScope",
-    "TaskTargeting",
     "BaselineStatement",
     "ExpectedChange",
     "VerificationCondition",
     "UnsupportedContractVersion",
-    "validate_capability_evolution",
     "validate_capability_evidence",
     "validate_strategy_outcome",
     "detect_payload_version",

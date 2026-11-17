@@ -69,29 +69,21 @@ from or_harness.world_model.contracts import (
     PAYLOAD_VERSION_UNKNOWN_PREFIX,
     PREDICTION_KINDS,
     SERVICE_IMPLEMENTED_KINDS,
-    BaselineStatement,
     BenefitEstimate,
     CandidateRef,
-    CapabilityEvolutionPrediction,
     EvidenceRef,
-    ExpectedChange,
     ExpectedCost,
-    ExperienceScope,
     HarnessCapabilityEvidence,
-    LearningOperation,
     PredictionServiceStatus,
     PredictionTrace,
     RiskStatement,
     StrategyOutcomePrediction,
-    TaskTargeting,
     UncertaintyStatement,
-    VerificationCondition,
     capability_evidence_from_legacy_harness_state,
     detect_payload_version,
     legacy_prediction_view,
     load_contract_payload,
     normalize_candidate_payload,
-    validate_capability_evolution,
     validate_strategy_outcome,
 )
 from or_harness.world_model.execution_window import (
@@ -130,12 +122,7 @@ from or_harness.world_model.prediction import (
     OutcomePrediction,
 )
 from or_harness.world_model.contracts import (
-    BaselineStatement,
-    CapabilityEvolutionPrediction,
     EvidenceRef,
-    ExperienceScope,
-    LearningOperation,
-    TaskTargeting,
 )
 from or_harness.world_model.provider import (
     NotConfiguredProvider,
@@ -294,20 +281,8 @@ class ORHarness:
         )
         self.strategy_predictions = StrategyOutcomeService(
             self.store, self.world_model)
-        # The service writes a capability-gain TRACE when a strategy
-        # prediction claims an online H+. The archive needs the HARNESS
-        # (it follows the claim through the action log), so the link is
-        # injected here rather than built into the service.
+        # The shared prediction freezes the binary H+ signal through this harness.
         self.strategy_predictions.harness = self
-        # World-model M5: the capability-evolution prediction SERVICE under
-        # the wm-ce/1 protocol. Same provider, same explicit injection
-        # discipline; a SEPARATE prediction table, so a capability record
-        # can never be read as an OR strategy prediction.
-        from or_harness.world_model.capability_evolution import (
-            CapabilityEvolutionService,
-        )
-        self.capability_predictions = CapabilityEvolutionService(
-            self.store, self.world_model)
         # World-model M3: bounded planning. ``planning=False`` restores the
         # exact M2 behaviour (plan_next refuses with status=disabled);
         # ``plan_mode`` is "advise" (a suggestion is produced for the agent
@@ -1024,15 +999,9 @@ class ORHarness:
                 paired_feedback_block, task=effective_task, profile=profile,
                 recall_result=recall_result,
                 candidates=selection_candidates, scope=None)
-            # ONLINE H+ follow-up state (M5 delayed supervision): what the
-            # harness knows about earlier capability-gain claims, so this
-            # prediction can see how its own past H+ stances turned out.
-            # `pending` is NOT a failure; `effect_verified` is the only
-            # state that confirms a claim. Explanatory only.
-            from or_harness.world_model.maintenance_decision import (
-                hplus_feedback_for_context,
-            )
-            hplus_feedback = hplus_feedback_for_context(self, task=task)
+            # Relevant completed H+ reviews, selected before the request budget.
+            from or_harness.world_model.hplus import feedback
+            hplus_feedback = feedback(self, task=task, budget_chars=3000)
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
@@ -1457,107 +1426,6 @@ class ORHarness:
             prediction.notes.extend(f"validation: {p}" for p in problems)
         return prediction
 
-    def build_capability_evolution_contract(
-            self, task: Optional[Dict[str, Any]] = None,
-            operation: Optional[LearningOperation] = None, *,
-            snapshot: Optional[BeliefSnapshot] = None,
-            experience_scope: Optional[ExperienceScope] = None,
-            task_targeting: Optional[TaskTargeting] = None,
-            baseline: Optional[BaselineStatement] = None,
-            horizon: str = "",
-            horizon_tasks: Optional[int] = None,
-            expected_changes: Optional[Sequence[ExpectedChange]] = None,
-            learning_cost: Optional[ExpectedCost] = None,
-            degradation_risk: Optional[RiskStatement] = None,
-            uncertainty: Optional[UncertaintyStatement] = None,
-            verification_conditions: Optional[
-                Sequence[VerificationCondition]] = None,
-            evidence_basis: Optional[Sequence[EvidenceRef]] = None,
-            unsupported_fields: Optional[Dict[str, str]] = None,
-            prediction_completed: Optional[bool] = None,
-            ) -> CapabilityEvolutionPrediction:
-        """Build (and validate) a :class:`CapabilityEvolutionPrediction`.
-
-        The current capability evidence is read from the frozen snapshot
-        when one is available, otherwise from the live banks.
-
-        This is the SCHEMA-level builder. It performs no model call: to
-        actually PREDICT, use
-        :meth:`predict_capability_evolution`, which drives the ``wm-ce/1``
-        service. Building a contract here yields ``contract_only`` unless
-        the caller really supplies the observable consequences (see
-        ``prediction_completed``) — a configured provider with zero model
-        calls is not a forecast.
-        """
-        if snapshot is None and task is not None:
-            snapshot = self.snapshot(task)
-        evidence = self.capability_evidence(task, snapshot=snapshot)
-        operation = operation or LearningOperation(
-            operation_type="induce",
-            description="(no candidate operation supplied)")
-        trace = PredictionTrace(
-            prediction_kind="capability_evolution",
-            input_snapshot_id=(snapshot.snapshot_id
-                               if snapshot is not None else ""),
-            input_version=((snapshot.problem_state or {}).get("task_digest")
-                           if snapshot is not None else None),
-            prediction_version=self.prediction_service_version(),
-            evidence_basis=list(evidence_basis or []),
-            unsupported_fields=dict(unsupported_fields or {}),
-            comparable=False,
-        )
-        notes: List[str] = []
-        changes = list(expected_changes or [])
-        completed = bool(changes if prediction_completed is None
-                         else prediction_completed)
-        service = self.prediction_service_status(
-            "capability_evolution", prediction_completed=completed)
-        if not service.service_implemented:
-            notes.append(
-                "contract_only: this build implements the capability "
-                "evolution CONTRACT but NO service for it, so no "
-                "performance change is forecast — configuring a provider "
-                "does not implement the service. H is judged through "
-                "observable consequences, never a latent vector")
-        elif not service.provider_configured:
-            notes.append(
-                "contract_only: no prediction provider is attached to this "
-                "instance")
-        elif not completed:
-            notes.append(
-                "contract_only: a provider is configured but NO capability "
-                "forecast was produced (no expected_changes), so nothing "
-                "was predicted")
-        if not verification_conditions:
-            notes.append(
-                "no verification condition declared: predicting, binding "
-                "the fact, and verifying the effect are three different "
-                "things, and only the third supports a claim of improvement")
-        prediction = CapabilityEvolutionPrediction(
-            current_evidence=evidence,
-            candidate_operation=operation,
-            status=service.status,
-            experience_scope=experience_scope,
-            task_targeting=task_targeting,
-            baseline=baseline,
-            horizon=horizon,
-            horizon_tasks=horizon_tasks,
-            expected_changes=changes,
-            learning_cost=learning_cost,
-            degradation_risk=degradation_risk,
-            uncertainty=uncertainty,
-            verification_conditions=list(verification_conditions or []),
-            trace=trace,
-            service_available=service.service_available,
-            provider_configured=service.provider_configured,
-            service_implemented=service.service_implemented,
-            notes=notes,
-        )
-        problems = validate_capability_evolution(prediction)
-        if problems:
-            prediction.status = "invalid"
-            prediction.notes.extend(f"validation: {p}" for p in problems)
-        return prediction
 
     def prediction_service_status(
             self, kind: str, *,
@@ -2346,1016 +2214,7 @@ class ORHarness:
         self.strategy_predictions._save(prediction)
         return prediction
 
-    # -- world-model M5: capability evolution prediction service (wm-ce/1) --
-
-    def predict_capability_evolution(
-            self,
-            operation: Union[LearningOperation, Dict[str, Any]],
-            *,
-            task: Optional[Dict[str, Any]] = None,
-            bundle: Optional[Dict[str, Any]] = None,
-            evidence_scope: Optional[Dict[str, Any]] = None,
-            experience_scope: Optional[ExperienceScope] = None,
-            task_targeting: Optional[TaskTargeting] = None,
-            baseline: Optional[BaselineStatement] = None,
-            baselines_by_metric: Optional[Dict[str, BaselineStatement]] =
-            None,
-            horizon: str = "",
-            horizon_tasks: Optional[int] = None,
-            maintenance_budget: Optional[Dict[str, float]] = None,
-            timeout_s: Optional[float] = None,
-            task_id: str = "",
-            episode_id: Optional[str] = None,
-            snapshot: Optional[BeliefSnapshot] = None,
-            ) -> "CapabilityEvolutionPrediction":
-        """Predict what ONE offline learning operation would change (M5).
-
-        The input is FROZEN capability evidence, the candidate operation,
-        the exact experience scope it would consume, the task types the
-        claim is about, a baseline and a horizon. The output is a
-        :class:`~or_harness.world_model.contracts
-        .CapabilityEvolutionPrediction` under the ``wm-ce/1`` protocol:
-        expected future-performance changes, the predicted LEARNING cost,
-        degradation risk, uncertainty and what would verify it.
-
-        The scope/target/baseline may be supplied directly, or built from
-        ``evidence_scope`` — a mapping naming the executions the operation
-        would consume (plus the tasks/family/cell/strategy it speaks about,
-        and an ``entry_before`` snapshot for a revision) — which is FROZEN
-        here so the prediction is answerable against a real scope. There is
-        no candidate generator: the scope is read from the evidence, not
-        produced by the framework.
-
-        Three things stay separate and this method only produces the first:
-        a prediction is MADE here; the real maintenance FACT is bound later
-        (``bind_capability_maintenance``); the capability EFFECT is judged
-        after qualified later tasks (``evaluate_capability_effect``). No
-        knowledge entry, no effect verdict and no capability increment is
-        created here.
-
-        The operation, the scope, the target, the baseline and the horizon
-        are fixed by the FRAMEWORK (the model may not restate them). A
-        failed call is a persisted failure with whatever usage it consumed.
-        """
-        from or_harness.world_model.capability_evolution import (
-            learning_material_for_evidence,
-        )
-        if isinstance(operation, dict):
-            operation = LearningOperation.from_dict(operation)
-        raw_scope = evidence_scope if evidence_scope is not None else bundle
-        frozen_scope = (self._evidence_scope_snapshot(raw_scope)
-                        if raw_scope is not None else None)
-        if experience_scope is None and frozen_scope is not None:
-            experience_scope = self._scope_from_snapshot(frozen_scope)
-        if task_targeting is None and frozen_scope is not None:
-            task_targeting = self._targeting_from_snapshot(frozen_scope)
-        if baseline is None and frozen_scope is not None:
-            baseline = self._baseline_from_snapshot(frozen_scope)
-        # The per-metric references the framework FREEZES: a change is only
-        # measurable against a yardstick taken on ITS OWN metric, so the
-        # scope's frozen statistics are published keyed by metric. The
-        # model may cite one of these; it may not set its own.
-        baselines_by_metric = dict(baselines_by_metric or {})
-        if not baselines_by_metric:
-            if frozen_scope is not None:
-                baselines_by_metric = self._baselines_from_snapshot(
-                    frozen_scope)
-            elif baseline is not None:
-                metric = baseline.metric or "normalized_solution_quality"
-                baselines_by_metric = {metric: baseline}
-        if baseline is None and baselines_by_metric:
-            baseline = next(iter(baselines_by_metric.values()))
-        if not horizon:
-            horizon = ("the next matching tasks after the operation, over "
-                       "the declared evaluation horizon")
-        # The evidence a capability prediction conditions on INCLUDES the
-        # VERIFIED effects of earlier offline operations. Using the bare
-        # evidence here would leave the loop open: an operation whose effect
-        # was really confirmed on later tasks would never reach the next
-        # prediction, so the framework would keep re-deciding from the same
-        # starting point. Unverified, pending and refuted evaluations change
-        # nothing — only a real later-task observation does.
-        evidence = self.capability_evidence_with_effects(
-            task=task, snapshot=snapshot)
-        # The evidence VERSION is what makes two predictions' shared input
-        # checkable: it is a digest of the evidence CONTENT (not a
-        # timestamp), so two predictions made on the same evidence really
-        # do share an input.
-        if not evidence.version:
-            evidence.version = self._evidence_version(evidence)
-        material = (learning_material_for_evidence(self, frozen_scope)
-                    if frozen_scope is not None else None)
-        service = self.capability_predictions
-        prediction = service.predict(
-            evidence, operation, experience_scope=experience_scope,
-            task_targeting=task_targeting, baseline=baseline,
-            baselines_by_metric=baselines_by_metric,
-            horizon=horizon, horizon_tasks=horizon_tasks,
-            learning_material=material,
-            maintenance_budget=maintenance_budget, timeout_s=timeout_s,
-            task_id=task_id or (str(task.get("task_id", "")) if task
-                                else ""),
-            episode_id=episode_id)
-        prediction.trace.model_info["capability_evidence_version"] = \
-            evidence.version
-        service._save(prediction, task_id=task_id or (
-            str(task.get("task_id", "")) if task else ""),
-            episode_id=episode_id)
-        return prediction
-
-    @staticmethod
-    def _evidence_version(evidence: HarnessCapabilityEvidence) -> str:
-        """A content digest of one capability evidence object.
-
-        Two predictions made against the SAME evidence content share this
-        version, which is what lets a comparison tell a shared frozen input
-        from two unrelated ones. Read timestamps are excluded, so merely
-        reading the banks again does not fabricate a new version.
-        """
-        import hashlib
-        content = evidence.to_dict()
-        content.pop("as_of", None)
-        for item in (content.get("sources") or {}).values():
-            item.pop("notes", None)
-        blob = __import__("json").dumps(
-            content, sort_keys=True, separators=(",", ":"), default=str)
-        return "cev_" + hashlib.sha256(
-            blob.encode("utf-8")).hexdigest()[:16]
-
-    def _evidence_scope_snapshot(self, raw: Dict[str, Any]
-                                 ) -> Dict[str, Any]:
-        """Freeze an ``evidence_scope`` / ``bundle`` mapping into a scope.
-
-        The external ``--bundle`` contract is preserved (a mapping naming
-        ``execution_ids``, and optionally ``tasks``/``family``/``cell_token``/
-        ``strategy_id``/``entry_before``): a scope with no explicit
-        ``mean_quality``/``mean_cost`` is enriched from the REAL records of
-        its executions, so a prediction is measured against a frozen
-        reference rather than against numbers the caller typed. A snapshot
-        with no executions keeps whatever it was given.
-        """
-        data = dict(raw) if isinstance(raw, dict) else {}
-        execution_ids = [str(e) for e in (data.get("execution_ids") or [])]
-        # A frozen scope needs a stable, non-empty id: the caller's
-        # ``bundle_id`` / ``scope_id`` when given, otherwise a content digest
-        # of the execution set (the same evidence yields the same id).
-        scope_id = str(data.get("bundle_id") or data.get("scope_id") or "")
-        if not scope_id:
-            import hashlib
-            blob = json.dumps(sorted(execution_ids), separators=(",", ":"))
-            scope_id = "es_" + hashlib.sha256(
-                blob.encode("utf-8")).hexdigest()[:16]
-        data["scope_id"] = scope_id
-        if not execution_ids:
-            return data
-        records = []
-        for execution_id in execution_ids:
-            record = self._bank_get_pending_or_record(execution_id)
-            if record is not None:
-                records.append(record)
-        if not records:
-            return data
-        if data.get("tasks") is None:
-            data["tasks"] = sorted({r.task_id for r in records if r.task_id})
-        data.setdefault("strategy_id",
-                        records[0].strategy_id if len(
-                            {r.strategy_id for r in records}) == 1 else None)
-        profile = records[0].profile_snapshot
-        if data.get("family") is None and profile is not None:
-            data["family"] = profile.family
-        stats = self._scope_stats(records)
-        if stats:
-            # Fill only what the caller did NOT supply: an explicitly frozen
-            # baseline is respected, and the computed values are a fallback,
-            # not an override.
-            data.setdefault("mean_quality", stats["mean_quality"])
-            data.setdefault("mean_cost", stats["mean_cost"])
-            data.setdefault("cost_measured", stats["cost_measured"])
-            data.setdefault("failure_rate", stats["failure_rate"])
-            data.setdefault("n_supporting", stats["n_supporting"])
-        data["frozen"] = True
-        return data
-
-    def _bank_get_pending_or_record(self, execution_id: str):
-        return (self.bank.get_pending(execution_id)
-                or self.bank.get(execution_id))
-
-    @staticmethod
-    def _scope_stats(records: Sequence[Any]) -> Optional[Dict[str, Any]]:
-        """Frozen quality / cost / failure statistics of an evidence scope."""
-        if not records:
-            return None
-        qualities = []
-        for r in records:
-            q = r.quality or {}
-            if not q.get("feasible", False):
-                qualities.append(0.0)
-                continue
-            gap = q.get("gap")
-            if gap is None:
-                qualities.append(1.0 if q.get("status") == "optimal" else 0.5)
-            else:
-                qualities.append(max(0.0, min(1.0, 1.0 - float(gap))))
-        mean_quality = sum(qualities) / len(qualities)
-        dims: Dict[str, List[float]] = {}
-        for r in records:
-            cost = r.cost
-            for dim in (cost.measured or set()):
-                dims.setdefault(dim, []).append(float(getattr(cost, dim)))
-        mean_cost = {d: round(sum(vs) / len(vs), 6)
-                     for d, vs in dims.items()
-                     if len(vs) == len(records)}
-        failures = sum(1 for r in records
-                       if not (r.quality or {}).get("feasible", False))
-        return {
-            "mean_quality": round(mean_quality, 6),
-            "mean_cost": mean_cost,
-            "cost_measured": sorted(mean_cost),
-            "failure_rate": round(failures / len(records), 6),
-            "n_supporting": len(records),
-        }
-
-    @staticmethod
-    def _scope_from_snapshot(snapshot: Dict[str, Any]) -> ExperienceScope:
-        """The exact experience scope a frozen evidence snapshot rests on."""
-        return ExperienceScope(
-            execution_ids=[str(e) for e in
-                           (snapshot.get("execution_ids") or [])],
-            task_ids=[str(t) for t in
-                      (snapshot.get("tasks")
-                       or snapshot.get("task_ids") or [])],
-            family=(str(snapshot["family"]) if snapshot.get("family")
-                    else None),
-            cell_token=(str(snapshot["cell_token"])
-                        if snapshot.get("cell_token") else None),
-            note="the frozen evidence scope's own executions")
-
-    @staticmethod
-    def _targeting_from_snapshot(snapshot: Dict[str, Any]
-                                 ) -> TaskTargeting:
-        """The task types a frozen evidence scope speaks about."""
-        return TaskTargeting(
-            description=(f"tasks of family {snapshot.get('family')!r} "
-                         f"matching the cell of strategy "
-                         f"{snapshot.get('strategy_id')!r}"),
-            family=(str(snapshot["family"]) if snapshot.get("family")
-                    else None),
-            cell_token=(str(snapshot["cell_token"])
-                        if snapshot.get("cell_token") else None),
-        )
-
-    @staticmethod
-    def _baseline_from_snapshot(snapshot: Dict[str, Any]
-                                ) -> BaselineStatement:
-        """The frozen baseline an evidence scope is measured against.
-
-        The scope's OWN frozen statistics are the reference: a prediction
-        about improving on them is falsifiable; a prediction with no
-        reference is not.
-        """
-        value = snapshot.get("mean_quality")
-        return BaselineStatement(
-            kind="conditional_stats",
-            value=(float(value) if value is not None else None),
-            ref=EvidenceRef(ref_type="evidence_scope",
-                            ref_id=str(snapshot.get("scope_id", ""))),
-            metric="normalized_solution_quality",
-            note=("the evidence scope's frozen mean quality over its "
-                  "supporting executions: the reference the predicted "
-                  "change is measured against, frozen before the operation "
-                  "runs"),
-        )
-
-    @classmethod
-    def _baselines_from_snapshot(cls, snapshot: Dict[str, Any]
-                                 ) -> Dict[str, BaselineStatement]:
-        """The per-metric frozen references an evidence scope supplies.
-
-        A reference is only meaningful for the metric it was taken on: the
-        scope's mean quality says nothing about solver seconds, and a
-        per-dimension cost means nothing for a quality change. Keying them
-        by metric is what stops one metric's yardstick from being silently
-        applied to another.
-
-        Cost references are keyed by the SPECIFIC DIMENSION
-        (``cost:solver_runtime_s``, ``cost:llm_tokens``), not by the generic
-        ``resource_cost`` metric: several cost dimensions share that metric
-        name, and collapsing them onto one key would let whichever
-        dimension happened to be written last become the reference for all
-        of them — a 20% runtime saving would then be computed against a
-        token count.
-        """
-        out: Dict[str, BaselineStatement] = {}
-        quality = cls._baseline_from_snapshot(snapshot)
-        if quality.value is not None:
-            out["normalized_solution_quality"] = quality
-        mean_cost = snapshot.get("mean_cost") or {}
-        for dim, value in mean_cost.items():
-            if value is None:
-                continue
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError):
-                continue
-            unit = cls._unit_for_cost_dim(dim)
-            out[cls.baseline_key_for_cost_dim(dim)] = BaselineStatement(
-                kind="conditional_stats",
-                value=numeric,
-                ref=EvidenceRef(ref_type="evidence_scope",
-                                ref_id=str(snapshot.get("scope_id", ""))),
-                metric="resource_cost",
-                unit=unit,
-                note=(f"the scope's frozen mean {dim} over its supporting "
-                      "executions: frozen before the operation runs"))
-        return out
-
-    @staticmethod
-    def baseline_key_for_cost_dim(dim: str) -> str:
-        """The key a cost dimension's frozen reference is stored under.
-
-        A dimension-qualified key, because the generic ``resource_cost``
-        metric covers several dimensions whose units do not convert.
-        """
-        return f"cost:{dim}"
-
-    @staticmethod
-    def _unit_for_cost_dim(dim: str) -> str:
-        """The unit a cost dimension's reference is expressed in."""
-        from or_harness.world_model.maintenance_decision import (
-            COST_DIMENSION_UNITS,
-        )
-        return COST_DIMENSION_UNITS.get(str(dim), str(dim))
-
-    def get_capability_evolution_prediction(
-            self, prediction_id: str
-    ) -> Optional["CapabilityEvolutionPrediction"]:
-        """Read a stored capability-evolution prediction (no model call)."""
-        return self.capability_predictions.get(prediction_id)
-
-    def capability_evolution_predictions(
-            self, *, task_id: Optional[str] = None,
-            episode_id: Optional[str] = None
-    ) -> List["CapabilityEvolutionPrediction"]:
-        """Stored capability-evolution predictions, optionally filtered."""
-        return self.capability_predictions.query(task_id=task_id,
-                                                episode_id=episode_id)
-
-    def compare_capability_evolution(
-            self, prediction_ids: Sequence[str], *,
-            horizon_tasks: Optional[int] = None,
-            require_quality_nondegradation: bool = True,
-            persist: bool = True,
-            ) -> Dict[str, Any]:
-        """Compare frozen capability predictions and recommend one, or
-        defer (M5).
-
-        Read-only with respect to knowledge: the Strategic Bank is never
-        touched, no operation runs, no model is called. The bounded rule is
-        stated in the result — among candidates predicting a QUANTIFIED
-        per-task resource saving with no predicted quality degradation, the
-        largest saving wins; everything else is reported as incomparable
-        for the agent to choose between. ``defer`` is a legitimate result.
-
-        The real spend of the predictions being compared is reported
-        separately from their predicted learning cost — a comparison is not
-        an operation and its cost is not the operation's cost.
-        """
-        from or_harness.world_model.maintenance_decision import (
-            compare_capability_predictions,
-        )
-        predictions = []
-        missing = []
-        for prediction_id in prediction_ids:
-            prediction = self.capability_predictions.get(prediction_id)
-            if prediction is None:
-                missing.append(str(prediction_id))
-            else:
-                predictions.append(prediction)
-        if missing:
-            raise StorageError(
-                f"unknown capability prediction(s) {missing!r}")
-        recommendation = compare_capability_predictions(
-            predictions, horizon_tasks=horizon_tasks,
-            require_quality_nondegradation=require_quality_nondegradation)
-        # The FROZEN input is the same for every candidate: the evidence
-        # version and the horizon. Sharing it is what makes the comparison
-        # a comparison rather than a ranking of unrelated numbers.
-        versions = {p.current_evidence.version for p in predictions}
-        horizons = {p.horizon for p in predictions}
-        recommendation.shared_input = {
-            "n_predictions": len(predictions),
-            "capability_evidence_versions": sorted(
-                v for v in versions if v is not None),
-            "shared_evidence": len(versions) <= 1,
-            "horizons": sorted(h for h in horizons if h),
-            "shared_horizon": len(horizons) <= 1,
-            "note": ("candidates compared under one shared frozen input: a "
-                     "different evidence version or horizon means the "
-                     "numbers are not strictly comparable and is reported "
-                     "rather than hidden"),
-        }
-        if len(versions) > 1:
-            recommendation.notes.append(
-                "the compared predictions were made against DIFFERENT "
-                "capability evidence versions: the comparison is reported "
-                "with that caveat")
-        if len(horizons) > 1:
-            recommendation.notes.append(
-                "the compared predictions declare DIFFERENT horizons: their "
-                "per-task figures are comparable, their totals are not")
-        call_cost = self._capability_call_costs(predictions)
-        if call_cost:
-            recommendation.comparison_cost = {
-                "per_dim": call_cost,
-                "measured": sorted(call_cost),
-                "note": ("the REAL spend of the prediction calls being "
-                         "compared, kept separate from the predicted "
-                         "learning cost and from any execution cost"),
-            }
-        if persist:
-            self._persist_recommendation(recommendation)
-        return recommendation.to_dict()
-
-    def _capability_call_costs(
-            self, predictions: Sequence[Any]) -> Dict[str, float]:
-        """The real per-dimension spend of the given prediction calls."""
-        totals: Dict[str, float] = {}
-        for prediction in predictions:
-            cost = prediction.trace.call_cost
-            if cost is None:
-                continue
-            for dim in cost.measured_dims():
-                totals[dim] = totals.get(dim, 0.0) + float(
-                    getattr(cost, dim))
-        return {d: round(v, 6) for d, v in sorted(totals.items())}
-
-    def _persist_recommendation(self, recommendation) -> None:
-        """Store one maintenance recommendation (append-only by id)."""
-        with self.store.transaction() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
-                (f"maintenance_recommendation|"
-                 f"{recommendation.recommendation_id}",
-                 self.store.dumps(recommendation.to_dict())))
-
-    @staticmethod
-    def _declared_operation_relations(prediction) -> List[Dict[str, Any]]:
-        """The strategies a maintenance operation DECLARES, if any.
-
-        A capability candidate MUST carry the relations its operation forms
-        in ``operation.config["relations"]`` — that is where the outer agent
-        puts the strategy it wants written. The prediction preserves the
-        whole candidate, so the declared strategies travel with it. Reading
-        them here is what makes "accept the recommendation" run the operation
-        it actually declared; there is NO statistical fallback.
-
-        Each entry follows the ``induce --relation`` payload (``claim``,
-        ``evidence``, optional ``subject``/``conditions``/``kind``). Evidence
-        is cited by explicit ``execution_id`` — there is no ``bundle_id`` to
-        expand, because there is no candidate generator.
-        """
-        candidate = getattr(prediction, "candidate_operation", None)
-        if candidate is None:
-            return []
-        raw = (candidate.config or {}).get("relations")
-        if not isinstance(raw, list):
-            return []
-        declared: List[Dict[str, Any]] = []
-        for item in raw:
-            if not isinstance(item, dict) or not item.get("claim"):
-                continue
-            relation = dict(item)
-            declared.append(relation)
-        return declared
-
-    def accept_capability_operation(
-            self, recommendation: Dict[str, Any], *,
-            prediction_id: Optional[str] = None,
-            verify: Optional[Dict[str, Any]] = None,
-            notes: Optional[List[str]] = None,
-            force: bool = False,
-            ) -> Dict[str, Any]:
-        """EXPLICITLY accept a recommendation and run the real operation.
-
-        This is the only M5 entry that changes knowledge: it records the
-        adoption decision (so the binding can find which operation followed
-        which prediction) and invokes the EXISTING ``induce`` machinery on
-        the prediction's OWN experience scope — the scope is never widened
-        by re-reading the current bank.
-
-        A recommendation that is not ``accept`` cannot be accepted: a
-        ``defer`` has no operation behind it.
-        """
-        if recommendation.get("recommendation") != "accept":
-            raise ValueError(
-                f"cannot accept a recommendation with verdict "
-                f"{recommendation.get('recommendation')!r}: only 'accept' "
-                "names an operation to run (a defer is a legitimate "
-                "outcome, not an action)")
-        target_id = prediction_id or recommendation.get(
-            "selected_prediction_id")
-        if not target_id:
-            raise ValueError(
-                "no prediction was named: pass prediction_id= or use a "
-                "recommendation that selected one")
-        prediction = self.capability_predictions.get(target_id)
-        if prediction is None:
-            raise StorageError(
-                f"unknown capability prediction {target_id!r}")
-        operation_type = prediction.candidate_operation.operation_type
-        # The operation TYPE decides what really runs. Only the types this
-        # build can carry out through an existing path are dispatched;
-        # anything else is REFUSED outright, because silently running
-        # ``induce`` for a ``retire`` candidate would execute an operation
-        # the prediction was never about — the worst kind of substitution,
-        # since it looks like the recommendation was honoured.
-        if operation_type not in CAPABILITY_EXECUTABLE_OPERATIONS:
-            raise ValueError(
-                f"operation_type {operation_type!r} has no execution path in "
-                f"this build (supported: "
-                f"{sorted(CAPABILITY_EXECUTABLE_OPERATIONS)}). The "
-                "recommendation is NOT executed as a different operation: "
-                "predicting an operation the framework cannot carry out and "
-                "then doing something else would make the binding "
-                "meaningless")
-        scope = prediction.experience_scope
-        execution_ids = list(scope.execution_ids) if scope is not None else []
-        if not execution_ids:
-            raise ValueError(
-                "the prediction records no experience scope: the operation "
-                "cannot be restricted to the evidence it was about, and "
-                "widening it silently would make the prediction answer a "
-                "different question")
-        strategy_id = prediction.candidate_operation.strategy_id
-        if operation_type == "retire":
-            entry_id = self._retire_target_entry(prediction)
-            if entry_id is None:
-                raise ValueError(
-                    "a 'retire' operation needs a target entry: the "
-                    "prediction names none, so there is nothing to retire "
-                    "and the operation is refused rather than reinterpreted")
-        else:
-            entry_id = None
-        binary_job=None
-        from or_harness.world_model.hplus import formal, require_job, jobs
-        if formal(self) and operation_type in ('induce','revise'):
-            declared=self._declared_operation_relations(prediction)
-            config=prediction.candidate_operation.config or {}
-            induction_id=config.get('induction_id')
-            if induction_id is None:
-                cited={str(e if isinstance(e,str) else e.get('execution_id'))
-                       for r in declared or [] for e in r.get('evidence') or []}
-                matching=[j for j in jobs(self) if j['state']=='pending' and j['selected'] and cited & set(j['execution_ids'])]
-                if len(matching)!=1:
-                    raise ValueError('H+ building requires its positive executed induction job before accepting a write')
-                induction_id=matching[0]['induction_id']
-            binary_job=require_job(self,induction_id)
-            if not (binary_job.get('material_sessions') or binary_job.get('material_ref')):
-                raise ValueError('read induction-material for the authorized H+ job before accepting its write')
-        adoption = self.actions.report_action(
-            "induce", MAINTENANCE_TASK_ID,
-            f"maint_capability_{int(time.time())}",
-            params={
-                "capability_prediction_id": target_id,
-                "recommendation_id": recommendation.get("recommendation_id"),
-                "operation_type": operation_type,
-                "strategy_id": strategy_id,
-                "execution_ids": execution_ids,
-                "target_entry_id": entry_id,
-                "action": "accepted",
-            },
-            outcome={"accepted": True, "capability_prediction_id": target_id},
-            status="completed")
-        try:
-            if operation_type == "retire":
-                result = self.retire(entry_id, reason=(
-                    prediction.candidate_operation.description
-                    or "an accepted offline maintenance recommendation"))
-                result = {"business_result": "retired",
-                          "entry_id": entry_id,
-                          "knowledge_delta": {
-                              "entry_changes": [],
-                              "entries_created": [],
-                              "entries_retired": [entry_id],
-                          },
-                          "execution_ids": execution_ids}
-            else:
-                # An operation must DECLARE the relations it forms: the
-                # candidate is where the agent put the strategy it wants
-                # written. There is NO statistical fallback — running a bare
-                # cell-statistics induction here is exactly how an accepted
-                # maintenance recommendation produced a cell mean and no
-                # technique. A candidate that declares nothing is refused
-                # rather than silently converted into a different operation.
-                declared = self._declared_operation_relations(prediction)
-                if not declared:
-                    raise ValueError(
-                        "the accepted operation declares NO relations: an "
-                        "induce/revise candidate must carry the strategies "
-                        "it forms in operation.config['relations']. The "
-                        "framework no longer falls back to statistical "
-                        "induction, which would write a cell mean and no "
-                        "technique. Refine the candidate and re-predict.")
-                result = self.induce(relations=declared, verify=verify,
-                                     notes=notes, force=force,
-                                     strategy_id=strategy_id,
-                                     induction_id=binary_job['induction_id'] if binary_job else None)
-        except Exception:
-            self.actions.end_action(
-                adoption.action_id, status="failed",
-                outcome={"accepted": True,
-                         "capability_prediction_id": target_id,
-                         "operation_type": operation_type,
-                         "error": "the operation raised"})
-            raise
-        # The knowledge transition travels in several shapes (the induce
-        # result's flat keys, the action summary nested under ``action``, or
-        # that action's outcome). ``_induction_transition`` is the ONE
-        # locator for it, so the binding reads the same delta the rest of
-        # the harness does rather than a key that may not be there. A
-        # retirement has its own shape: it removes an entry rather than
-        # creating or revising one, and it is recorded as such.
-        if operation_type == "retire":
-            knowledge_delta = {
-                "entry_changes": [],
-                "entries_created": [],
-                "entries_retired": [entry_id],
-            }
-            knowledge_after: List[Any] = []
-        else:
-            transition = self._induction_transition(result)
-            knowledge_delta = {
-                "entry_changes": transition["entry_changes"],
-                "entries_created": transition["created"],
-            }
-            knowledge_after = transition["knowledge_after"]
-        adoption.outcome = {
-            "accepted": True,
-            "capability_prediction_id": target_id,
-            "operation_type": operation_type,
-            "operation_action_id": (result.get("action") or {}).get(
-                "action_id"),
-            "operation_result": {
-                "business_result": result.get("business_result"),
-                "knowledge_delta": knowledge_delta,
-                "knowledge_after": knowledge_after,
-                "execution_ids": execution_ids,
-                "verification": result.get("verification"),
-            },
-        }
-        self.actions._update(adoption)
-        # AUTOMATIC BINDING (stage 1): the maintenance fact just became
-        # real, so it is bound NOW — the adoption action names the
-        # prediction explicitly, so no name guessing is involved, and the
-        # binding is idempotent by prediction (a retry returns the stored
-        # fact without re-counting or re-billing). A failure is reported,
-        # never raised: the operation really ran and its knowledge delta
-        # must survive a bookkeeping problem. `bind-capability` remains the
-        # manual/recovery path.
-        binding: Dict[str, Any] = {"bound": False}
-        try:
-            bound = self.bind_capability_maintenance(
-                target_id, adoption_action_id=adoption.action_id)
-            binding = {
-                "bound": bool(bound.get("state") == "bound"
-                              or bound.get("already_bound")),
-                "already_bound": bool(bound.get("already_bound")),
-                "state": bound.get("state"),
-                "binding": (bound.get("binding") or {}).get("binding_id"),
-            }
-        except Exception as exc:  # noqa: BLE001 - never lose the knowledge
-            binding["reason"] = (f"{type(exc).__name__}: {exc}; bind it "
-                                 "explicitly with `orx bind-capability`")
-        return {
-            "adoption_action_id": adoption.action_id,
-            "capability_prediction_id": target_id,
-            "accepted": True,
-            "operation_type": operation_type,
-            "execution_ids": execution_ids,
-            "operation_result": result,
-            "maintenance_binding": binding,
-            "note": ("the operation ran on the prediction's OWN scope and "
-                     "its real maintenance fact was bound automatically"
-                     if binding.get("bound") else
-                     "the operation ran on the prediction's OWN scope, but "
-                     "the maintenance fact could NOT be bound automatically "
-                     "— bind it with bind_capability_maintenance"),
-            "still_unverified": ("the capability EFFECT is unverified until "
-                                 "qualified later tasks produce real "
-                                 "results: evaluate_capability_effect "
-                                 "decides that, not this call"),
-        }
-
-    def _retire_target_entry(self, prediction: Any) -> Optional[str]:
-        """The entry a ``retire`` prediction is about, when it names one.
-
-        The target comes from the operation's own declaration (its
-        ``config``/``scope``) — never from re-reading the current bank for
-        a plausible victim. An unnamed target means the operation cannot be
-        carried out, which is reported rather than guessed.
-        """
-        operation = prediction.candidate_operation
-        config = operation.config or {}
-        for key in ("target_entry_id", "entry_id"):
-            value = config.get(key)
-            if value:
-                return str(value)
-        scope = operation.scope or prediction.experience_scope
-        if scope is not None and scope.note:
-            marker = "entry:"
-            if marker in scope.note:
-                return scope.note.split(marker, 1)[1].strip() or None
-        return None
-
-    def reject_capability_operation(
-            self, recommendation: Dict[str, Any], *,
-            reason: Optional[str] = None,
-            prediction_id: Optional[str] = None,
-            ) -> Dict[str, Any]:
-        """Explicitly decline or defer: NO knowledge is modified.
-
-        A defer/reject is recorded as a maintenance decision with its
-        reason, so the decision history is auditable — and the Strategic
-        Bank is untouched.
-        """
-        target_id = prediction_id or recommendation.get(
-            "selected_prediction_id")
-        record = self.actions.report_action(
-            "induce", MAINTENANCE_TASK_ID,
-            f"maint_capability_reject_{int(time.time())}",
-            params={
-                "capability_prediction_id": target_id,
-                "recommendation_id": recommendation.get("recommendation_id"),
-                "verdict": recommendation.get("recommendation"),
-                "action": "rejected",
-                "reason": reason,
-            },
-            outcome={"accepted": False, "rejected": True,
-                     "capability_prediction_id": target_id,
-                     "reason": reason},
-            status="completed")
-        return {
-            "rejection_action_id": record.action_id,
-            "capability_prediction_id": target_id,
-            "accepted": False,
-            "strategic_bank_touched": False,
-            "note": ("the recommendation was declined: no operation ran and "
-                     "no knowledge changed. A declined recommendation is "
-                     "not a wrong prediction — it was never given a chance "
-                     "to come true"),
-        }
-
-    def bind_capability_maintenance(self, prediction_id: str, *,
-                                    adoption_action_id: Optional[str] = None
-                                    ) -> Dict[str, Any]:
-        """Stage 1: bind the REAL maintenance fact to a prediction (M5).
-
-        Records that the operation happened (or did not), what knowledge
-        actually changed, the REAL cost, the verification outcome, and
-        whether the scope used matches the scope predicted. Idempotent by
-        prediction: a second bind returns the stored fact and counts
-        nothing twice.
-
-        It CANNOT set ``effect_verified``: entries being created and even
-        verified is a knowledge-change fact, not evidence that future
-        performance improved.
-        """
-        from or_harness.world_model.maintenance_decision import (
-            bind_maintenance_fact,
-            get_maintenance_binding,
-            record_maintenance_binding,
-        )
-        stored = get_maintenance_binding(self, prediction_id)
-        if stored is not None:
-            return {
-                "binding": stored.to_dict(),
-                "already_bound": True,
-                "note": ("already bound: the stored fact stands, nothing was "
-                         "re-counted or re-billed"),
-            }
-        prediction, source = self._capability_prediction_for(prediction_id)
-        if prediction is None:
-            raise ValueError(
-                f"unknown capability prediction {prediction_id!r}")
-        if source == "online_trace":
-            # An ONLINE gain claim: the real action it was bound to IS the
-            # operation the fact is about, so the trace supplies it.
-            from or_harness.world_model.trace_archive import operation_action_for
-            operation = operation_action_for(self,prediction_id)
-            adoption_action_id = adoption_action_id or (operation.action_id if operation else None)
-            if adoption_action_id:
-                actual = self.actions.get(adoption_action_id)
-                if actual is None or actual.action_type != 'induce':
-                    raise ValueError('online H+ maintenance binding requires a real induction action, not a solve')
-                from or_harness.world_model.trace_archive import get_capability_trace
-                online=get_capability_trace(self,prediction_id)
-                if online.hplus and (operation is None or operation.action_id!=actual.action_id):
-                    raise ValueError('binary H+ binding must name its authorized completed induction job')
-        binding = bind_maintenance_fact(
-            self, prediction_id, prediction=prediction,
-            adoption_action_id=adoption_action_id)
-        if binding.adoption_action_id is None:
-            return {
-                "binding": binding.to_dict(),
-                "already_bound": False,
-                "state": "not_adopted",
-                "note": ("no operation was accepted for this prediction: "
-                         "there is no maintenance fact to bind. A deferred "
-                         "or declined recommendation leaves the knowledge "
-                         "alone, and nothing is recorded as if it ran"),
-            }
-        record_maintenance_binding(self, binding)
-        try:
-            from or_harness.world_model.trace_archive import refresh_trace
-            refresh_trace(self, prediction_id)
-        except Exception:  # noqa: BLE001 - a trace update never breaks bind
-            pass
-        return {
-            "binding": binding.to_dict(),
-            "already_bound": False,
-            "state": "bound",
-            "prediction_source": source,
-        }
-
-    def _capability_prediction_for(self, prediction_id: str):
-        """The prediction an id names, offline or an ONLINE gain trace.
-
-        Returns ``(prediction, source)`` where source is ``"stored"`` for a
-        real ``hp_`` capability prediction, ``"online_trace"`` for a
-        strategy-outcome prediction that claimed an H+ (materialized on
-        demand from its trace), or ``(None, None)`` when nothing matches.
-
-        No third kind of prediction is invented: an online H+ is not a
-        capability prediction, and the materialized view says so itself.
-        """
-        stored = self.capability_predictions.get(prediction_id)
-        if stored is not None:
-            return stored, "stored"
-        try:
-            from or_harness.world_model.trace_archive import (
-                effect_prediction_of,
-            )
-            materialized = effect_prediction_of(self, prediction_id)
-        except Exception:  # noqa: BLE001
-            return None, None
-        if materialized is not None:
-            return materialized, "online_trace"
-        return None, None
-
-    def capability_maintenance_binding(
-            self, prediction_id: str) -> Optional[Dict[str, Any]]:
-        """The stored stage-1 maintenance fact, or None (read-only)."""
-        from or_harness.world_model.maintenance_decision import (
-            get_maintenance_binding,
-        )
-        binding = get_maintenance_binding(self, prediction_id)
-        return binding.to_dict() if binding is not None else None
-
-    def record_capability_paired_evaluation(
-            self, prediction_id: str, *, metric: str,
-            reference_value: float, treated_value: float,
-            unit: str = "", source: str = "external_paired_evaluation",
-            reference_task_ids: Optional[Sequence[str]] = None,
-            note: str = "") -> Dict[str, Any]:
-        """Record a pre-arranged PAIRED comparison (the causal reference).
-
-        The framework does not clone the harness or replay counterfactual
-        operations. It accepts a comparison the caller really arranged; the
-        record names its own source and covered tasks so a later reader can
-        tell a real comparison from an assertion.
-        """
-        from or_harness.world_model.maintenance_decision import (
-            record_paired_evaluation,
-        )
-        if self._capability_prediction_for(prediction_id) == (None, None):
-            raise StorageError(
-                f"unknown capability prediction {prediction_id!r}")
-        return record_paired_evaluation(
-            self, prediction_id, metric=metric,
-            reference_value=reference_value, treated_value=treated_value,
-            unit=unit, source=source,
-            reference_task_ids=reference_task_ids, note=note)
-
-    def evaluate_capability_effect(
-            self, prediction_id: str, *,
-            task_ids: Optional[Sequence[str]] = None,
-            require_paired_reference: bool = True,
-            persist: bool = True) -> Dict[str, Any]:
-        """Stage 2: judge one prediction against REAL later-task results.
-
-        Reads the M4 evaluations of CLOSED episodes of tasks that are NOT
-        part of the prediction's own experience scope (reusing the
-        induction tasks checks consistency, never transfer), or a
-        pre-arranged paired comparison. An unreached horizon stays
-        ``pending`` and re-evaluable; a change with no comparable reference
-        is ``inconclusive`` rather than attributed to the operation.
-
-        Only an ``observed_improvement`` under a comparable setup sets
-        ``effect_verified``. Repeating the call REPLACES the stored
-        evaluation instead of adding a second sample, so a repeated look
-        never inflates the evidence. Only a FINAL verdict (an observed
-        improvement/degradation, or a provably no-change operation) short-
-        circuits the call; a pending horizon, a descriptive movement with
-        no reference, or insufficient evidence stays re-evaluable, so a
-        later paired reference or a newly closed episode can still turn it
-        into a verdict.
-        """
-        from or_harness.world_model.maintenance_decision import (
-            EFFECT_FINAL_STATES,
-            evaluate_capability_effect,
-            get_effect_evaluation,
-            record_effect_evaluation,
-        )
-        stored = get_effect_evaluation(self, prediction_id)
-        if stored is not None and stored.state in EFFECT_FINAL_STATES:
-            return {
-                "evaluation": stored.to_dict(),
-                "already_evaluated": True,
-                "note": ("already evaluated: the stored verdict stands and "
-                         "the sample was not counted again"),
-            }
-        prediction, source = self._capability_prediction_for(prediction_id)
-        if prediction is None:
-            raise ValueError(
-                f"unknown capability prediction {prediction_id!r}")
-        evaluation = evaluate_capability_effect(
-            self, prediction_id, prediction=prediction, task_ids=task_ids,
-            require_paired_reference=require_paired_reference)
-        if persist:
-            record_effect_evaluation(self, evaluation)
-        try:
-            from or_harness.world_model.trace_archive import refresh_trace
-            refresh_trace(self, prediction_id)
-        except Exception:  # noqa: BLE001 - a trace update never breaks eval
-            pass
-        return {
-            "evaluation": evaluation.to_dict(),
-            "already_evaluated": False,
-            "prediction_source": source,
-        }
-
-    def capability_effect_evaluation(
-            self, prediction_id: str) -> Optional[Dict[str, Any]]:
-        """The stored stage-2 effect evaluation, or None (read-only)."""
-        from or_harness.world_model.maintenance_decision import (
-            get_effect_evaluation,
-        )
-        evaluation = get_effect_evaluation(self, prediction_id)
-        return evaluation.to_dict() if evaluation is not None else None
-
-    def capability_feedback_summary(self) -> Dict[str, Any]:
-        """Every capability prediction's two-stage feedback state (M5).
-
-        Read-only: no model call, no re-evaluation, no re-billing. Shows
-        the difference between a BOUND FACT (the operation happened) and a
-        VERIFIED EFFECT (real later performance moved).
-        """
-        from or_harness.world_model.maintenance_decision import (
-            capability_effect_summary,
-        )
-        return capability_effect_summary(self)
-
-    def online_capability_gains(self) -> Dict[str, Any]:
-        """Every ONLINE capability-gain claim's follow-up state.
-
-        The third view beside the offline capability predictions and the
-        learning-operation facts. An online H+ used to die the moment it was
-        printed, so ``inspect --bank capability`` reported 0 even when a
-        candidate had claimed a gain in the same call. Read-only: no model
-        call, no re-prediction, no re-billing.
-        """
-        from or_harness.world_model.maintenance_decision import (
-            online_gain_summary,
-        )
-        return online_gain_summary(self)
-
-    def online_capability_gains(self) -> Dict[str, Any]:
-        """Every ONLINE capability-gain claim's follow-up state.
-
-        The third view beside the offline capability predictions and the
-        learning-operation facts: an online H+ used to die the moment it
-        was printed, so ``inspect --bank capability`` reported 0 even when
-        a candidate had claimed a gain in the same call. Read-only.
-        """
-        from or_harness.world_model.maintenance_decision import (
-            online_gain_summary,
-        )
-        return online_gain_summary(self)
-
-    def capability_evidence_with_effects(self, **kwargs
-                                         ) -> HarnessCapabilityEvidence:
-        """Capability evidence that includes VERIFIED effect results (M5).
-
-        Only ``observed_improvement`` evaluations contribute
-        ``direct_evidence``, and only for the sources they really observed.
-        W_OR is never advanced by a capability prediction's own report —
-        its evidence must come from independent OR strategy-outcome
-        prediction-error records.
-        """
-        from or_harness.world_model.maintenance_decision import (
-            capability_evidence_from_effects,
-        )
-        return capability_evidence_from_effects(self, **kwargs)
+    # -- generic prediction payload reading, including retired history -------
 
     @staticmethod
     def read_prediction_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -3363,7 +2222,7 @@ class ORHarness:
 
         Returns a dict with ``contract_version`` (as identified, never
         guessed), ``legacy`` (True for an unversioned payload), and either
-        ``contract`` (a loaded current-contract object) or ``legacy_view``
+        ``contract`` (current strategy data or an unchanged retired payload) or ``legacy_view``
         (the mapped view of an old payload) plus ``unmappable`` explaining
         what could NOT be converted.
         """
@@ -3389,7 +2248,8 @@ class ORHarness:
             return {"contract_version": version, "legacy": False,
                     "supported": False, "error": str(exc)}
         return {"contract_version": version, "legacy": False,
-                "supported": True, "contract": contract.to_dict()}
+                "supported": True, "retired": isinstance(contract, dict),
+                "contract": copy.deepcopy(contract) if isinstance(contract, dict) else contract.to_dict()}
 
     # -- budget / actions ------------------------------------------------------
 
@@ -4915,8 +3775,6 @@ class ORHarness:
         from or_harness.world_model.hplus import jobs
         results = []
         for job in jobs(self, task_id=task_id, episode_id=episode_id):
-            if job['state']=='completed' and job.get('receipt_ref'):
-                self.bind_capability_maintenance(job['prediction_id'],adoption_action_id=job['action_id'])
             if job['state'] != 'pending':
                 continue
             material = self.induction_material(induction_id=job['induction_id'])
@@ -6114,18 +4972,6 @@ class ORHarness:
         post = self.snapshot(task, episode_id, task_progress=progress, include_memory=False)
         self.actions._bind_post_snapshot(action.action_id, post.snapshot_id)
         record.action_id = action.action_id
-        # An ONLINE capability-gain claim, if this candidate made one, now
-        # has a REAL execution behind it: the trace advances to ``bound`` so
-        # the follow-up view reflects the attempt without a second
-        # prediction. Bookkeeping only — best-effort.
-        if prediction_id:
-            try:
-                from or_harness.world_model.trace_archive import (
-                    refresh_trace,
-                )
-                refresh_trace(self, str(prediction_id))
-            except Exception:  # noqa: BLE001
-                pass
         # The configuration that REALLY took effect is now known (the
         # executor reported it, and the solve script may have read back its
         # own effective values). Attach it to the ACTION so the binding can
@@ -6629,7 +5475,6 @@ class ORHarness:
             result = completed_result(self, job)
             result['already_completed'] = True
             self._sync_induction_result(result)
-            self.bind_capability_maintenance(job['prediction_id'],adoption_action_id=job['action_id'])
             return result
         if kwargs.get('dry_run'):
             self._active_induction_job=job
@@ -6661,7 +5506,6 @@ class ORHarness:
                     job['submission_ref']=put_submission(self,kwargs,review)
                     complete(self,job,result,review)
             self._sync_induction_result(result)
-            self.bind_capability_maintenance(job['prediction_id'], adoption_action_id=job['action_id'])
             return result
         finally:
             self._active_induction_job = None
@@ -7171,9 +6015,6 @@ class ORHarness:
           evaluations; ``evaluation_id`` reads one of them;
         - ``retention``: the three retention scopes (window / late-check
           grace / archive caps) and the online vs archive counts;
-        - ``capability``: the two-stage capability feedback state; pass
-          ``prediction_id`` for one prediction's fact binding + effect
-          evaluation in full.
         """
         if bank == 'values':
             if not value_ref:
@@ -7236,20 +6077,20 @@ class ORHarness:
             # Listing mode: EVERY prediction generation, each under its own
             # key: the legacy M2 OutcomePrediction log, the wm-so/1
             # strategy-outcome channel that calibration aggregates, and the
-            # wm-ce/1 capability-evolution predictions. They are different
-            # questions and different logs — one list would conflate them.
+            # historical capability payloads. The retired channel remains
+            # a raw read and never invokes a service or updates its records.
             legacy = self.predictions_query(task_id=task_id,
                                             episode_id=episode_id)
             strategy = self.strategy_predictions.query(
                 task_id=task_id, episode_id=episode_id)
-            capability = self.capability_predictions.query(
-                task_id=task_id, episode_id=episode_id)
+            capability = [self.store.loads(raw) for raw in self.store.capability_predictions_for(
+                task_id=task_id, episode_id=episode_id)]
             return {
                 "bank": "predictions",
                 "count": (len(legacy) + len(strategy) + len(capability)),
                 "legacy_predictions": [p.to_dict() for p in legacy],
                 "strategy_predictions": [p.to_dict() for p in strategy],
-                "capability_predictions": [p.to_dict() for p in capability],
+                "capability_predictions": capability,
             }
         if bank == "evaluations":
             if evaluation_id is not None:
@@ -7265,30 +6106,6 @@ class ORHarness:
                     "evaluations": evaluations}
         if bank == "retention":
             return {"bank": "retention", **self.calibration_retention()}
-        if bank == "capability":
-            if prediction_id is not None:
-                stored = self.capability_predictions.get(prediction_id)
-                if stored is None:
-                    # An ONLINE capability-gain claim: materialized on demand
-                    # from its trace so the same read shows the claim, its
-                    # binding and its effect verdict.
-                    single, source = self._capability_prediction_for(
-                        prediction_id)
-                    if single is None:
-                        raise ValueError(
-                            f"unknown prediction_id {prediction_id!r}")
-                else:
-                    single, source = stored, "stored"
-                return {"bank": "capability", "count": 1,
-                        "prediction": single.to_dict(),
-                        "prediction_source": source,
-                        "binding": self.capability_maintenance_binding(
-                            prediction_id),
-                        "evaluation": self.capability_effect_evaluation(
-                            prediction_id)}
-            return {"bank": "capability",
-                    **self.capability_feedback_summary(),
-                    "online_gains": self.online_capability_gains()}
         if bank == "texts":
             # The retrieval SOURCE documents (not a knowledge bank): the
             # documented look-up entry point for records that carry no
@@ -7310,7 +6127,7 @@ class ORHarness:
                     "task_texts": entries}
         raise ValueError("bank must be experience|strategic|archive|"
                          "actions|snapshots|predictions|evaluations|"
-                         "retention|capability|texts")
+                         "retention|texts")
 
     def read_prediction(self, prediction_id: str
                         ) -> Optional[Dict[str, Any]]:
@@ -7324,10 +6141,10 @@ class ORHarness:
         if stored is not None:
             return {"kind": "strategy_outcome",
                     "prediction": stored.to_dict()}
-        capability = self.get_capability_evolution_prediction(prediction_id)
-        if capability is not None:
-            return {"kind": "capability_evolution",
-                    "prediction": capability.to_dict()}
+        raw_capability = self.store.get_capability_prediction(prediction_id)
+        if raw_capability is not None:
+            return {"kind": "capability_evolution", "retired": True,
+                    "prediction": self.store.loads(raw_capability)}
         legacy = self.predictions.get(prediction_id)
         if legacy is not None:
             return {"kind": "legacy_outcome",

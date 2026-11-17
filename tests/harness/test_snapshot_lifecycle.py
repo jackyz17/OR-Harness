@@ -22,7 +22,7 @@ from or_harness.world_model.conditions import (
     ContextExpired, get_value, read_snapshot, release_context,
 )
 from or_harness.world_model.context import PredictionContext
-from or_harness.world_model.maintenance_decision import _snapshot_knowledge_entry_ids
+from or_harness.world_model.conditions import available_entry_ids
 from or_harness.world_model.prediction import ActionSpec
 from or_harness.world_model.provider import WorldModelProvider
 from or_harness.world_model.snapshot_maintenance import fork_memory, maintain_snapshots
@@ -317,8 +317,8 @@ class LifecycleCase(unittest.TestCase):
         entry.pattern = {"predicates": {"family": "other"}}
         self.h.sbank.update(entry)
         after = self.h.snapshot(TASK, "e")
-        self.assertIn(key, _snapshot_knowledge_entry_ids(self.h.get_snapshot(before.snapshot_id), store=self.h.store))
-        self.assertNotIn(key, _snapshot_knowledge_entry_ids(self.h.get_snapshot(after.snapshot_id), store=self.h.store))
+        self.assertIn(key, self.available_at(self.h.get_snapshot(before.snapshot_id)))
+        self.assertNotIn(key, self.available_at(self.h.get_snapshot(after.snapshot_id)))
 
     def test_nested_transaction_failure_leaves_no_dangling_reference(self):
         count = self.count("frozen_conditions")
@@ -370,16 +370,12 @@ class LifecycleCase(unittest.TestCase):
         self.h.record(record)
         self.assertIsNone(self.h.bank.get("old").task_text_digest)
 
-    def test_missing_legacy_work_time_does_not_become_today_for_hplus(self):
+    def test_missing_legacy_work_time_retains_its_unknown_origin(self):
         raw = ExecutionRecord(execution_id="untimed", task_id="t", strategy_id="candidate",
                               profile_snapshot=self.h.profile(TASK)).to_dict()
         raw.pop("created_at")
         record = ExecutionRecord.from_dict(raw)
         self.h.bank.append(record)
-        from or_harness.world_model.maintenance_decision import _episode_execution_span
-        span = _episode_execution_span(self.h, "t", None)
-        self.assertTrue(span["timing_unknown"])
-        self.assertIsNone(span["finished_at"])
         self.assertTrue(self.h.bank.get("untimed").execution_features["created_at_unknown"])
 
     def test_adopted_knowledge_ref_is_the_value_before_the_executor(self):
@@ -502,7 +498,7 @@ class LifecycleCase(unittest.TestCase):
         self.assertEqual(self.count("belief_snapshots"), 0)
         receipt = self.h.get_snapshot(snap.snapshot_id)
         self.assertEqual(receipt.problem_state, snap.problem_state)
-        self.assertIn(key, _snapshot_knowledge_entry_ids(receipt, store=self.h.store))
+        self.assertIn(key, self.available_at(receipt))
         with sqlite3.connect(backup) as original:
             self.assertEqual(original.execute("SELECT payload FROM belief_snapshots").fetchone()[0], before)
         again = maintain_snapshots(self.home, apply=True, backup=str(Path(self.tmp.name) / "backup2.db"))

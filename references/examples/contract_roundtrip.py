@@ -9,7 +9,7 @@ It demonstrates the three things an outer harness agent actually needs:
 1. building a strategy-outcome contract for a task that has NO ``model``
    field and several UNKNOWN quantities — and seeing that the unknowns stay
    unknown instead of becoming measured zeros;
-2. a lossless JSON round trip of both contracts;
+2. a lossless JSON round trip of the strategy contract and a raw retired payload;
 3. reading a legacy unversioned prediction payload through the legacy view,
    and seeing which old fields have no honest new-contract equivalent.
 
@@ -35,22 +35,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from or_harness.api import ORHarness  # noqa: E402
 from or_harness.core.schema import CostVector  # noqa: E402
-from or_harness.world_model.contracts import (  # noqa: E402
+from or_harness.world_model.contracts import (
     CONTRACT_VERSION,
     LEGACY_CONTRACT_VERSION,
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
-    CapabilityEvolutionPrediction,
     EvidenceRef,
-    ExpectedChange,
     ExpectedCost,
-    ExperienceScope,
-    LearningOperation,
     StrategyOutcomePrediction,
-    TaskTargeting,
     UncertaintyStatement,
-    VerificationCondition,
     detect_payload_version,
 )
 from or_harness.world_model.execution_window import (  # noqa: E402
@@ -190,83 +184,13 @@ def main() -> int:
         print("unknown dimensions stayed unknown (no fabricated zeros)")
 
         # ------------------------------------------------------------------
-        banner("3. Capability evolution contract — contract only")
-        # ------------------------------------------------------------------
-        evolution = harness.build_capability_evolution_contract(
-            TASK,
-            LearningOperation(
-                operation_type="induce", strategy_id="S04",
-                description="induce a claim for S04 in this structural cell",
-                scope=ExperienceScope(execution_ids=["ex_demo_1", "ex_demo_2"],
-                                      task_ids=["t_demo", "t_demo_2"],
-                                      family="routing",
-                                      cell_token="rc[0.75,1.00]")),
-            experience_scope=ExperienceScope(
-                execution_ids=["ex_demo_1", "ex_demo_2"],
-                task_ids=["t_demo", "t_demo_2"]),
-            task_targeting=TaskTargeting(
-                description="routing tasks with high resource coupling",
-                family="routing", cell_token="rc[0.75,1.00]"),
-            baseline=BaselineStatement(kind="no_knowledge", value=None,
-                                       note="no claim covers S04 yet"),
-            horizon="the next 10 matching routing tasks",
-            horizon_tasks=10,
-            expected_changes=[ExpectedChange(
-                metric="mean_solution_quality", direction="increase",
-                value=None,
-                baseline=BaselineStatement(kind="no_knowledge"),
-                notes=["direction only: no magnitude is claimable from two "
-                       "executions"])],
-            learning_cost=ExpectedCost(
-                expected=CostVector(llm_tokens=4000.0,
-                                    measured={"llm_tokens"}),
-                measured=["llm_tokens"]),
-            verification_conditions=[VerificationCondition(
-                condition=("the claim passes admission verification and its "
-                           "interval holds on the next 5 UNSEEN tasks"),
-                evaluable=True,
-                check_basis="induce --verify on executions outside the "
-                            "inducing set",
-                prediction_made=True, fact_bound=False,
-                effect_verified=False)],
-        )
-        print(f"status              : {evolution.status}")
-        print(f"provider_configured : {evolution.provider_configured}")
-        print(f"service_implemented : {evolution.service_implemented}")
-        print(f"service_available   : {evolution.service_available}")
-        print(f"horizon             : {evolution.horizon} "
-              f"({evolution.horizon_tasks} tasks)")
-        print(f"capability evidence : "
-              f"{ {k: v.status for k, v in evolution.current_evidence.sources.items()} }")
-        print(f"score_scheme        : {evolution.current_evidence.score_scheme}")
-        print(f"distinct tasks used : "
-              f"{evolution.experience_scope.distinct_tasks}")
-        print(f"verification        : prediction_made="
-              f"{evolution.verification_conditions[0].prediction_made}, "
-              f"fact_bound={evolution.verification_conditions[0].fact_bound}, "
-              f"effect_verified="
-              f"{evolution.verification_conditions[0].effect_verified}")
-        for note in evolution.notes:
-            print(f"note                : {note}")
-
-        assert evolution.status == "contract_only", (
-            "no capability forecast was produced — this is a schema-level "
-            "object, not a capability prediction")
-        assert evolution.service_implemented is True, (
-            "M5 implements the capability-evolution service (wm-ce/1)")
-        assert evolution.service_available is False, (
-            "this harness has NO provider attached, so nothing can serve "
-            "the service: implemented is not the same as available")
-        assert evolution.prediction_made is False, (
-            "but 'service available' is NOT 'a prediction happened': "
-            "building a contract calls no model and forecasts nothing")
-        assert evolution.current_evidence.score_scheme == "no_composite_score"
-        assert not hasattr(evolution.current_evidence, "composite_score"), (
-            "no composite H score exists, by design")
-        dumped_evo = evolution.to_dict()
-        assert CapabilityEvolutionPrediction.from_dict(
-            dumped_evo).to_dict() == dumped_evo
-        print("round trip OK; no capability increment was invented")
+        banner("3. Reading a retired capability payload without a live service")
+        historical = {"contract_version": CONTRACT_VERSION,
+                      "prediction_type": "capability_evolution", "prediction_id": "cp_historical",
+                      "status": "contract_only", "candidate_operation": {"operation_type": "induce"}}
+        raw = harness.read_prediction_payload(historical)
+        assert raw['retired'] and raw['contract'] == historical
+        print("retired payload preserved verbatim; no service, binding or effect inferred")
 
         # ------------------------------------------------------------------
         banner("4. Reading a legacy payload (old semantics preserved)")

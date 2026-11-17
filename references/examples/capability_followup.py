@@ -2,7 +2,7 @@
 
 The former textual-gain walkthrough is superseded by the binary H+ contract.
 This runnable example uses the same CLI path as end_to_end.py. Historical
-assessment and capability-effect readers remain covered by the harness tests.
+assessments remain readable in saved predictions; review feedback uses H+ receipts.
 
 PYTHONPATH=src python3 references/examples/capability_followup.py --mode single
 """

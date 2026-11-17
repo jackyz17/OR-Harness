@@ -46,14 +46,6 @@ def _fail_structured(error: Dict[str, Any], summary: str,
     return exit_code
 
 
-def _online_gains_line(summary: Any) -> str:
-    """One line describing the ONLINE capability-gain follow-up state."""
-    if not isinstance(summary, dict) or not summary.get("n_online_gains"):
-        return ""
-    return (f" Online gains: {summary['n_online_gains']} claimed, "
-            f"{summary['n_pending']} pending, {summary['n_bound']} bound to "
-            f"a real execution, {summary['n_effect_verified']} with a "
-            "VERIFIED effect.")
 
 
 def _cir_error_payload(exc: Any) -> Dict[str, Any]:
@@ -1246,22 +1238,6 @@ def cmd_inspect(args) -> int:
                 f"Prediction {args.prediction}: generation "
                 f"{found.get('kind')}. A single prediction is read directly "
                 "by key — no listing of the prediction logs.")
-        if args.bank == "capability":
-            if getattr(args, "prediction", None):
-                single = result["prediction"]
-                return _emit(
-                    result,
-                    f"Prediction {args.prediction}: status "
-                    f"{single['status']}, operation "
-                    f"{single['candidate_operation']['operation_type']}.")
-            return _emit(
-                result,
-                f"{result['n_predictions']} capability prediction(s): "
-                f"{result['n_fact_bound']} with a bound maintenance fact, "
-                f"{result['n_effect_verified']} with a VERIFIED effect. A "
-                "bound fact says the operation happened; only a verified "
-                "effect says real later performance moved."
-                + _online_gains_line(result.get("online_gains")))
         if args.bank == "evaluations":
             if getattr(args, "evaluation", None):
                 return _emit(result, f"Evaluation {args.evaluation}: state "
@@ -1308,7 +1284,7 @@ def cmd_inspect(args) -> int:
                           f"{len(result['legacy_predictions'])}, "
                           f"strategy-outcome (wm-so/1): "
                           f"{len(result['strategy_predictions'])}, "
-                          f"capability-evolution (wm-ce/1): "
+                          f"retired capability records: "
                           f"{len(result['capability_predictions'])}. Separate "
                           "logs, separate questions — only the wm-so/1 channel "
                           "feeds `orx calibration`.")
@@ -1644,253 +1620,16 @@ def cmd_enforce_window(args) -> int:
         h.close()
 
 
-def cmd_predict_capability(args) -> int:
-    """Predict what an offline learning operation would change (M5, wm-ce/1).
-
-    This is the SLOW-time-scale prediction: it answers what future task
-    performance would change, at what learning cost and risk, if the
-    candidate operation were executed. It does NOT execute it, does not
-    touch the Strategic Bank, and does not claim any effect is verified.
-    """
-    h = _harness(args)
-    try:
-        operation = _load_json_arg(args.operation)
-        if not isinstance(operation, dict) or not operation.get("operation_type"):
-            return _fail("--operation needs a JSON object with at least "
-                         "'operation_type' (induce|revise|reverify|retire)")
-        task = _load_json_arg(args.task) if args.task else None
-        bundle = _load_json_arg(args.bundle) if args.bundle else None
-        if bundle is not None and not isinstance(bundle, dict):
-            return _fail("--bundle must be a JSON object naming the "
-                         "executions the operation would consume, e.g. "
-                         "{'execution_ids': ['ex1', 'ex2']}")
-        budget = _load_json_arg(args.budget) if args.budget else None
-        prediction = h.predict_capability_evolution(
-            operation, task=task, bundle=bundle,
-            horizon=args.horizon or "", horizon_tasks=args.horizon_tasks,
-            maintenance_budget=budget, timeout_s=args.timeout,
-            task_id=args.task_id or "", episode_id=args.episode)
-        out = prediction.to_dict()
-        if prediction.status != "valid":
-            return _emit(out,
-                         f"Capability-evolution prediction {prediction.status}"
-                         f": no usable expected change was produced, so this "
-                         f"is a recorded NON-prediction, not a capability "
-                         f"forecast. {' '.join(prediction.notes)}")
-        changes = "; ".join(
-            f"{c.metric} {c.direction}"
-            + (f" {c.value}{c.unit}" if c.value is not None else "")
-            + ("" if c.is_improvement is None
-               else (" (improvement)" if c.is_improvement
-                     else " (DEGRADATION)"))
-            for c in prediction.expected_changes)
-        return _emit(out,
-                     f"Capability-evolution prediction {prediction.status}: "
-                     f"{len(prediction.expected_changes)} expected change(s) "
-                     f"[{changes}] over {prediction.horizon!r}. The operation "
-                     "has NOT run and no effect is verified — binding the "
-                     "fact and judging the effect are separate later steps.")
-    finally:
-        h.close()
 
 
-def cmd_compare_capability(args) -> int:
-    """Compare capability predictions and recommend one, or defer (M5).
-
-    Read-only with respect to knowledge: no operation runs, no model is
-    called, the Strategic Bank is untouched.
-    """
-    h = _harness(args)
-    try:
-        ids = [p for p in (args.predictions or "").split(",") if p]
-        if not ids:
-            return _fail("--predictions needs one or more comma-separated "
-                         "prediction ids")
-        result = h.compare_capability_evolution(
-            ids, horizon_tasks=args.horizon_tasks,
-            require_quality_nondegradation=not args.allow_quality_loss)
-        if result["recommendation"] == "accept":
-            summary = (f"Recommendation: ACCEPT "
-                       f"{result['selected_prediction_id']} "
-                       f"({result['selected_operation_type']}) — "
-                       f"{result['basis']}. Nothing has run: the operation "
-                       "requires an explicit accept.")
-        else:
-            summary = (f"Recommendation: "
-                       f"{result['recommendation'].upper()} — "
-                       f"{result['basis']}")
-            if result.get("incomparable"):
-                summary += (f" {len(result['incomparable'])} candidate(s) "
-                            "could not be ranked; they are listed for you "
-                            "to choose between.")
-        return _emit(result, summary)
-    finally:
-        h.close()
 
 
-def cmd_accept_capability(args) -> int:
-    """EXPLICITLY accept a recommendation and run the real operation (M5).
-
-    The only M5 command that changes knowledge. The induction runs on the
-    prediction's OWN frozen experience scope — never widened by re-reading
-    the current bank.
-    """
-    h = _harness(args)
-    try:
-        recommendation = _load_json_arg(args.recommendation)
-        if not isinstance(recommendation, dict):
-            return _fail("--recommendation must be a JSON object from "
-                         "`orx compare-capability`")
-        verify = _load_json_arg(args.verify) if args.verify else None
-        notes = [args.note] if args.note else None
-        result = h.accept_capability_operation(
-            recommendation, prediction_id=args.prediction,
-            verify=verify, notes=notes, force=args.force)
-        delta = ((result["operation_result"] or {}).get("knowledge_delta")
-                 or {})
-        created = delta.get("entries_created") or []
-        binding = result.get("maintenance_binding") or {}
-        if binding.get("bound"):
-            bind_note = ("The real maintenance fact was bound "
-                         "automatically"
-                         + (" (already bound: nothing was re-counted)"
-                            if binding.get("already_bound") else "")
-                         + ".")
-        else:
-            bind_note = ("WARNING: the maintenance fact could NOT be bound "
-                         f"automatically ({binding.get('reason') or 'unknown'}"
-                         "); bind it with `orx bind-capability`.")
-        return _emit(result,
-                     f"Accepted {result['capability_prediction_id']}: the "
-                     f"operation ran on {len(result['execution_ids'])} "
-                     f"scoped execution(s), {len(created)} entr(y/ies) "
-                     f"created. {bind_note} Do NOT call `induce`/`retire` "
-                     "again for this decision — the operation has already "
-                     "run. The capability EFFECT stays unverified until "
-                     "qualified later tasks produce real results "
-                     "(`orx evaluate-capability`).")
-    finally:
-        h.close()
 
 
-def cmd_reject_capability(args) -> int:
-    """Explicitly decline or defer a capability recommendation (M5).
-
-    Records the decision with its reason and changes NO knowledge.
-    """
-    h = _harness(args)
-    try:
-        recommendation = _load_json_arg(args.recommendation)
-        if not isinstance(recommendation, dict):
-            return _fail("--recommendation must be a JSON object from "
-                         "`orx compare-capability`")
-        result = h.reject_capability_operation(
-            recommendation, reason=args.reason,
-            prediction_id=args.prediction)
-        return _emit(result,
-                     "Declined: no operation ran and no knowledge changed. "
-                     "A declined recommendation is not a wrong prediction — "
-                     "it was never given a chance to come true.")
-    finally:
-        h.close()
 
 
-def cmd_bind_capability(args) -> int:
-    """Stage 1: bind the REAL maintenance fact to a prediction (M5).
-
-    Answers only "did the operation happen, and what changed?" — never
-    "did the harness get stronger". Idempotent by prediction.
-    """
-    h = _harness(args)
-    try:
-        result = h.bind_capability_maintenance(
-            args.prediction, adoption_action_id=args.adoption_action)
-        binding = result["binding"]
-        if result.get("already_bound"):
-            return _emit(result,
-                         f"Prediction {args.prediction} was already bound: "
-                         "the stored fact stands (nothing re-counted).")
-        if result.get("state") == "not_adopted":
-            return _emit(result,
-                         f"Nothing to bind: no operation was accepted for "
-                         f"prediction {args.prediction}. A deferred or "
-                         "declined recommendation leaves the knowledge "
-                         "alone.")
-        delta = binding.get("knowledge_delta") or {}
-        return _emit(result,
-                     f"Maintenance fact bound: operation "
-                     f"{binding['operation_type']} "
-                     f"{'changed knowledge' if binding['changed'] else 'produced NO knowledge change'}"
-                     f" (created={len(delta.get('entries_created') or [])}, "
-                     f"scope_consistent={binding['scope_consistent']}). "
-                     "This is stage 1 of 2: the capability EFFECT is still "
-                     "unverified.")
-    finally:
-        h.close()
 
 
-def cmd_evaluate_capability(args) -> int:
-    """Stage 2: judge a prediction against REAL later-task results (M5).
-
-    Reads the M4 evaluations of CLOSED episodes of tasks outside the
-    prediction's own experience scope, or a pre-arranged paired
-    comparison. An unreached horizon stays pending and re-evaluable.
-    """
-    h = _harness(args)
-    try:
-        if args.paired:
-            paired = _load_json_arg(args.paired)
-            if not isinstance(paired, dict):
-                return _fail("--paired must be a JSON object with 'metric', "
-                             "'reference_value' and 'treated_value'")
-            result = h.record_capability_paired_evaluation(
-                args.prediction,
-                metric=paired.get("metric"),
-                reference_value=paired.get("reference_value"),
-                treated_value=paired.get("treated_value"),
-                unit=paired.get("unit", ""),
-                source=paired.get("source", "external_paired_evaluation"),
-                reference_task_ids=paired.get("reference_task_ids"),
-                note=paired.get("note", ""))
-            return _emit(result,
-                         "Paired reference recorded: the change can now be "
-                         "attributed to the operation rather than merely "
-                         "described.")
-        task_ids = [t for t in (args.tasks or "").split(",") if t] or None
-        result = h.evaluate_capability_effect(
-            args.prediction, task_ids=task_ids,
-            require_paired_reference=not args.allow_descriptive)
-        evaluation = result["evaluation"]
-        state = evaluation["state"]
-        if result.get("already_evaluated"):
-            return _emit(result,
-                         f"Prediction {args.prediction} was already "
-                         f"evaluated ({state}): the stored verdict stands "
-                         "and the sample was not counted again.")
-        explanations = {
-            "pending": ("the horizon is unmet: no qualified LATER task has "
-                        "produced a closed episode yet. Pending is "
-                        "re-evaluable, never frozen."),
-            "observed_improvement": ("the real evidence supports the "
-                                     "predicted improvement."),
-            "observed_degradation": ("the real evidence shows a "
-                                     "DEGRADATION: recorded, never dropped."),
-            "no_change": ("the observed change contradicts the prediction: "
-                          "a refuted prediction, which is not a "
-                          "degradation."),
-            "inconclusive": ("the change was observed but cannot be "
-                             "attributed: no comparable reference exists."),
-            "insufficient_evidence": ("nothing could be compared against a "
-                                      "real observation."),
-            "not_evaluable": ("no expected change names a metric this build "
-                              "can observe."),
-        }
-        return _emit(result,
-                     f"Capability effect {state}: "
-                     f"{explanations.get(state, '')} "
-                     f"effect_verified={evaluation['effect_verified']}.")
-    finally:
-        h.close()
 
 
 def cmd_plan_next(args) -> int:
@@ -2156,16 +1895,10 @@ def cmd_contract(args) -> int:
       implemented, the service is not attached.
     """
     from or_harness.world_model.contracts import (
-        BaselineStatement,
         BenefitEstimate,
         CandidateRef,
-        ExpectedChange,
         ExpectedCost,
-        ExperienceScope,
-        LearningOperation,
         RiskStatement,
-        TaskTargeting,
-        VerificationCondition,
     )
     h = _harness(args)
     try:
@@ -2226,56 +1959,7 @@ def cmd_contract(args) -> int:
                          f"{prediction.provider_configured}, "
                          f"prediction_made={prediction.prediction_made}). "
                          + " ".join(prediction.notes))
-        # capability_evolution
-        task = _load_json_arg(args.task) if args.task else None
-        op_raw = _load_json_arg(args.operation) if args.operation else None
-        if op_raw is not None and not isinstance(op_raw, dict):
-            return _fail("--operation must be a JSON object")
-        operation = (LearningOperation.from_dict(op_raw) if op_raw
-                     else LearningOperation(
-                         operation_type="induce",
-                         description=args.operation_desc or ""))
-        if args.operation_desc:
-            operation.description = args.operation_desc
-        scope = None
-        if args.scope:
-            scope_data = _load_json_arg(args.scope)
-            if not isinstance(scope_data, dict):
-                return _fail("--scope must be a JSON object")
-            scope = ExperienceScope.from_dict(scope_data)
-        targeting = None
-        if args.targeting:
-            targeting_data = _load_json_arg(args.targeting)
-            if not isinstance(targeting_data, dict):
-                return _fail("--targeting must be a JSON object")
-            targeting = TaskTargeting.from_dict(targeting_data)
-        changes = []
-        if args.expected_change:
-            raw = _load_json_arg(args.expected_change)
-            raw = raw if isinstance(raw, list) else [raw]
-            changes = [ExpectedChange.from_dict(c) for c in raw]
-        conditions = []
-        for raw in (args.verification or []):
-            data = _load_json_arg(raw)
-            conditions.append(VerificationCondition.from_dict(data))
-        prediction = h.build_capability_evolution_contract(
-            task, operation, experience_scope=scope,
-            task_targeting=targeting,
-            baseline=(BaselineStatement.from_dict(
-                _load_json_arg(args.baseline)) if args.baseline else None),
-            horizon=args.horizon or "",
-            horizon_tasks=args.horizon_tasks,
-            expected_changes=changes,
-            verification_conditions=conditions)
-        out = prediction.to_dict()
-        return _emit(out,
-                     f"Capability evolution contract {prediction.status} "
-                     f"(operation={operation.operation_type}, "
-                     f"provider_configured={prediction.provider_configured}, "
-                     f"service_implemented={prediction.service_implemented}, "
-                     f"service_available={prediction.service_available}, "
-                     f"prediction_made={prediction.prediction_made}). "
-                     + " ".join(prediction.notes))
+        return _fail("--kind strategy_outcome or --payload is required")
     finally:
         h.close()
 
@@ -2853,7 +2537,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--bank", default="experience",
                    choices=["experience", "strategic", "archive",
                             "actions", "snapshots", "predictions", "texts",
-                            "evaluations", "retention", "capability", "values"])
+                            "evaluations", "retention", "values"])
     p.add_argument("--task", default=None)
     p.add_argument("--strategy", default=None)
     p.add_argument("--status", default=None)
@@ -2984,122 +2668,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="report what would be evicted without writing")
     p.set_defaults(func=cmd_enforce_window)
-
-    p = sub.add_parser(
-        "predict-capability",
-        help="predict what an OFFLINE learning operation would change in "
-             "future task performance, under the wm-ce/1 protocol "
-             "(world-model M5). Does NOT execute the operation and claims "
-             "no effect is verified")
-    p.add_argument("--operation", required=True,
-                   help="learning operation JSON (literal or file): "
-                        "{operation_type: induce|revise|reverify|retire, "
-                        "strategy_id, description, scope, config}")
-    p.add_argument("--task", default=None,
-                   help="task JSON (literal or file) scoping the capability "
-                        "evidence; optional")
-    p.add_argument("--bundle", default=None, metavar="EVIDENCE_SCOPE_JSON",
-                   help="frozen evidence scope JSON (literal or file) naming "
-                        "the executions the operation would consume, e.g. "
-                        "{'execution_ids': ['ex1', 'ex2']}. Supplies the "
-                        "experience scope, the task targeting and the frozen "
-                        "baseline, and its REAL evidence content is sent to "
-                        "the provider")
-    p.add_argument("--horizon", default=None,
-                   help="what window the change is claimed over (free text); "
-                        "defaults to 'the next matching tasks'")
-    p.add_argument("--horizon-tasks", type=int, default=None,
-                   help="the number of tasks the horizon covers, when "
-                        "declared. Without it a per-task saving is NEVER "
-                        "extrapolated into a total")
-    p.add_argument("--budget", default=None,
-                   help="maintenance budget JSON (literal or file): an "
-                        "execution LIMIT passed to the provider as context, "
-                        "never a prediction")
-    p.add_argument("--task-id", default=None,
-                   help="task id to file the prediction under (for later "
-                        "queries)")
-    p.add_argument("--episode", default=None)
-    p.add_argument("--timeout", type=float, default=None)
-    p.set_defaults(func=cmd_predict_capability)
-
-    p = sub.add_parser(
-        "compare-capability",
-        help="compare frozen capability predictions and recommend one, or "
-             "defer (M5). Read-only: no operation runs, no knowledge "
-             "changes")
-    p.add_argument("--predictions", required=True,
-                   help="comma-separated prediction ids to compare")
-    p.add_argument("--horizon-tasks", type=int, default=None,
-                   help="the task count the comparison totals over; without "
-                        "it figures stay PER TASK")
-    p.add_argument("--allow-quality-loss", action="store_true",
-                   help="rank candidates that predict a QUALITY degradation "
-                        "too (default: they are reported as incomparable "
-                        "and never auto-ranked)")
-    p.set_defaults(func=cmd_compare_capability)
-
-    p = sub.add_parser(
-        "accept-capability",
-        help="EXPLICITLY accept a capability recommendation and run the real "
-             "offline operation on the prediction's OWN scope (M5). The only "
-             "M5 command that changes knowledge")
-    p.add_argument("--recommendation", required=True,
-                   help="recommendation JSON from `orx compare-capability` "
-                        "(literal or file)")
-    p.add_argument("--prediction", default=None,
-                   help="override which prediction to execute (default: the "
-                        "recommendation's selected one)")
-    p.add_argument("--verify", default=None,
-                   help="admission check JSON for the induction (literal or "
-                        "file)")
-    p.add_argument("--note", default=None)
-    p.add_argument("--force", action="store_true")
-    p.set_defaults(func=cmd_accept_capability)
-
-    p = sub.add_parser(
-        "reject-capability",
-        help="explicitly decline or defer a capability recommendation (M5): "
-             "no operation runs and NO knowledge changes")
-    p.add_argument("--recommendation", required=True)
-    p.add_argument("--prediction", default=None)
-    p.add_argument("--reason", default=None)
-    p.set_defaults(func=cmd_reject_capability)
-
-    p = sub.add_parser(
-        "bind-capability",
-        help="stage 1 of the capability feedback: bind the REAL maintenance "
-             "fact (did the operation happen, what knowledge changed, what "
-             "did it really cost). Never sets effect_verified (M5)")
-    p.add_argument("--prediction", required=True)
-    p.add_argument("--adoption-action", default=None,
-                   help="the adoption action id from `orx accept-capability`; "
-                        "omit to locate it by the prediction id")
-    p.set_defaults(func=cmd_bind_capability)
-
-    p = sub.add_parser(
-        "evaluate-capability",
-        help="stage 2 of the capability feedback: judge a prediction "
-             "against REAL later-task results, or record a pre-arranged "
-             "paired evaluation (M5). An unmet horizon stays pending and "
-             "re-evaluable")
-    p.add_argument("--prediction", required=True)
-    p.add_argument("--tasks", default=None,
-                   help="comma-separated task ids to read as the validation "
-                        "sample (default: every closed episode of a task "
-                        "outside the prediction's own experience scope)")
-    p.add_argument("--paired", default=None,
-                   help="record a pre-arranged PAIRED comparison instead of "
-                        "evaluating: JSON {metric, reference_value, "
-                        "treated_value, unit, source, reference_task_ids, "
-                        "note}. The framework does not fabricate a "
-                        "counterfactual")
-    p.add_argument("--allow-descriptive", action="store_true",
-                   help="accept a before/after change with no comparable "
-                        "reference as a descriptive result (default: such a "
-                        "change is inconclusive and cannot be attributed to "
-                        "the operation)")
-    p.set_defaults(func=cmd_evaluate_capability)
 
     p = sub.add_parser("plan-next", help="score one or more proposed candidates, select by U, then execute the selected prediction directly")
     p.add_argument("--task", required=True)
@@ -3261,12 +2829,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "contract",
         help="build or read a unified world-model contract "
-             "(strategy outcome / capability evolution). No model call is "
+             "(strategy outcome or historical payload). No model call is "
              "made: building returns a contract_only object when no "
              "prediction service is attached, and reading never parses an "
              "unknown contract version")
     p.add_argument("--kind", default=None,
-                   choices=["strategy_outcome", "capability_evolution"],
+                   choices=["strategy_outcome"],
                    help="which contract to BUILD (omit when reading "
                         "--payload)")
     p.add_argument("--payload", default=None,
@@ -3275,7 +2843,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "explicitly unsupported version")
     p.add_argument("--task", default=None,
                    help="task JSON (literal or @file); required to build a "
-                        "strategy_outcome contract, optional for capability_evolution")
+                        "strategy_outcome contract")
     p.add_argument("--spec", default=None,
                    help="candidate JSON. A CandidateRef: action_type, "
                         "strategy_id, solver, config, preconditions, "
@@ -3297,32 +2865,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="RiskStatement JSON: {events:[{event, probability, "
                         "severity, basis}]} — risk events stay separate "
                         "from cost")
-    p.add_argument("--operation", default=None,
-                   help="LearningOperation JSON: {operation_type: induce|"
-                        "revise|reverify|retire, strategy_id, description, "
-                        "scope}")
-    p.add_argument("--operation-desc", default=None,
-                   help="free-text description for the learning operation")
-    p.add_argument("--scope", default=None,
-                   help="ExperienceScope JSON: {execution_ids, task_ids, "
-                        "family, cell_token}")
-    p.add_argument("--targeting", default=None,
-                   help="TaskTargeting JSON: {description, family, "
-                        "cell_token, predicates, task_ids}")
-    p.add_argument("--baseline", default=None,
-                   help="BaselineStatement JSON: {kind, value, note}")
-    p.add_argument("--horizon", default=None,
-                   help="what window the capability change is claimed over, "
-                        "e.g. 'next 10 matching tasks'")
-    p.add_argument("--horizon-tasks", type=int, default=None,
-                   help="task count of the horizon, when known")
-    p.add_argument("--expected-change", default=None,
-                   help="ExpectedChange JSON (repeatable): {metric, "
-                        "direction, value, baseline}")
-    p.add_argument("--verification", action="append", default=None,
-                   help="VerificationCondition JSON (repeatable): "
-                        "{condition, evaluable, check_basis} — what would "
-                        "actually CONFIRM the predicted change")
     p.set_defaults(func=cmd_contract)
 
     p = sub.add_parser(

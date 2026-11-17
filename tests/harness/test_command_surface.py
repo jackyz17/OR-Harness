@@ -1,28 +1,6 @@
-"""Acceptance tests for the command-surface consolidation.
+"""Command boundaries, one-call strategy decisions and raw historical reads.
 
-This round REMOVED seven commands, renamed one, merged four queries into
-`inspect`, switched planning to a single protocol, and added two automatic
-bindings. The properties that must hold afterwards are the ones asserted
-here — each test names the review requirement it covers:
-
-1. **The default flow does not double-predict.** `plan-next` returns a
-   prediction id per candidate and `execute --prediction` reuses it: no
-   second model call, one binding, one calibration sample.
-2. **A plan's result is directly usable downstream.** The id handed over by
-   `plan-next` is the id the action gets bound to.
-3. **The candidate evidence package still exists.** `induction-candidates`
-   produces exactly what `predict-capability --bundle` consumes.
-4. **Old records stay readable.** The legacy payload reader and
-   `inspect --bank predictions` still resolve them, and they never enter the
-   wm-so/1 calibration.
-5. **The calibration scopes do not mix.** The two prediction logs stay
-   separate in the read surface.
-6. **Automatic binding is retryable and never double-counts.**
-7. **Merging the queries lost nothing.** Every filter and single-record read
-   the removed commands offered is reachable through `inspect`.
-8. **The removed entry points are gone, not aliased.**
-
-Nothing here claims real-LLM behaviour: every provider is a labelled stub.
+Scripted providers exercise orchestration; they do not measure model quality.
 """
 
 from decision_fixtures import bind_legacy, execute_scored, planned_prediction
@@ -153,8 +131,6 @@ class TestNoDoublePrediction(Base):
         chosen = plan["suggested"]["strategy_id"]
         chosen_id = next(c["prediction_id"] for c in plan["candidates"]
                          if c["action_spec"]["strategy_id"] == chosen)
-        h.choose_next(plan["decision_action_id"],
-                      chosen=ActionSpec.from_dict(plan["suggested"]))
         record = execute_scored(h,TASK, chosen, str(self.script), str(self._work),
                            solver="highs", episode_id="ep1",
                            prediction_id=chosen_id)
@@ -206,33 +182,7 @@ class TestNoDoublePrediction(Base):
 # ---------------------------------------------------------------------------
 
 
-class TestEvidenceScopeForCapabilityPackage(Base):
-    def test_a_frozen_scope_is_what_predict_capability_consumes(self):
-        """The evidence package a capability prediction consumes is now the
-        frozen scope read DIRECTLY from the evidence, not a candidate bundle
-        produced by a generator."""
-        provider = CountingProvider()
-        h = self.make_harness(provider)
-        for task_id in ("t1", "t2"):
-            record = execute_scored(h,dict(TASK, task_id=task_id), "S01",
-                               str(self.script), str(self._work),
-                               solver="highs", episode_id=f"e_{task_id}")
-            h.record(record)
-        ids = ["t1_exec", "t2_exec"]
-        # The material is the batch read; the scope is the executions.
-        material = h.induction_material()
-        self.assertEqual(material["n_distinct_tasks"], 2)
-        execution_ids = sorted(m["execution_id"] for m in material["material"])
-        scope = {"execution_ids": execution_ids,
-                 "tasks": ["t1", "t2"], "strategy_id": "S01"}
-
-        calls_before = len(provider.requests)
-        prediction = h.predict_capability_evolution(
-            {"operation_type": "induce", "strategy_id": "S01"},
-            evidence_scope=scope, horizon="next 5 tasks", horizon_tasks=5)
-        self.assertEqual(len(provider.requests), calls_before + 1)
-        self.assertEqual(sorted(prediction.experience_scope.execution_ids),
-                         execution_ids)
+class TestInductionMaterialDoesNotPredict(Base):
 
     def test_induction_material_makes_no_model_call(self):
         provider = CountingProvider()
@@ -352,53 +302,6 @@ class TestAutomaticBindingIsSafe(Base):
         self.assertEqual(
             updated.trace.model_info["bound_action_id"], record.action_id)
 
-    def test_accept_capability_binds_the_fact_once(self):
-        """`accept-capability` binds the maintenance fact itself; a repeat
-        bind is `already_bound` and the fact is counted ONCE."""
-        provider = CountingProvider()
-        h = self.make_harness(provider)
-        for task_id in ("t1", "t2"):
-            record = execute_scored(h,dict(TASK, task_id=task_id), "S01",
-                               str(self.script), str(self._work),
-                               solver="highs", episode_id=f"e_{task_id}")
-            h.record(record)
-        execution_ids = sorted(
-            m["execution_id"] for m in
-            h.induction_material()["material"])
-        # The accepted operation must DECLARE the relations it forms: there
-        # is no statistical fallback.
-        operation = {
-            "operation_type": "induce", "strategy_id": "S01",
-            "description": "record the decomposition",
-            "config": {"relations": [{
-                "subject": "S01",
-                "claim": "S01 decomposes the load problem",
-                "evidence": [{"execution_id": e, "role": "e"}
-                             for e in execution_ids]}]},
-        }
-        prediction = h.predict_capability_evolution(
-            operation,
-            evidence_scope={"execution_ids": execution_ids,
-                            "tasks": ["t1", "t2"], "strategy_id": "S01"},
-            horizon="next 5 tasks", horizon_tasks=5)
-        recommendation = {
-            "recommendation": "accept",
-            "selected_prediction_id": prediction.prediction_id,
-            "recommendation_id": "rec_1",
-        }
-        accepted = h.accept_capability_operation(recommendation)
-        # The adoption result reports the binding it performed.
-        self.assertTrue(accepted["maintenance_binding"]["bound"])
-        self.assertEqual(
-            h.capability_feedback_summary()["n_fact_bound"], 1)
-        # A repeat bind is idempotent and does not count a second fact.
-        repeat = h.bind_capability_maintenance(
-            prediction.prediction_id,
-            adoption_action_id=accepted["adoption_action_id"])
-        self.assertTrue(repeat["already_bound"])
-        self.assertEqual(
-            h.capability_feedback_summary()["n_fact_bound"], 1,
-            "a repeated bind must not double-count the fact")
 
     def test_a_bad_prediction_id_is_refused_before_the_run(self):
         """An unknown prediction is a PRECONDITION error: the association
@@ -488,22 +391,6 @@ class TestQuerySurfaceIsComplete(Base):
         for key in ("n_predictions", "n_fact_bound", "n_effect_verified"):
             self.assertIn(key, summary)
 
-    def test_capability_bank_single_read_carries_both_stages(self):
-        provider = CountingProvider()
-        h = self.make_harness(provider)
-        prediction = h.predict_capability_evolution(
-            {"operation_type": "induce", "strategy_id": "S01"},
-            horizon="next 5 tasks", horizon_tasks=5)
-        code, out = self.run_cli([
-            "inspect", "--bank", "capability",
-            "--prediction", prediction.prediction_id])
-        self.assertEqual(code, 0)
-        result = json.loads(out)["result"]
-        # The full state: the prediction, its binding and its effect.
-        for key in ("prediction", "binding", "evaluation"):
-            self.assertIn(key, result)
-        self.assertEqual(result["prediction"]["prediction_id"],
-                         prediction.prediction_id)
 
     def test_retirement_candidates_are_a_query_not_a_collector(self):
         """The `gc` command is gone WITH the collector that never collected;
@@ -527,7 +414,8 @@ class TestQuerySurfaceIsComplete(Base):
 class TestRemovedCommandsAreGone(Base):
     REMOVED = ("predict-outcome", "bind-outcome", "assess-induction",
                "bind-induction-outcome", "gc", "evaluations", "retention",
-               "capability-feedback")
+               "capability-feedback", "predict-capability", "compare-capability",
+               "accept-capability", "reject-capability", "bind-capability", "evaluate-capability")
 
     def test_removed_commands_are_usage_errors(self):
         """No silent alias, no different command behind the old name: an
@@ -537,6 +425,76 @@ class TestRemovedCommandsAreGone(Base):
                 self.run_cli([command])
             self.assertEqual(ctx.exception.code, 2,
                              f"{command} must be gone, not aliased")
+
+    def test_removed_choices_and_contract_parameters_are_usage_errors(self):
+        from contextlib import redirect_stderr
+        from or_harness.cli import build_parser
+        parser = build_parser()
+        help_text = parser.format_help()
+        for command in self.REMOVED[-6:]:
+            self.assertNotIn(command, help_text)
+        for argv in (["inspect", "--bank", "capability"],
+                     ["contract", "--kind", "capability_evolution"],
+                     ["contract", "--kind", "strategy_outcome", "--operation", "{}"],
+                     ["contract", "--kind", "strategy_outcome", "--horizon-tasks", "5"]):
+            with self.subTest(argv=argv), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    self.run_cli(argv)
+                self.assertEqual(error.exception.code, 2)
+
+    def test_dedicated_services_and_write_apis_are_absent(self):
+        import importlib.util
+        import or_harness.world_model as wm
+        h = self.make_harness()
+        for module in ("capability_evolution", "maintenance_decision", "trace_archive"):
+            self.assertIsNone(importlib.util.find_spec("or_harness.world_model." + module))
+        for name in ("capability_predictions", "build_capability_evolution_contract",
+                     "predict_capability_evolution", "compare_capability_evolution",
+                     "accept_capability_operation", "reject_capability_operation",
+                     "bind_capability_maintenance", "evaluate_capability_effect",
+                     "online_capability_gains", "capability_feedback_summary"):
+            self.assertFalse(hasattr(h, name), name)
+        for name in ("CapabilityEvolutionPrediction", "CapabilityEvolutionService",
+                     "LearningOperation", "ExperienceScope", "TaskTargeting",
+                     "compare_capability_predictions", "bind_maintenance_fact"):
+            self.assertFalse(hasattr(wm, name), name)
+        self.assertFalse(hasattr(h.store, "put_capability_prediction"))
+
+    def test_historical_raw_predictions_remain_readable_and_budgeted(self):
+        h = self.make_harness()
+        historical = {"contract_version": "wm-contract/1", "prediction_type": "capability_evolution",
+            "prediction_id": "cp_historical", "task_id": "historical-task", "status": "valid",
+            "candidate_operation": {"operation_type": "induce"}, "unrecognized_old_field": {"keep": [1, None]},
+            "trace": {"prediction_kind": "capability_evolution", "call_cost": {"llm_tokens": 17, "tool_calls": 999},
+                      "call_cost_measured": ["llm_tokens"], "model_info": {}}}
+        # Seed an existing library directly; the retired writer must not return.
+        with h.store.transaction() as conn:
+            conn.execute("INSERT INTO capability_predictions VALUES (?,?,?,?,?)",
+                (historical["prediction_id"], "historical-task", "old-episode", 1.0, h.store.dumps(historical)))
+        reopened = self.make_harness()
+        single = reopened.inspect(bank="predictions", prediction_id="cp_historical")["prediction"]
+        self.assertTrue(single["retired"])
+        self.assertEqual(single["prediction"], historical)
+        listed = reopened.inspect(bank="predictions", task_id="historical-task", episode_id="old-episode")
+        self.assertEqual(listed["capability_predictions"], [historical])
+        code, output = self.run_cli(["contract", "--payload", json.dumps(historical)])
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(output)["result"]["retired"])
+        self.assertEqual(json.loads(output)["result"]["contract"], historical)
+        consumption = reopened.budget.consumption("historical-task", "old-episode")
+        self.assertEqual(consumption["total_cost"]["llm_tokens"], 17)
+        self.assertIsNone(consumption["total_cost"]["tool_calls"])
+        self.assertEqual(len(consumption["prediction_call_costs"]), 1)
+        self.assertIsNone(reopened.budget.consumption("historical-task", "another-episode")["total_cost"]["llm_tokens"])
+
+    def test_provider_refuses_retired_protocol_before_http(self):
+        from unittest.mock import patch
+        from or_harness.world_model.provider import HttpChatProvider
+        provider = HttpChatProvider("http://unused.invalid", "fixture", "")
+        with patch("urllib.request.urlopen") as request:
+            with self.assertRaisesRegex(ValueError, "unsupported prediction protocol"):
+                provider.predict({"prediction_protocol": "wm-ce/1"})
+            request.assert_not_called()
 
     def test_the_renamed_command_keeps_its_behaviour(self):
         """`predict-cost` is the SAME cost snapshot; the old name is gone."""

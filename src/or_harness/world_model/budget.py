@@ -189,12 +189,8 @@ class BudgetLedger:
                 "WHERE task_id=?", (task_id,)).fetchall()
         except Exception:
             contract_rows = []
-        # M5 capability-evolution calls are REAL spend too: the same provider
-        # is invoked and the same tokens are burned, so leaving them out of
-        # the ledger would report a budget "ok" while the calls kept
-        # spending. They live in their OWN table (deliberately, so the two
-        # generations never mis-deserialize), which is exactly why the
-        # ledger must read it explicitly.
+        # Retired capability-prediction calls still count as historical spend.
+        # Read their own table without restoring the former prediction service.
         try:
             capability_rows = self.store.conn.execute(
                 "SELECT episode_id, payload FROM capability_predictions "
@@ -231,28 +227,22 @@ class BudgetLedger:
                     "charged_to_parent_action"),
                 episode_id, total, n_measured, prediction_costs,
                 unattributed_prediction_costs)
+        # Historical calls remain real spend after their service is retired.
+        # Read only the raw call-cost fields, without reviving the old parser.
         for row in capability_rows:
-            from or_harness.world_model.contracts import (
-                CapabilityEvolutionPrediction,
-            )
             try:
-                pred = CapabilityEvolutionPrediction.from_dict(
-                    self.store.loads(row["payload"]))
-            except Exception:
+                payload = self.store.loads(row["payload"])
+                trace = payload.get("trace") or {}
+                cost = CostVector.from_dict(trace.get("call_cost") or {})
+                measured = trace.get("call_cost_measured")
+                if isinstance(measured, list):
+                    cost.measured = {str(dim) for dim in measured if dim in COST_DIMENSIONS}
+                prediction_id = str(payload["prediction_id"])
+            except (ValueError, TypeError, KeyError, AttributeError):
                 continue
-            # The prediction's OWN episode attribution comes from the stored
-            # row: a capability prediction the caller made FOR an episode is
-            # that episode's spend. Only a call recorded with no episode at
-            # all is unattributed — assuming None everywhere would bury real
-            # episode spend in the unattributed bucket and let the episode
-            # budget report "ok" while the tokens were being spent.
-            stored_episode = (row["episode_id"]
-                              if "episode_id" in row.keys() else None)
             self._add_prediction_cost(
-                pred.prediction_id, pred.trace.call_cost,
-                stored_episode,
-                (pred.trace.model_info or {}).get(
-                    "charged_to_parent_action"),
+                prediction_id, cost, row["episode_id"],
+                (trace.get("model_info") or {}).get("charged_to_parent_action"),
                 episode_id, total, n_measured, prediction_costs,
                 unattributed_prediction_costs)
 

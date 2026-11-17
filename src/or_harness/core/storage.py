@@ -638,21 +638,8 @@ class Store:
             "SELECT COUNT(*) AS n FROM contract_predictions").fetchone()
         return int(row["n"])
 
-    # -- capability-evolution predictions (M5, wm-ce/1) -----------------------
+    # -- historical capability predictions (read-only) -----------------------
 
-    def put_capability_prediction(self, prediction_id: str, task_id: str,
-                                  episode_id: Optional[str], payload: str,
-                                  created_at: Optional[float] = None) -> None:
-        """Persist one capability-evolution prediction (a frozen
-        hypothesis about FUTURE performance, never a fact)."""
-        with self.transaction() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO capability_predictions "
-                "(prediction_id, task_id, episode_id, created_at, payload) "
-                "VALUES (?,?,?,?,?)",
-                (str(prediction_id), str(task_id or ""), episode_id,
-                 float(created_at if created_at is not None else time.time()),
-                 str(payload)))
 
     def get_capability_prediction(self, prediction_id: str
                                   ) -> Optional[str]:

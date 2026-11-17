@@ -432,7 +432,7 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
         request = provider.requests[-1]
         hplus = request["prediction_context"]["hplus_feedback"]
         self.assertEqual(hplus['settled_examples'],[])
-        self.assertGreaterEqual(h.online_capability_gains()['n_pending'],1)
+        self.assertTrue(all(not p.trace.model_info.get('bound_action_id') for p in h.strategy_predictions.query(task_id='t1')))
 
     def test_absent_hplus_is_reported_as_absence(self):
         task = _task("t1")
@@ -453,7 +453,7 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
         hplus = request["prediction_context"]["hplus_feedback"]
         self.assertEqual(hplus['settled_examples'],[])
         self.assertEqual(hplus['n_applicable'],0)
-        self.assertEqual(h.online_capability_gains()['binary_signal_counts']['missing'],2)
+        self.assertEqual(sum(p.trace.model_info['hplus']['decision_status']=='missing' for p in h.strategy_predictions.query(task_id='t1')),2)
 
 
 class TestObservationRules(CalibrationLoopCase):

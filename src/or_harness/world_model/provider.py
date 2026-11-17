@@ -327,25 +327,16 @@ class HttpChatProvider(WorldModelProvider):
         if timeout_s is not None:
             effective_timeout = max(0.001, min(float(timeout_s),
                                                self.timeout_s))
-        # The system prompt follows the REQUEST's protocol: a
-        # strategy-outcome request (wm-so/1) gets the strategy-outcome
-        # prompt, a capability-evolution request (wm-ce/1) gets the
-        # capability-evolution prompt, everything else keeps the legacy
-        # prompt. The request names its protocol explicitly, so the wire
-        # format is traceable to the prompt that produced it.
+        # Current requests use wm-so/1; unversioned calls keep the legacy prompt.
         from or_harness.world_model.strategy_prediction import (
             STRATEGY_OUTCOME_PROTOCOL_VERSION,
             STRATEGY_OUTCOME_SYSTEM_PROMPT,
         )
-        from or_harness.world_model.capability_evolution import (
-            CAPABILITY_EVOLUTION_PROTOCOL_VERSION,
-            CAPABILITY_EVOLUTION_SYSTEM_PROMPT,
-        )
         protocol = request.get("prediction_protocol")
+        if protocol not in (None, STRATEGY_OUTCOME_PROTOCOL_VERSION):
+            raise ValueError("unsupported prediction protocol")
         if protocol == STRATEGY_OUTCOME_PROTOCOL_VERSION:
             prompt = STRATEGY_OUTCOME_SYSTEM_PROMPT
-        elif protocol == CAPABILITY_EVOLUTION_PROTOCOL_VERSION:
-            prompt = CAPABILITY_EVOLUTION_SYSTEM_PROMPT
         else:
             action_type = (request.get("action_spec") or {}).get(
                 "action_type")

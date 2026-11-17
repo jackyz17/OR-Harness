@@ -1549,35 +1549,8 @@ class StrategyOutcomeService:
             prediction.candidate.episode_id,
             self.store.dumps(prediction.to_dict()),
             created_at=prediction.trace.created_at)
-        # An online capability-gain STANCE is archived as a trace so the real
-        # execution and its later effect can be followed up, and so the
-        # offline stage-2 evaluator can read it by id. The trace is metadata
-        # only: it never changes the prediction, never ranks the candidate
-        # and never touches the capability evidence. A trace is written for
-        # every ASSESSED block (a stated "none" is a real, falsifiable
-        # stance that must not vanish) and for every CLAIMED block (an
-        # unassessed old payload that claims a gain still has something to
-        # follow up). Best-effort — a trace failure must never fail the
-        # prediction that was already saved.
-        gain = getattr(prediction, "capability_gain", None)
-        if prediction.trace.model_info.get('call_state') != 'in_flight' and (
-                (gain is not None and (gain.assessed or gain.claimed)) or prediction.trace.model_info.get("hplus")):
-            try:
-                from or_harness.world_model.trace_archive import (
-                    archive_capability_gain,
-                )
-                archive_capability_gain(self._harness(), prediction)
-            except Exception:  # noqa: BLE001
-                pass
-
     def _harness(self):
-        """The harness whose store this service writes to.
-
-        The service is constructed with an explicit store and an optional
-        ``harness`` handle; the trace archive needs the latter (it reads the
-        action log to follow a claim). A service built without one simply
-        skips the trace.
-        """
+        """The harness that freezes the same-call binary H+ signal."""
         return getattr(self, "harness", None)
 
     def get(self, prediction_id: str) -> Optional[StrategyOutcomePrediction]:

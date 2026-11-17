@@ -146,7 +146,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
     # Leave room for the normal CLI summary and its serialized envelope.
     out['joint_hplus']['role'] = ('frozen binary switch; review and verification are recorded in the induction receipt'
         if (gate or {}).get('source')=='frozen_hplus' else 'historical prediction; legacy explicit transition')
-    out['joint_hplus']['items'] = [atomic(item,'orx inspect --bank capability --prediction '+str(item.get('prediction_id')),1200) for item in out['joint_hplus'].get('items',[])[:3]]
+    out['joint_hplus']['items'] = [atomic(item,'orx inspect --bank predictions --prediction '+str(item.get('prediction_id')),1200) for item in out['joint_hplus'].get('items',[])[:3]]
     out['related_history']['no_hits'] = None if retrieval['failure'] or related_top_k<=0 else not bool(selected or entries)
     if budget_limit<6000:
         out['related_history']['query_basis'] = {'basis':query.get('basis'),'missing':query.get('missing') or []}

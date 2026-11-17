@@ -37,7 +37,6 @@ DOCUMENTED_EXAMPLES = [
     "references/examples/task_check.py",
     "references/examples/episode_closeout.py",
     "references/examples/strategy_outcome.py",
-    "references/examples/capability_evolution.py",
     "references/examples/prediction_context.py",
     "references/examples/contract_roundtrip.py",
     "references/examples/method_evidence.py",
@@ -52,10 +51,7 @@ DOCUMENTED_EXAMPLES = [
 #: (command, [flags]) that the docs tell an agent to use.
 DOCUMENTED_FLAGS = [
     ("contract", ["--kind", "--payload", "--task", "--spec", "--episode",
-                  "--benefit", "--cost", "--risk", "--operation",
-                  "--operation-desc", "--scope", "--targeting", "--baseline",
-                  "--horizon", "--horizon-tasks", "--expected-change",
-                  "--verification"]),
+                  "--benefit", "--cost", "--risk"]),
     ("profile", ["--task", "--cir", "--allow-empty-cir"]),
     ("recall", ["--task", "--top", "--exclude", "--candidate",
                 "--memory-mode", "--include-unverified"]),
@@ -71,17 +67,6 @@ DOCUMENTED_FLAGS = [
     ("archive-calibration", ["--dry-run"]),
     ("enforce-window", ["--window-episodes", "--open-grace-days",
                         "--dry-run"]),
-    ("predict-capability", ["--operation", "--task", "--bundle", "--horizon",
-                            "--horizon-tasks", "--budget", "--task-id",
-                            "--episode", "--timeout"]),
-    ("compare-capability", ["--predictions", "--horizon-tasks",
-                            "--allow-quality-loss"]),
-    ("accept-capability", ["--recommendation", "--prediction", "--verify",
-                           "--note", "--force"]),
-    ("reject-capability", ["--recommendation", "--prediction", "--reason"]),
-    ("bind-capability", ["--prediction", "--adoption-action"]),
-    ("evaluate-capability", ["--prediction", "--tasks", "--paired",
-                             "--allow-descriptive"]),
     ("check-task", ["--check", "--episode"]),
     ("induce", ["--strategy", "--dry-run", "--force",
                 "--note", "--verify", "--relation", "--review", "--induction-id", "--attribute-effect"]),
@@ -124,16 +109,16 @@ DOCUMENTED_GLOBAL_FLAGS = ["--home", "--world-model", "--wm-timeout",
 DOCUMENTED_IMPORTS = [
     ("or_harness.api", ["ORHarness"]),
     ("or_harness.world_model", [
-        "StrategyOutcomePrediction", "CapabilityEvolutionPrediction",
+        "StrategyOutcomePrediction",
         "CandidateRef", "BenefitEstimate", "ExpectedCost", "RiskStatement",
         "UncertaintyStatement", "PredictionTrace", "EvidenceRef",
-        "HarnessCapabilityEvidence", "LearningOperation", "ExperienceScope",
-        "TaskTargeting", "BaselineStatement", "ExpectedChange",
+        "HarnessCapabilityEvidence",
+        "BaselineStatement", "ExpectedChange",
         "VerificationCondition", "CONTRACT_VERSION",
         "LEGACY_CONTRACT_VERSION", "detect_payload_version",
         "legacy_prediction_view", "load_contract_payload",
         "prediction_kinds_for_mode", "validate_strategy_outcome",
-        "validate_capability_evolution", "StrategyExecutionWindow",
+        "StrategyExecutionWindow",
         "build_execution_window", "window_id_for",
         "PredictionServiceStatus", "SERVICE_IMPLEMENTED_KINDS",
         "LEGACY_UNMAPPABLE_SCOPES", "contract_status_from_legacy_status",
@@ -240,8 +225,7 @@ def _check_skill_result_table() -> list:
     The third column lists the result paths the agent should read. Every
     ``result.<key>`` there must be declared for the command named in the
     first column. A key that belongs to a DIFFERENT command is the exact
-    failure this catches (``result.effect_verified`` used to be cited for
-    ``evaluate-capability``, which returns it nested).
+    failure this catches: a result path belongs to its own command.
     """
     from _result_keys import declared_keys
     problems: list = []
