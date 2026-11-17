@@ -13,11 +13,7 @@ This document defines **what information a prediction actually uses**, and how t
 - Tests: `tests/harness/test_prediction_context.py`
 - Runnable example: [`references/examples/prediction_context.py`](examples/prediction_context.py)
 
-New contexts are consumable inputs: default reuse lifetime 24 hours, with bounded active storage. Successful episode close releases the normal flow's full working input; a compatibility `choose-next` can release it earlier after a recorded choice/rejection; an expired reuse raises `ContextExpired`. `context --context-id CTX --audit` reads the surviving manifest. Existing `wm-context/3` and full snapshots remain readable through explicit adapters. See [snapshot_lifecycle.md](snapshot_lifecycle.md) for responsibilities, exact limits, fixed-memory testing and explicit cleanup.
-
-This document is the authority for the INPUT side. The contract side (statuses, scopes, capability sources) stays in [`references/world_model_contract.md`](world_model_contract.md).
-
----
+For working-input lifetime and historical storage, see [snapshot lifecycle](snapshot_lifecycle.md#context-reuse-and-expiry).
 
 ## 1. What you must provide, and what you get
 
@@ -309,32 +305,9 @@ For a first proposal, the runner's `execution_context` (Python constructor, `OR_
 
 ## 6d. The H+ training-receipt block
 
-New `hplus_feedback` (`wm-hplus-binary/1`) selects a few settled related training
-receipts BEFORE the existing `HPLUS_FEEDBACK_CHARS` budget is applied. Known
-family/problem structure and mechanism terms rank applicability; unknown
-structure stays unknown. The block carries the original hypothesis, actual
-fact and source references, induction conclusion, exact rule versions,
-verification state, hypothesis outcome and one bias/deviation reason.
+`hplus_feedback` selects related settled receipts from before the decision cutoff, then applies `HPLUS_FEEDBACK_CHARS`. Applicability uses known family, structure, and mechanism terms. The provider view carries the hypothesis, actual fact and source references, conclusion, exact rule versions, verification state, hypothesis outcome, and a bias/deviation reason.
 
-| Label | Evidence |
-|---|---|
-| `1` | A real new/revised version plus a sourced sufficient substantive-increment review and valid evidence; reliable derivation or small runnable checks can support its stated scope |
-| `0` | A sourced sufficient comparison of the frozen baseline with actual checked work confirms coverage/no increment |
-| `null` | Insufficient material/support or unavailable/unexecuted evidence |
-
-Feedback uses only facts recorded before the prediction. The context freezes
-its selected feedback; later checks do not rewrite old inputs. A 0 execution
-is not an observed negative opportunity unless an explicit NoH+ control reviews
-it. NoH+ zero-signal reviews use the prediction-time library snapshot, even
-when the current library has subsequently changed. Historical three-state
-and delayed performance-effect records retain their own meanings.
-
-The original `capability_gain.decision` controls induction, not G/C/R utility.
-Publication is an explicit version-use decision; there is no compulsory third-task/transfer/boundary/regression bundle. Source tasks/displayed material are distinct from future independent targets.
-Receipt completion is not proof of a useful method, and a refuted hypothesis
-can still yield a validated boundary increment. See [hplus.md](hplus.md).
-
----
+Use [induction receipt fields](induction.md#read-publication-completion-and-learning-separately) to interpret learning labels and [experiment modes](induction.md#learning-feedback-and-experiment-modes) for NoH+ opportunity reviews. Later feedback can enter a subsequent context. The original provider request retains the evidence selected for that decision.
 
 ## Audit what the next provider actually received
 
@@ -349,29 +322,10 @@ orx context --context-id CTX --audit
 
 P is a saved candidate prediction; CTX comes from its plan's `prediction_context_id` or prediction trace. Inspect wraps the payload at `result.prediction.prediction`, so request omissions are at `result.prediction.prediction.trace.model_info.request_omissions`. The context audit exposes the frozen input/feedback references that were available. Provider-size trimming may omit an H+ receipt that survives in the frozen context: recorded availability and actual transmission are separate facts. Old request omissions remain attached to that original call, not recomputed from today's library. See [snapshot_lifecycle.md](snapshot_lifecycle.md).
 
-## 7. Compatibility
+## 7. Historical input formats
 
-- A legacy `predict_outcome` call with `context=False` still produces its pre-phase-2 request shape (`action_spec`, `state`, the pre-existing `prediction_reliability` block). That path is only reachable through the Python API now — it is the record reader's substrate, not a prediction channel.
-- Stored predictions written before this phase remain readable: they simply have no `prediction_context_id`.
-- `recall` gained a `task_digest` field. It is additive.
-- The new `prediction_contexts` table is created idempotently alongside the others; no existing table is rewritten and no schema version token moved.
-- The phase-1 fixes are untouched: a configured provider with no predicted content is still `contract_only`; a legacy `ActionSpec` still carries its execution `params` verbatim and still refuses an unmappable `measurement_scope`; an unfinished window is still not `comparable`.
-
----
-
-## 8. What is NOT here
-
-- **The legacy `predict_outcome` protocol is unchanged** for the records it already wrote: the payload shape it produced is what the contract reader still parses. It is no longer an agent-facing prediction path — `plan-next` (wm-so/1) is the public scored entry — so the two never compete for the same decision.
-- **Capability evolution is a separate service.** Its contract and service live in [`references/world_model_contract.md`](world_model_contract.md); the input context described here is shared with it.
-- **No autonomous reviewer.** Close-out dispatches frozen jobs; the outer agent submits their conclusions.
-- **No capability evaluation system, no H score, no latent vectors.**
-- **No training** of a model, a prediction head or a retriever.
-- **No new semantic extractor, no retrieval rework**: the two existing channels are wired in, not replaced, and no composite retrieval score is introduced.
-- **No replacement** for the existing structural bins, unknown-matching rules, U scorer or author-led publication choice.
-- **No new autonomous agent and no background loop.**
+Stored records use their recorded input format. Older predictions may lack `prediction_context_id`; the contract reader retains their original payload shape. See [snapshot lifecycle](snapshot_lifecycle.md#compatibility-and-model-input-changes) for stored context recovery.
 
 ## Short versioned rule views
 
-Structural recall, vector recall and normal world-model knowledge views share the v2 active-version predicate. Candidate/suspended versions remain inspectable for induction and targeted trials; pending revisions preserve the active body. Short bodies carry version/body references; long legacy prose/logs use detail references. Small historical unversioned views retain their semantics. Actual adoption freezes `entry_id@version`; later checks do not read a newer body. Reading/recall never establishes use, faithful execution or comparative advantage.
-
-Existing runtime wording is retained in this documentation change: the system prompt allows unsupported G to be omitted, and a frozen retrieval note can still use the older phrase "admission verification passes." Short views also retain their stored/default verification labels. Read the actual version's `published` state and declared verification scope; that wording does not introduce a compulsory third-task/transfer/boundary/regression checklist. Cold-start prompt policy and projection defaults are separate implementation work, not changes made by this walkthrough.
+Structural and vector recall and the provider view use the active published rule version. Short bodies carry exact version and body references; expanded historical payloads use detail references. Inspect candidate and suspended versions when reviewing rules. Use the [adoption guide](induction.md#existing-entry-use-and-utility) to record the version actually used.

@@ -176,7 +176,6 @@ G=0.9、技术 R=0.1；同一候选同维度使用同一尺度的 C 和 U 保持
 - [references/examples/unified_solving.py](../../references/examples/unified_solving.py)
 - [references/examples/usage_accounting.py](../../references/examples/usage_accounting.py)
 - [references/examples/versioned_induction.py](../../references/examples/versioned_induction.py)
-- [references/hplus.md](../../references/hplus.md)
 - [references/induction.md](../../references/induction.md)
 - [references/strategy_outcome.md](../../references/strategy_outcome.md)
 

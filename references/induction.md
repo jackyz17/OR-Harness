@@ -1,17 +1,25 @@
-# Agent-led induction and existing-entry management
+# Offline induction and existing-entry management
 
-Follow [the six-step solving workflow](../SKILL.md) through `plan-next`, execution, checking, recording and close-out. G/C/R selects solving methods; the frozen H+ decides whether an actually executed candidate requires a new review. The agent compares cases, states the reusable method and chooses its publication scope. The framework retains facts, immutable versions, receipts and retry identity.
+Use this guide to turn completed executions into reusable methods and manage existing rules. The agent compares cases and chooses the rule's publication scope. Follow [SKILL.md](../SKILL.md) to solve and close the task.
+
+## When to start induction
+
+`plan-next` freezes a candidate's H+ decision before execution. The same world-model response carries `capability_gain.decision` as the JSON number 0 or 1 (`wm-hplus-binary/1`). G/C/R determine U. With H+ = 1, use `claim` to name a reusable increment or boundary and `verification_conditions` to name a concrete fact that can be checked. With 0, explain the reason in `basis`. Judge the increment relative to the prediction-time library, including adaptations of existing methods.
+
+Carry the frozen condition into the solve and collect actual method receipts, artifacts, and task checks. Optional `check-task.hplus_verification` records the original prediction ID, condition index, source, and evidence references. An unfinished check leaves the condition unknown.
+
+When building the library, close-out schedules one review per bound executed positive prediction and episode, including failed attempts and incomplete verification. Executed H+ = 0 attempts remain available as evidence for other reviews. Unexecuted candidates remain unobserved. Missing and invalid signals schedule 0 with distinct diagnostics. A valid positive still requires review when its explanatory fields are incomplete.
 
 ## Take a required review
 
-`close-episode` returns J in `result.induction_schedule.pending_ids`. The outer building agent consumes it; close-out does not write a rule. Actual H+=1 needs a review even after failure or insufficient checks. H+=0 preserves ordinary execution/use facts and skips new induction. Unexecuted candidates stay unobserved. Missing/invalid signals schedule 0 with separate diagnostics; historical signals keep their original meanings.
+`close-episode` returns each required review's ID J in `result.induction_schedule.pending_ids`. Use J when reading material and submitting the review.
 
 ```bash
 orx induction-status --task T --episode EP
 orx induction-material --induction-id J
 ```
 
-Keep the same J after interruption and for an identical submission retry. The framework associates its material session, actual induction action, prediction and receipt; repeat close does not dispatch a second copy. `process_induction_jobs(reviewer, ...)` is the equivalent Python callback handoff. Before starting the next training task, finish required reviews and check `result.completed` from `induction-status`.
+Recover pending IDs with `induction-status` after interruption. Repeated close returns the still-pending IDs without creating new jobs. Python building runners can use `process_induction_jobs(reviewer, ...)`. Finish required reviews before starting the next building task.
 
 ## Read material and choose comparisons
 
@@ -34,6 +42,8 @@ orx induction-material --induction-id J --cursor CURSOR_FROM_BUDGET
 
 Every pending material call queries current evidence. Purpose/query/case IDs may change while the trigger and J remain fixed. The default whole result/CLI envelope is bounded at 32,000 characters (`OR_HARNESS_INDUCTION_MATERIAL_CHARS`). A large value may become a whole-value reference; follow its inspect hint. Source overlap and original-input identity are advisory. The agent decides which methods, assumptions, checks and measurement conditions can be compared.
 
+For closed cases, use available reference answers, checker results, and user feedback as post-answer evidence. Identify their source and the part of the outcome they establish. Pair a numerical comparison with the task checks or derivation needed to justify a broader claim.
+
 ```bash
 orx inspect --bank experience --execution EX_A
 orx inspect --bank strategic --entry ENTRY --rule-version candidate
@@ -44,7 +54,7 @@ Pending jobs hold necessary execution facts across ordinary eviction/restart. Co
 
 ## Complete review submissions
 
-This is the canonical full submission example and its two empty-review branches. [SKILL.md](../SKILL.md) and [hplus.md](hplus.md) link here instead of maintaining separate commands.
+Submit a new or revised rule, a supported conclusion that the library already covers the method, or an insufficient-material review according to the evidence.
 
 ### A/B setup and ID sources
 
@@ -91,7 +101,7 @@ orx induce --induction-id J \
 
 `--relation` retains `when / do / expect`, evidence and the author's publication choice. `--review` retains the real comparison and knowledge increment for training. A substantive new/revised version with valid support can yield learning label 1. Publishing alone does not produce that label.
 
-For an explicit revision, keep the existing number: add `"entry_id":"ENTRY","operation":"revise"` to the full relation and use `"outcome":"revised"`. The framework assigns a new immutable version; the old active version remains offered while a revision is candidate. `operation:"merge"` additionally names `merge_entry_ids` and `merge_reason`; the agent chooses the target. Safe exact/formatting repeats reuse the existing body/version.
+For an explicit revision, keep the existing number by adding `"entry_id":"ENTRY","operation":"revise"` to the relation and `"outcome":"revised"` to the review. The existing active version stays available while the revision is a candidate. `operation:"merge"` names the target, `merge_entry_ids`, and `merge_reason`. Source rules stay available until that target version is published. Exact repeats and safe formatting changes reuse the existing body and version.
 
 ### Already covered or no reusable increment
 
@@ -135,9 +145,17 @@ This finishes the required review with a receipt and an unknown learning observa
 | Are required jobs settled? | `induction-status`: `result.completed` / `result.pending_ids` | No pending reviews; neither mathematical correctness nor a positive learning label is implied |
 | What was learned with support? | `induction-status`: `result.observation_counts` | `positive`, `negative`, `unknown`, and `bound_attempts`; these are review observations, not counts of H+=0 predictions |
 
-A prediction H+=0 skips new induction. Learning label 0 comes from a real supported review. Existing cases plus reliable derivation, artifact inspection or small executable checks can support a scoped cold-start publication and substantive learning positive. There is no uniform third-task, boundary or regression prerequisite. Subsequent transfer, boundary and regression observations each retain their actual scope and adopted version. A refuted learning hypothesis can still produce a useful boundary rule.
+A `wm-hplus-review/2` receipt retains the original hypothesis, actual induction action, conclusion, supporting evidence, and exact rule versions. Its learning observation comes from the review's `outcome` and `comparison` or the rule's `mechanism_comparison`.
 
-Rules, action links, receipt references and pending index work commit together. A committed result with `index_sync.state:deferred` needs index repair, not a second review. Repeat the identical original submission to recover the same action/receipt and retry indexing; a different submission against a completed job is a conflict. No model authors the rule or performs a hidden second induction call.
+| Learning label | Support |
+|---|---|
+| `1` | A substantive new or revised rule body, a sourced conclusion, and valid supporting evidence |
+| `0` | A sufficient, sourced comparison showing `already_covered` or `no_increment` relative to the prediction-time library |
+| Unknown | Insufficient material, unavailable support, unexecuted work, or a review without a supported conclusion |
+
+`result.signal_counts` tracks prediction-time decisions and diagnostics separately from these observations. Publication and the hypothesis verdict also have their own fields. A refuted hypothesis can yield a supported boundary rule. Use recorded checks by default, `basis:"derivation"` for a derivation over cited inputs, or `basis:"artifact_inspection"` for captured artifacts. Use resolving references such as `task_check.*` or `artifacts.*`. Existing cases with a reliable derivation or small executable checks can support a scoped cold-start rule. Record the scope of later transfer, boundary, and regression checks separately.
+
+The relation's `induction_id` or material session associates it with J, including for `add_evidence`. Ownership is checked before writing. Rules, action links, receipt references, and pending index work commit together. For `index_sync.state:deferred`, repeat the identical submission to recover the same action and receipt and retry indexing. A different submission against a completed job is a conflict.
 
 ## Existing-entry use and utility
 
@@ -177,4 +195,12 @@ A solver status, a reference objective comparison and a method derivation answer
 
 The agent chooses cost baselines, comparability and causal interpretation. Optional `comparator_execution_id` / `cost_dimensions` return actual methods, conditions, acceptance, values and provenance, without searching for a baseline or declaring a winner. Measured, estimated, partial and unknown costs remain distinct. An expired optional baseline returns `cost_comparison.state:unavailable` and its reason without blocking ordinary close-out; explicit validation with an invalid comparator is a correctable input error.
 
-`exclude-execution` / `restore-execution` alter evidence validity, not rule publication by themselves. A real failed attempt remains useful contrast. Corrections may change support in later receipt observations, while original checks, versions and issued prediction inputs remain auditable. Evidence expiry is not refutation. A utility retirement does not itself revoke an earlier supported learning increment. See [hplus.md](hplus.md) and [prediction_context.md](prediction_context.md) for the next decision's feedback.
+`exclude-execution` / `restore-execution` change evidence validity and which facts support a later observation. Retain failed attempts as contrast. A late check can supply missing support, and withdrawn or excluded sole support makes the observation unknown. Original checks, versions, and issued prediction inputs remain auditable. Rule publication and retirement are explicit author decisions.
+
+## Learning feedback and experiment modes
+
+The next `plan-next` in the same memory home selects applicable settled receipts from before its decision cutoff. See [prediction input audit](prediction_context.md#audit-what-the-next-provider-actually-received) to trace which feedback reached the provider.
+
+New ordinary prediction homes use H+ automatically. Use global `--induction-mode hplus` or `OR_INDUCTION_MODE=hplus` to set the building mode explicitly. H+, NoH+, and random controls use separate homes. NoH+ opportunity reviews use the prediction-time library. Drain required jobs before freezing the library. For execution isolation in fixed-memory tests, follow [the per-question copy procedure](snapshot_lifecycle.md#fixed-memory-testing-with-per-question-copies).
+
+Historical capability and effect records retain their original contracts. `evaluate-capability` measures later performance through its separate protocol. The review labels above measure a supported learning increment from the actual induction.

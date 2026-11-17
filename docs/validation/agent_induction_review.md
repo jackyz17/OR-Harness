@@ -3,7 +3,7 @@
 评审基线：`main@40581f75277365d49adcd787162d064165c4031f`。
 本轮按更新后的要求替换该提交中强制发布、材料缓存及自动状态迁移的行为。
 `review_eight.md` / `review_eight_demo.json` 保留为该旧提交的历史验收，现行用法以
-本文、`SKILL.md`、`references/induction.md`、`references/hplus.md` 和命令说明为准。
+本文、`SKILL.md`、`references/induction.md` 和命令说明为准。
 
 服务器工作目录没有可用 Git 元数据：实际运行 `git status --short`、
 `git rev-parse --short HEAD` 均返回 `not a git repository`。通过 GitHub 连接读取

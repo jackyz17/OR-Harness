@@ -20,8 +20,8 @@ Read [SKILL.md](SKILL.md) to complete one task in six steps:
 |---|---|---|
 | 1 | Prepare/reuse `task.json`; `profile` and `recall` | Structure, CIR health, applicable rules and real cases |
 | 2 | `plan-next --task task.json --episode EP --candidates candidates.json` | `selected_prediction_id`, `selected_score`, per-candidate reasons |
-| 3 | `execute --prediction P`, `check-task`, `record --from-staged EX` | Real attempt, declared acceptance scope and measured resources |
-| 4 | `close-episode --task T --episode EP --terminal ...` | Published calibration and `induction_schedule.pending_ids` |
+| 3 | Execute, check the original task, and record each attempt | Execution result, check coverage, and measured resources |
+| 4 | Commit the answer and run `close-episode --task T --episode EP --terminal ...` | Published calibration and `induction_schedule.pending_ids` |
 | 5 | `induction-material --induction-id J`, then one review submission | Rule/publication choice and an actual review receipt |
 | 6 | Adopt `ENTRY@VERSION`, check/record/close, then plan the next task | Versioned use, optional utility management and relevant feedback |
 
@@ -57,8 +57,7 @@ The first two exercise normal CLI planning, execution, checking, recording, clos
 | Minimal input, modeling representation and CIR | [modeling.md](references/modeling.md) |
 | U permission, G/C/R, resource scales, missing terms and budgets | [strategy_outcome.md](references/strategy_outcome.md) |
 | Acceptance scope, terminal states, calibration and H+ dispatch | [episode_closeout.md](references/episode_closeout.md) |
-| Full review submissions, publication, adopted use and utility | [induction.md](references/induction.md) |
-| Frozen H+ scheduling, receipts and learning labels | [hplus.md](references/hplus.md) |
+| H+ review dispatch, submissions, learning receipts, and rule management | [induction.md](references/induction.md) |
 | Next-task evidence, request budgets and frozen feedback audit | [prediction_context.md](references/prediction_context.md) |
 | Input lifetime, historical reading and optional cleanup | [snapshot_lifecycle.md](references/snapshot_lifecycle.md) |
 | Design and serialized contracts | [concepts.md](references/concepts.md), [world_model_contract.md](references/world_model_contract.md) |
@@ -70,7 +69,7 @@ PYTHONPATH=src python3 references/examples/_check_docs.py
 PYTHONPATH=src:tests/harness python3 -m unittest discover -s tests/harness -q
 ```
 
-Existing synthetic and H+/NoH+/random experiment entry points remain available; their protocol, splits and large frozen evaluations are separate from this documentation work. See [hplus.md](references/hplus.md) and [snapshot_lifecycle.md](references/snapshot_lifecycle.md) for their current scope.
+See [H+ experiment modes](references/induction.md#learning-feedback-and-experiment-modes) and [fixed-memory testing](references/snapshot_lifecycle.md#fixed-memory-testing-with-per-question-copies) for the available experiment paths.
 
 ## License
 

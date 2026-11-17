@@ -10,7 +10,7 @@
 
 完整实测、版本检查、实际方法/采用记录、工件摘要和真实请求片段保存在
 [hplus_binary.json](hplus_binary.json)。操作与外层交接说明见
-[hplus.md](../../references/hplus.md)。
+[归纳手册的 H+ 交接说明](../../references/induction.md#when-to-start-induction)。
 
 ## 实际接入
 

@@ -50,11 +50,7 @@ Reading or reusing a released/expired input raises `ContextExpired` (`StorageErr
 
 A strategy provider call saves an `invalid` prediction with `call_state=in_flight` before starting, under the same prediction ID that the returned result will update. A process interruption therefore leaves an honest unknown result/usage and durable conditions. Successful and failed responses preserve real usage and all identity/request references on their first returned-result save. No automatic retry is implied by an interrupted call.
 
-## Audit next-task feedback
-
-In the same home, the next `plan-next` automatically reads the published applicable calibration, recalled rule views and settled H+ receipts available at that decision's cutoff. Later checks/rules do not rewrite the old input. A stored feedback reference establishes availability, not that the provider saw its full body.
-
-Use `orx inspect --bank predictions --prediction P` to read `result.prediction.prediction.trace.model_info.request_omissions`. Use `orx context --context-id CTX --audit` to read frozen feedback references even after the working input expires or is released. Budget trimming can omit a receipt kept in that manifest; missing feedback in a provider request does not prove no review occurred. Source and omission references keep these two questions inspectable.
+Use the [provider-request audit](prediction_context.md#audit-what-the-next-provider-actually-received) to distinguish a stored manifest from the evidence sent to a model.
 
 ## Compatibility and model-input changes
 
@@ -62,29 +58,24 @@ Existing `wm-context/3`, execution payloads and full legacy snapshots remain rea
 
 Condition lookup prefers new frozen facts, then the original stored legacy data. Budget comparison prefers the prediction's `frozen_budget_state` and falls back to its condition/snapshot reference. Problem binding uses each execution's own precondition identity. Internal CIR remains absent from provider input. Unknown historical text, budget, knowledge availability or actual method is not filled from today's values. An untimed legacy execution carries `execution_features.created_at_unknown`; its numeric timestamp is only a serialization sentinel, and H+ needs an observed record/action time. Missing budget history withholds probability scoring while retaining real cost/masks; an explicitly undeclared budget is distinct from missing history. A missing requested task-text version is not replaced with another version.
 
-Storage and input projection are validated separately:
+The provider view carries a compact `validity_correction_summary`. The published diagnostics and individual evaluation records retain full corrections. See [the validation report](../docs/world_model/snapshot_lifecycle_implementation.md) for storage and projection regression coverage.
 
-- A: storage decoupling. The fixed-memory fixture compares actual retrieval identities/content, candidate statistics, targets and key provider fields with the captured local v3 baseline, ignoring only generated identities/times, the declared context schema version and the separately tested diagnostic projection.
-- B: calibration diagnostic projection. Context/model input carries `validity_correction_summary` (count, kinds and field counts) rather than complete `validity_corrections`. Counts describe the published population before candidate filtering. Individual stored/derived evaluations and the published diagnostic summary retain full corrections independently.
-- The legacy `predict_outcome` writer also projects its state to candidate-related knowledge/statistics and omits growing support ID lists. That changes legacy provider input; it does not change how old predictions are read. The current `wm-so/1` provider never needed the complete stored snapshot.
+## Fixed-memory testing with per-question copies
 
-Model/metric/unit/scope/observation-version isolation, per-field eligibility, windows and sample thresholds remain unchanged. Request diagnostics measure characters, not tokens. This change does not promise identical stochastic model responses or reduced request size on every fixture.
-
-## Existing fixed-memory testing with per-question copies
-
-This section records the existing optional experiment operation; the normal solving walkthrough does not require library copies or change frozen-evaluation protocols. Finish building the base and stop writing to it, including index updates. Create a fresh home from the same base for every test question:
+Finish building the base and stop writes to it, including index updates. Create a fresh home from the same base for every test question.
 
 ```bash
 orx --home /work/fixed-base fork-memory --destination /work/test-A
 orx --home /work/test-A plan-next --task A.json --episode test --candidates candidates-A.json
-# execute, check-task, record and close-episode all use /work/test-A.
-# Retries for A continue in this same home and inherit A's progress/budget.
+# Use /work/test-A for execution, task-derived checks, retries, recording, and close-out.
 
 orx --home /work/fixed-base fork-memory --destination /work/test-B
-# All B operations use /work/test-B, never /work/test-A.
+# Use /work/test-B for B's solving episode.
 ```
 
-`fork-memory` refuses an existing destination and copies the database through SQLite's consistent backup API, including WAL data. It copies the base index, archives and immutable artifacts. Source schema/history is not initialized or rewritten. The source must be quiescent so the copied sidecar indexes describe the same fixed base. A normal home remains writable within a question; do not merge test results into the base. Only disabling induction does not freeze retrieval, statistics, consultation metadata or published feedback.
+Lock each question's final answer before reference scoring. Keep reference inputs and scoring results in the evaluator. The question's home carries its own progress and budget while preserving isolation from the base and other test cases.
+
+`fork-memory` requires a new destination. It uses a consistent SQLite backup, including WAL data, and copies the matching index, archive, and immutable artifacts. Keep the source quiescent so the sidecar indexes match the base database.
 
 ## Explicit old-view cleanup
 

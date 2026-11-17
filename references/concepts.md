@@ -68,9 +68,7 @@ A retrieved item keeps its evidence status. `--memory-mode none` clears structur
 
 When memory offers no relevant experience, report that absence and reason from the current problem to propose a fresh strategy. The framework supplies no built-in method menu and no fabricated historical score for that proposal. An empty bank is a reported state, never a gate: with no prior knowledge, solve the task and its own evidence becomes the first material, and you are never required to publish a first entry. Keep uncertainty explicit and obtain evidence through execution.
 
-Adoption, recall and outcome are kept apart. Being recalled (surfaced at decision time) is not adoption; adoption is the agent DECLARING the entry numbers a run relied on (`--used-entry-ids`); the outcome is that run's own result. Prefer explicit `ENTRY@VERSION`; inspect an unversioned hit before adoption. Utility `keep` leaves status unchanged, `demote` suspends the selected version and `retire` archives the entry. A `refuting` effect without `lifecycle_action` currently defaults to demotion; ordinary use/checks are separate. Attribution is by NUMBER, never by a shared method name: an entry named `method:monotone_reduction` adopted by a run named `milp_pulp_cbc` is still tied to the run. The framework never counts a mere recall — or a shared name — as reuse succeeded.
-
-A further distinction: the adoption record and its outcome accumulate independently of prediction CALIBRATION. A hit/miss is computed only when the entry DECLARED a prediction and the run observed a quality; an entry with no declared prediction is never scored against a default interval, and an execution failure is not automatically a counterexample to the knowledge — whether a failure refutes a claim is the agent's analysis, not an automatic verdict.
+Recall makes an entry available for inspection. Actual adoption connects an exact rule version to a real attempt, and task evidence supports judgments about its effect. An entry's declared effect is evaluated against outcomes within its scope. See [rule adoption and utility](induction.md#existing-entry-use-and-utility) for recording and updating those judgments.
 
 Task texts and embedding indexes support discovery within these two layers. They do not form another bank of outcome facts or strategic beliefs.
 
@@ -82,11 +80,7 @@ The world model provides a unified conditional forecast:
 
 A candidate specifies the proposed method and execution conditions. The predictor estimates their consequences: likely solution quality, required resources, failure risks, and potential learning. Solver/configuration choices are candidate inputs whose effects are assessed.
 
-Use `plan-next` to predict G/C/R/H+ and score U for one or more candidates under one frozen context before execution. The benefit field G is original-task acceptance probability given faithful implementation; C is raw remaining resource use; scored R is one attempt's technical implementation/execution failure probability. Historical experience describes observed cases; the forecast addresses the proposed action in the current context. The agent proposes and may revise methods; formal execution consumes only the saved finite-U permitted selection. A valid forecast, manual choice or later binding cannot create that permission. H+ is independent of U.
-
-The default comparison uses quality, cost, and risk. H+ controls post-task induction investment and states what the action might teach and how to check it. It is not a measured reward or an automatic utility bonus. Adding an entry or predicting a benefit does not establish capability improvement.
-
-A shadow configuration records forecasts without consuming them for selection. This is a diagnostic or ablation configuration; decision support is the world model's role in the main loop.
+G estimates original-task acceptance given faithful execution. C estimates the resources needed, and R estimates technical failure risk. U uses these estimates to compare current proposals. The candidate's H+ hypothesis identifies what its execution might teach a later review. See [scored selection](strategy_outcome.md) and [H+ review dispatch](induction.md#when-to-start-induction).
 
 ### Prediction and observation
 
@@ -141,4 +135,4 @@ Revisions may strengthen, narrow, merge, or retire knowledge. A relevant counter
 
 Keep evidence retention and belief revision separate. Complete old episode chains may leave a bounded evidence window after closeout processing. Expiry is a storage event, not a refutation; retained claims keep their content and verification scope. An expired reference cannot substitute for fresh support when revising a claim. Retirement and cold-archive policies prevent an unchanged failed pattern from repeatedly reappearing.
 
-For binary H+ training feedback, an actual new/revised rule plus a sufficient sourced substantive-increment review and valid evidence supports a positive within its scope. Derivation or small executable checks may support this without a mandatory third independent task, boundary test and regression suite. A sourced sufficient comparison establishing coverage/no usable increment is a negative; insufficiently supported or unexecuted work remains unknown. A refuted hypothesis may yield a valuable boundary rule. Separate later-performance claims require actual adopted versions, execution/checker coverage and comparable observations; cost savings require measured paired conditions. Legacy delayed-effect evidence retains its original meaning.
+Selective induction directs review toward new methods or boundaries that real executions can support. Reviewed evidence shapes subsequent predictions through [learning receipts](induction.md#read-publication-completion-and-learning-separately).

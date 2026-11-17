@@ -15,8 +15,8 @@ Read this page when you need an exact field definition, a status value, or the m
 
 | You want to… | Use | What you must supply | What you get |
 |---|---|---|---|
-| Ask what a candidate strategy would produce | `orx contract --kind strategy_outcome` / `ORHarness.build_strategy_outcome_contract` | a task JSON + a candidate (strategy id, optional solver/config/scope) | a `StrategyOutcomePrediction` |
-| Ask what a learning operation would change | `orx contract --kind capability_evolution` / `ORHarness.build_capability_evolution_contract` | a learning operation (`induce` / `revise` / `reverify` / `retire`) + a horizon | a `CapabilityEvolutionPrediction` |
+| Inspect a candidate's prediction contract | `orx contract --kind strategy_outcome` / `ORHarness.build_strategy_outcome_contract` | a task JSON + a candidate (strategy id, optional solver/config/scope) | a `StrategyOutcomePrediction` contract |
+| Inspect a learning operation's contract | `orx contract --kind capability_evolution` / `ORHarness.build_capability_evolution_contract` | a learning operation (`induce` / `revise` / `reverify` / `retire`) + a horizon | a `CapabilityEvolutionPrediction` contract |
 | Read a stored prediction | `orx contract --payload <json>` / `ORHarness.read_prediction_payload` | the payload | a version-identified view (current / legacy / unsupported) |
 | See what is known about harness capability | `ORHarness.capability_evidence` | nothing (task optional) | `HarnessCapabilityEvidence` — evidence, **no score** |
 | See the real scope a strategy occupied | `ORHarness.strategy_execution_window` | task id (+ episode, strategy) | `StrategyExecutionWindow` with a `comparable` flag |
@@ -49,10 +49,10 @@ Answers: *under the current problem (P), solving context (X) and harness capabil
 |---|---|
 | `candidate` | `CandidateRef`: strategy id, solver, config, preconditions, expected scope, stop conditions, and `scope` |
 | `benefit` | `BenefitEstimate` — the gain, **with its metric, unit and baseline** |
-| `cost` | `ExpectedCost` — the `CostVector` consequence of the candidate, with its measured mask |
+| `cost` | `ExpectedCost` — raw `CostVector` resource predictions. `expected_measured` marks supplied predictions; observed costs come from execution evidence |
 | `risk` | `RiskStatement` — named events; scored R is only `implementation_failure.probability`, separate from cost |
-| `uncertainty` | `UncertaintyStatement` — execution randomness vs knowledge gap |
-| `capability_gain` | Same-call binary `decision` (JSON 0 or 1), one `claim` hypothesis and one `verification_conditions` check for 1, or one reason in `basis` for 0. `applies_to` and per-metric expected changes preserve their units. Framework-frozen `trace.model_info.hplus` is authoritative for scheduling; missing/illegal values schedule 0 with diagnostic status, distinct from explicit 0. It never enters strategy utility. Old `assessment`/missing records keep their old semantics; see [hplus.md](hplus.md) |
+| `uncertainty` | `UncertaintyStatement` — execution randomness and knowledge gaps. `model_self_report` records the model's uncalibrated assessment |
+| `capability_gain` | Same-call binary `decision` (JSON 0 or 1), `claim`, `verification_conditions`, `basis`, `applies_to`, and per-metric expected changes with their units. Scheduling reads the frozen `trace.model_info.hplus`. See [H+ and review handoff](induction.md#when-to-start-induction) |
 | `trace` | `PredictionTrace` — version, input, evidence, unsupported fields, call cost |
 
 **Benefit is not one arbitrary 0–1 score.** `benefit.kind` says which currency you are in:
@@ -66,17 +66,17 @@ Answers: *under the current problem (P), solving context (X) and harness capabil
 
 `benefit.value` requires a `baseline` — a gain with nothing to measure it against is not a prediction. `benefit.value = None` means **unknown**, and that is a first-class state: it is not zero, and it is not "no gain".
 
+Supply a normalized value in `[0,1]` for `solution_quality`. Business objective values belong to task outcomes. For an interval, `interval_kind` distinguishes an `outcome` for one run from a `mean` over runs, and `interval_coverage` gives its nominal coverage when available. Missing kinds remain unstated. An effective-completion probability describes a mean over runs.
+
 New strategy requests default to `effective_completion/task_check_passed_given_faithful_execution`, unit `probability`, with `BenefitEstimate.observation_rule_version="wm-g-faithful/1"`. This is P(original-task acceptance | faithfully implement the candidate steps, under the agreed solving conditions). Method omissions remain omissions. The finite JSON numeric value must be in [0,1]; bool/string values are unavailable. The framework fixes convention/scope before the call; a response mismatch makes G unavailable with a reason while preserving valid C/R and the explanatory sentence in `benefit.notes`. This sentence identifies a decisive task condition, candidate operation and expected consequence, or missing evidence, and survives a missing numeric value.
 
-The new observation adapter requires sourced fidelity and original-acceptance coverage: faithful+pass=1; faithful+verified method-caused failure=0; implementation deviation, method change, insufficient acceptance, no evaluable result or unclear attribution=unknown. The optional `check-task.g_attribution` assessment cites execution code/result references; a matching receipt or `failed` checker by itself supplies no new G label. See [evidence schema](episode_closeout.md#g-attribution-evidence).
+Use the [G attribution evidence](episode_closeout.md#g-attribution-evidence) to connect the recorded code and original-task checks to the G observation.
 
 Old forecasts and explicit old conventions retain their original meanings, units and observation channels. An absent `observation_rule_version` is never silently upgraded. In particular `normalized_objective_gap` still measures the solver's own `max(0,1-gap)`, and `task_result_check_passed` retains the legacy completion rules.
 
 **R: one-attempt technical failure.** New requests fix `risk_convention` to `implementation_failure`, `unit=execution`, `scope=attempt`, `observation_rule_version=wm-r-technical/1`, saved in `trace.model_info`. Only that event's finite JSON numeric probability in [0,1] participates in scoring. Missing, boolean, string, duplicate or invalid probabilities become unavailable with an unsupported reason; explicit 0 remains valid and valid G/C survive. Timeout, environment failure, budget exhaustion, solver infeasibility and task-check events remain diagnostics and never replace R.
 
-Technical labels use the bound attempt's executor receipt, captured exception and result-protocol checks: clear code/API/process/protocol failure=1; normal protocol-valid completion (including `infeasible`)=0; external blockage, normal timeout or insufficient attribution=unknown. A later repaired attempt has its own label. Legacy predictions keep legacy labels, and their errors are not pooled with the new R version. Business constraint omissions remain separate semantic evidence for G.
-
-**Shared scoring basis.** Among comparable candidates actually ranked, R is included only if all have valid implementation probabilities. C uses the intersection of valid `expected_measured` dimensions at the same measurement scope, followed by component deduplication. All candidates use the same dimensions, existing weights and scales; explicit zero is valid. Empty cost intersection marks C incomparable. Omitted C/R terms are omitted for everyone, with original values and reasons preserved in `score.scoring_basis`, `cost_reported` and `risk_probability`.
+See [technical R observations](episode_closeout.md#technical-r-observations) for executor evidence and [candidate scoring](strategy_outcome.md#3-score-one-or-more-candidates) for the shared U basis.
 
 
 ### 2.2 `CapabilityEvolutionPrediction` — harness capability evolution
@@ -166,7 +166,7 @@ For strategy-outcome C, the default measurement window is the shared decision an
 | Value | Means |
 |---|---|
 | `draft` | being built, not yet validated |
-| `contract_only` | **the contract is implemented, no prediction was made** — this build's state, and also the state whenever a provider is configured but produced nothing |
+| `contract_only` | The contract is available and this request produced no prediction |
 | `valid` | a real prediction, produced and validated (requires `service_available=true` **and** predicted content) |
 | `unsupported` | the request is outside the supported prediction path; nothing was predicted |
 | `invalid` | a prediction was attempted and failed validation |
@@ -234,19 +234,8 @@ Use `prediction_kinds_for_mode(mode)` to get the contract kinds for a mode progr
 
 ---
 
-## 8. Not implemented in this build
-
-The contract is one phase of a larger reconstruction. These are deliberately absent, and none of them may be described as done: no semantic extractor and no retrieval rework; no task-closing scheduler and no automatic offline learning schedule; no H evaluation system and no universal H score; no multi-step latent rollouts; no model fine-tuning or training; no renaming of the existing action vocabulary (the six action types stay); no revival of the retired `understand` action; no replacement of `BudgetLedger`.
-
-One legacy path survives read-only: the `predict_outcome` payload reader serves OLD records, while `wm-so/1` ([strategy_outcome.md](strategy_outcome.md)) is the path every agent-facing flow uses.
-
-Related pages: the frozen input context is [prediction_context.md](prediction_context.md), the strategy-outcome service is [strategy_outcome.md](strategy_outcome.md), the close-out and calibration rules are [episode_closeout.md](episode_closeout.md), and every command is in [commands.md](commands.md).
-
-
-Prediction input storage and compatibility are defined in [snapshot_lifecycle.md](snapshot_lifecycle.md). New predictions retain identity, real/hypothetical source, frozen budget conditions, actual selection/version references, prompt version and request/omission diagnostics across success, failure and interruption. Binding and budget evaluation do not require a full snapshot. Individual evaluations and published corrections remain independently auditable; model input uses correction counts/field summaries instead of full correction details. H+ availability remains separate from actual adoption and effectiveness.
-
 ## Versioned strategic rules (`or-rule/2`)
 
 New root rows store active/candidate pointers and state; immutable condition values hold canonical when/do/expect bodies, assessments and decisive facts. Separate `rule_versions`, `rule_checks` and `rule_events` tables associate validation, use, effects and explicit aliases with exact versions. Numeric predictions retain their contract and absence semantics. Maintenance deltas name resolved evidence and committed updates. Adoption snapshots freeze immutable knowledge references rather than live entry lookups.
 
-Default `induction-material/2` and rule recall use short views, whole-value detail references and historical-state markers. The normal material budget counts the entire serialized JSON, including the CLI envelope. Old unversioned JSON retains its original semantics; newly submitted old-style relations become v2 candidates. New `execution-evidence/2` storage codes fixed boilerplate and deduplicates the performed-method receipt; audit decoding preserves runtime values, source/conflicts, missing predictions and cost masks/zero/scope. No bulk migration or cleanup runs implicitly.
+`induction-material/2` and recall expose short views and whole-value detail references. See [induction material fields](induction.md#read-material-and-choose-comparisons). Historical unversioned rows retain their scope, and new submissions in the old relation format become v2 candidates. `execution-evidence/2` stores shared descriptions and deduplicates the performed-method receipt. Audit decoding preserves runtime values, provenance, prediction and cost coverage, and explicit zeroes.

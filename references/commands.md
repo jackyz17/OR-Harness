@@ -1,53 +1,12 @@
-New `--induction-mode hplus` (or `OR_INDUCTION_MODE`) fixes a memory home's binary building mode; new ordinary prediction homes enable it automatically. Explicit NoH+ and random controls use separate homes, and frozen testing refuses new induction. The outer agent drains close-out's required jobs; a task close alone is not building completion. See [hplus.md](hplus.md).
-
 # Command reference
 
-For a cold first proposal, the normal runner can pass known execution conditions before any action is recorded:
-
-```bash
-export OR_EXECUTION_CONTEXT='{"host":"my-runner","model":"actual-executor-model","agent_id":"runner/v1","solver_interface":"highs","phase":"initial_modelling","source":"runner_configuration"}'
-orx plan-next --task task.json --candidates candidates.json --episode ep1
-# Or: orx --execution-context runner.json plan-next ...
-```
-
-`OR_EXECUTION_CONTEXT` accepts inline JSON or a file (`@file` also works). The global CLI flag overrides the environment; Python uses `ORHarness(execution_context={...})`. Supply the actual execution model, independently of `--world-model`, and update the declaration when runner conditions change. Host/model/optional agent ID, known solver interface, phase and source are frozen with the snapshot and remain fixed for reused contexts. Missing information remains unknown. Applicable technical R history uses the execution agent and the interface actually recorded by past executions.
-
-C host-window evidence is optional on the existing reporting paths. `record --usage-file` and `amend-cost --usage-file` accept `or-host-usage/1` reports with explicit window/counter/call evidence (see [episode_closeout.md](episode_closeout.md)); wider scopes are stored as evidence beside the execution, preserving its attempt cost. Through the API use `report_action(..., host_usage=report)` or include the raw report in `action --report ... --outcome '{"host_usage": ...}'`. A `finish_task` report supplies an actual terminal event; `close-episode` publishes recorded evidence and supplies no substitute timestamp. Use `cancelled` action status with an `aborted` episode for a confirmed abort. The next prediction receives applicable raw `cost_evidence`; no additional prediction or feedback command is required.
-
-Use this page to look up command syntax, important outputs, side effects, and recovery steps. Follow [../SKILL.md](../SKILL.md) for the workflow, [concepts.md](concepts.md) for the design, and [induction.md](induction.md) for forming reusable knowledge. The command index is not a checklist: optional diagnostics, repairs, and maintenance do not belong in every solve.
+Use this page to look up syntax, outputs, and recovery steps. Follow [SKILL.md](../SKILL.md) for the solving workflow and [induction.md](induction.md) for review and rule management.
 
 Commands print one JSON line to stdout: `{"result": {...}, "summary": "..."}`. Exit codes: `0` success, `2` usage/precondition error, `1` crash. Read the result state as well as the exit code. All commands accept `--home DIR`, defaulting to `$OR_HARNESS_HOME`, then `./or_harness_home`.
 
 ## 1. Common paths and command index
 
-### Minimal shared task input
-
-Create or reuse `task.json` for interactive and batch commands:
-
-```json
-{"task_id":"endpoint-B","family":"assignment","text":"Minimize 2*X-5*Y for nonnegative integers X,Y, subject to X+Y<=641 and X>=2*Y+130. Return the optimum and X,Y."}
-```
-
-Reuse `--task task.json` through profile, recall, planning and execution. Keep the task ID and episode across repairs. Add a structured `spec` when available; place a CIR shared by subsequent commands in `task.json.coupling`. A CIR passed only to `profile --cir` is not implicitly reused by later commands. Close-out/status accept task IDs (T = `task_id`), while check/record use actual execution IDs. The full six steps are in [SKILL.md](../SKILL.md).
-
-For a new task, understand its structure with `profile`, inspect memory with `recall`, and propose candidate methods. Use the shared scored path for one or more candidates:
-
-| Stage | Call | Read |
-|---|---|---|
-| Score one or more proposals | `plan-next` | `result.selected_prediction_id` and its U |
-| Execute the selection | `execute --prediction P` | actual execution ID and binding |
-| Read an existing forecast | `inspect --bank predictions --prediction P` | stored generation and forecast; no provider call |
-
-Then write the chosen method's code, `execute`, `check-task`, and `record --from-staged`. Record failures too; inspect the reflection material and make a new decision when a repair is needed. At episode end, `close-episode` evaluates predictions and publishes calibration. Offline, `induction-material` supplies facts from which you form and submit a claim with `induce --relation`.
-
-Avoid duplicate work:
-
-- `plan-next` builds one frozen context shared by its candidates. Use `context` to inspect input; explicit context reuse is available through the Python prediction service.
-- Both one and multiple candidates use the same scored decision. Execute the returned selected prediction ID without another forecast.
-- `execute --prediction` establishes the prediction link before the run. Compatibility/recovery binding is documented below; it cannot authorize an unscored, unselected or already-consumed execution.
-- `predict-cost` is an optional historical cost baseline, separate from the world-model forecast.
-- `close-episode` publishes calibration and performs retention maintenance. Extra reads, rebuilds, or retention passes are for inspection and repair.
-- Direct `induce` and forecast-assisted maintenance are alternative paths. `accept-capability` already runs and binds the accepted operation; do not run it again through `induce`, `retire`, or `bind-capability`.
+Use the same task file through preparation, planning, and execution. See [task inputs](modeling.md#start-from-the-shared-original-input) for the minimum fields and optional model or CIR.
 
 | Purpose | Commands | Effects |
 |---|---|---|
@@ -81,8 +40,7 @@ Keep these boundaries throughout the calls:
 - A proposed method is a plan; an execution receipt reports what happened. A retrieval hit or a reuse citation does not establish successful transfer.
 - Missing values are unknown. Cost comparisons require compatible units, scopes, and measured dimensions; estimates and lower bounds are not complete observations.
 - Solver quality measures how well the model was solved. Task checks assess declared requirements of the original task. Knowledge verification covers the submitted assertions. These are separate judgments.
-- Freeze problem identity before choosing a strategy. CIR, structured `spec`, and declared annotations supply the structural profile; a later model or solve script is a diagnostic/artifact, not a new identity source.
-- In the conceptual notation, `X=(Q,C,R)` is the outcome. Legacy serialized snapshot fields named `X` and `B` hold execution progress and budget respectively; they are runtime field names, not that outcome definition.
+- See [prediction input identity](prediction_context.md#one-cir-for-the-whole-request-and-one-effective-input-identity) for the fields that must agree between planning and execution.
 
 ## 3. Understand and retrieve
 
@@ -208,17 +166,7 @@ G/C/R/H+, notes and trace. The Python service `ORHarness.predict_strategy_outcom
 remains available for explicit context reuse and contract inspection; standalone
 API forecasts do not authorize execution.
 
-Declare the benefit meaning before observing the result:
-
-| Kind / metric | Observation |
-|---|---|
-| `solution_quality` / `normalized_objective_gap` | Solver gap; optimal has gap zero |
-| `effective_completion` / `task_check_passed_given_faithful_execution` (**new default**) | `probability`, `wm-g-faithful/1`: faithful+original acceptance passed=1, faithful+confirmed method-caused failure=0, otherwise unknown |
-| legacy `effective_completion` / `task_result_check_passed` | Declared task check: passed=1, confirmed failed=0, unchecked=unknown |
-| `valid_progress` | No observation channel in this build; reported without scoring |
-
-New G is P(original-task acceptance | faithful execution of the candidate steps under the agreed solving conditions); method omissions remain omitted, while script implementation risk belongs in R. The request fixes convention and scope before the call. A different metric or non-finite/out-of-range numeric G makes G unavailable with a reason, preserving C/R. `benefit.notes` keeps one grounded requirement → candidate step → expected-consequence sentence even when `value` is absent. Explicit old API/planning conventions and stored forecasts keep their original meanings.
-
+Set any required benefit convention before planning. See [contract fields](world_model_contract.md) for metric names and [G attribution evidence](episode_closeout.md#g-attribution-evidence) for observations.
 
 **Recover / next:** A failed or unsupported forecast retains its status,
 notes, failure details and measured call usage. Inspect that saved prediction;
@@ -247,19 +195,9 @@ It does not execute the solver. Read `result.selected_prediction_id`,
 `result.selected_score`, `result.plan.candidates[]`, limits and planning spend.
 When no selection is available these keys are null and the reason is explicit.
 
-**Scoring:** Use comparable G, common same-scope C dimensions and technical R.
-Unknown R removes R for all ranked candidates; unknown C dimensions or missing
-reliable peaks remove those dimensions. Zero is valid. Each retained C component
-uses clipped `log1p(value)/log1p(positive peak)` with normalized existing weights.
-`--cost-scales '{"tool_calls":30}'` declares an independent peak; otherwise use
-applicable pre-decision trusted cost history. No candidate-max normalization or
-universal positive-U gate is used. Raw values, actual terms, sources, dimensions,
-weights and omissions remain in the score. H+ does not enter U.
+**Settings:** `--cost-scales '{"tool_calls":30}'` supplies a declared resource scale. The global `--execution-context runner.json` takes precedence over `OR_EXECUTION_CONTEXT` (inline JSON, path, or `@path`) for declared execution host, model, interface, and phase. See [score calculation](strategy_outcome.md#3-score-one-or-more-candidates) and [prediction inputs](prediction_context.md) for how these settings apply.
 
-**Next:** `execute --prediction P` uses the saved winner. No routine choose-next
-or independent forecast is needed. Shadow, denied, unscorable, spent and
-unselected predictions cannot execute. A repair needs a fresh plan. See
-[strategy_outcome.md](strategy_outcome.md) for scopes and structured scales.
+**Next:** Pass the selected P to `execute --prediction P`. For a repaired attempt, obtain a fresh scored selection.
 
 ### `orx choose-next --decision ACTION_ID (--prediction P | --chosen spec.json | --rejected) [--note "..."]`
 
@@ -318,25 +256,24 @@ Optional `--adapted-from` and `--adaptation` store `reuse_trace`. Citation recor
 
 **Purpose / effects:** Verify declared requirements of the original task against a staged or recorded result. Writes a `verify` action and `execution_features.task_check`; no solver or prediction call. This is separate from solver-side model quality.
 
-**Input:** Declare only checks supported by real task requirements and a truthful reference source:
+**Before submitting the answer:** Build `--check` from the original requirements, inputs, and execution. Evaluate constraints from the returned solution. Use these checks and the execution outcome to decide whether to retry.
 
 | Check key | Meaning |
 |---|---|
-| `reference_objective`, `tolerance` | Compare objective; default tolerance `1e-6 * max(1,abs(reference))` |
-| `reference_status` | Require the stated solver status |
 | `integer` | Optional named `variables`, optional tolerance (default `1e-6`); otherwise checks recorded variables |
 | `recompute_objective` | Coefficients, optional constant/tolerance; recompute from solution variables |
 | `semantic_probe` | One or more `{path, equals|min|max|in}` probes over record fields |
-| `reference_source`, `reference_version` | `bench_declared|independent|self_derived`; omitted source is self-derived |
 | `intent` | `relaxation|intermediate`: intentionally not the final task answer |
 
 **Read:** `result.state`, `report.conclusion`, `report.checks[]`, `report.scope.unchecked[]`, and optional `reflection_material` / `next`.
 
-- `passed`: declared checks held; undeclared constraints/model fidelity remain outside the scope. A self-derived reference gives a consistency check, not independent confirmation.
+- `passed`: the declared checks held. Read `scope.unchecked[]` for requirements outside that verdict.
 - `failed`: a declared check ran and failed. Keep the execution, solver measurements, and real cost; it cannot support task-success claims. For prediction calibration, solver quality stays its own measurement and task completion uses the separate check channel.
 - `insufficient`: a needed value/basis/path is missing or the result is unusable; neither pass nor refutation. Missing probe paths name available fields.
 
-**Recover / next:** Record either way. On failure, inspect task text, solution, code hash, check report, and earlier attempts in `reflection_material`; locate interpretation/model/code/reference issues, repair, and obtain a fresh selected prediction through `plan-next` in the same episode. Never change a benchmark reference to match your answer. On insufficient evidence, supply an available basis or report required variables; do not invent a reference. Natural-language constraints are not parsed automatically, and objective agreement alone does not prove model fidelity. A staged annotation carries through recording; late checks are handled by close-out correction rules.
+**Recover / next:** Record every attempt. Use `reflection_material` to inspect failures and `result.report.scope.unchecked[]` to identify missing coverage. Recheck the same EX when you can fix the check or supply missing evidence. For a solve retry, use the same episode and obtain a new selection via `plan-next`. To record a sourced G assessment in `--check`, see [G attribution evidence](episode_closeout.md#g-attribution-evidence).
+
+**After submitting the answer:** Benchmark evaluators compare the locked result against the reference outside the solve and retry loop. For offline reference evidence, `reference_objective` compares a numeric objective (default `tolerance` is `1e-6 * max(1, abs(reference))`), and `reference_status` compares a solver status. Declare `reference_source` (`bench_declared`, `independent`, or `self_derived`) and `reference_version` when available. Unspecified provenance is treated as self-derived. For using post-answer evidence in a review, see [induction materials](induction.md#read-material-and-choose-comparisons).
 
 ### `orx bind-strategy --prediction ID --action ACTION_ID`
 
@@ -399,6 +336,8 @@ Legacy reports accept optional prompt/completion/reasoning/cached totals, model/
 
 `--usage-host openclaw` checks `<home>/host_usage/openclaw-usage.<execution_id>.json`, then `openclaw-usage.json`; `generic` uses `host-usage.json`. `OR_HOST_USAGE_FILE` is the last fallback after explicit file/host selection. Missing reports leave dimensions unknown and recording succeeds; an unknown adapter exits 2 with known names. The host owns the usage report: request provider usage (streaming may need `stream_options.include_usage=true` / `compat.supportsUsageInStreaming:true`), aggregate one report per attempt, and deliver it to the adapter or `--usage-file`.
 
+`record --usage-file` and `amend-cost --usage-file` also accept `or-host-usage/1` reports with window/counter/call evidence. They store wider scopes beside the execution, preserving its attempt cost. With the API, pass `host_usage=report` to `report_action(...)` or submit it in `action --report ... --outcome '{"host_usage": ...}'`. See [C observations](episode_closeout.md#c-observations) for supported measurements and their scopes.
+
 ### `orx amend-cost <execution_id> [--override llm_tokens=1840,tool_calls=9] [--usage-file JSON|PATH] [--usage-host HOST] [--usage-source host] [--mode replace|increment] [--source agent_observed|agent_estimate|provider_usage] [--force]`
 
 **Purpose / effects:** Repair recorded cost in place without rerunning or appending an execution. Uses the report/measurement rules above and recomputes feedback against the frozen prediction.
@@ -431,23 +370,11 @@ Execute actions are logged automatically; induction logs maintenance under `__ma
 
 ### `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`
 
-**Purpose / effects:** Close one episode, evaluate bound strategy predictions against real outcomes, publish calibration for later contexts, then archive/enforce retention. It also registers existing versioned rule uses and dispatches required reviews from frozen H+; no solver/model call or rule-authoring review is performed. The agent consumes `result.induction_schedule.pending_ids` and queries `induction-status` for settlement. Idempotent re-close returns the stored record without counting twice; interrupted publication can recover (`recovered_publication:true`).
+**Purpose / effects:** Close the episode with its actual terminal state, evaluate bound predictions, publish calibration, and return scheduled induction IDs. Pass `--finish-action` to link a recorded user-facing task end. See [close-out and calibration](episode_closeout.md#2-closing-an-episode) for evidence and retention.
 
-**Read:** Per-field benefit errors under the declared metric/baseline, same-scope measured cost errors, labelled-risk Brier scores, interval coverage, pending/excluded reasons, `task_checks`, and `cost_completeness_warnings`. Warnings identify execution IDs with unknown token/tool-call dimensions; use late usage/amendment if available. Honest incomplete costs do not block closing.
+**Read:** `closeout`, per-field evaluations and eligibility, `task_checks`, `cost_completeness_warnings`, and `result.induction_schedule.pending_ids`. Finish scheduled reviews with [the returned IDs](induction.md#take-a-required-review).
 
-Read top-level `unfinished_actions` if the close is pending; resolve actual running state before retrying. Re-close returns the same close-out plus currently pending jobs without counting again. `completed`, `failed`, `aborted` and `budget_exhausted` report the true task end; completion alone does not certify acceptance.
-
-Solver quality remains the solver's measurement. Task failure is a separate `benefit.task_check`; new G is observed through `effective_completion/task_check_passed_given_faithful_execution` only with sourced fidelity and original-acceptance evidence; explicit legacy completion retains its old rules. Closing is not answer certification, and unchecked validity remains unknown.
-
-For new G, the optional `g_attribution` object belongs inside the existing `--check` JSON. Declare `method_fidelity`, `failure_source`, `acceptance_scope`, a versioned `acceptance_id`, `source`, `assessment` and `evidence_refs`. It cites code AND result evidence on the execution; it does not alter the ordinary checker verdict. See the [complete evidence schema and example](episode_closeout.md#g-attribution-evidence). Crashes/timeouts with no evaluable result, method changes, implementation omissions, inadequate acceptance or unclear causes leave G unknown. Same step text or a checker `failed` alone is insufficient.
-
-`close-episode` publishes conditional G facts and same-task method comparisons through the existing feedback blocks. Global G residuals remain diagnostic; G correction reminders are removed, including old cached reminders at the provider boundary. Conditional counts deduplicate repeated execution/ranges; Brier/bins require both numeric G and an attributable label. Two methods passing the same binary checker tie.
-
-**Late corrections:** Stored evaluations retain what was known at close-out. Live re-derivation updates later calibration use, reported in `validity_corrections[]`; within-window corrections republish calibration (`calibration_republished`). A late failed check changes task-check/completion facts while retaining measured solver quality/cost; withdrawn checks restore the ungated state; excluded executions remove their sample. Corrections are scoped to the executions actually compared, not sibling evaluations.
-
-Close-out reads the pre-execution binary `capability_gain.decision` and returns durable `induction_schedule.pending_ids` / `next_actions`. The outer building agent must settle all positive jobs. Failed executions and missing learning checks still trigger 1. `--induction-decision allow|skip|pending` is historical compatibility and cannot override a new switch.
-
-**Recover / next:** Running actions produce a pending refusal; finish them honestly, including confirmed host stops, and close again. Read `result.induction_schedule.pending_ids` even on repeated close. Consume each positive job with material and one submission before the next training task. See [episode_closeout.md](episode_closeout.md).
+**Recover / next:** A pending close lists `unfinished_actions`. Resolve them, then close again. A repeated close returns the stored record and current review IDs. `recovered_publication:true` identifies a repaired publication.
 
 ### `orx calibration [--min-samples N] [--rebuild]`
 
@@ -459,35 +386,21 @@ Close-out reads the pre-execution binary `capability_gain.decision` and returns 
 
 ### `orx induction-material [--induction-id J] [--strategy S] [--task T] [--episode E] [--limit N] [--cursor C] [--related-top-k K] [--purpose modelling|implementation] [--query TEXT] [--executions EX1,EX2] [--view compact|detail]`
 
-**Purpose / effects:** After execute/check/record/close, authorize the positive executed job identified by `--induction-id J` (from close-out pending IDs), before retrieval. H+=0/missing/invalid cannot authorize material. One existing index lookup supplies cross-source mechanism candidates and changed-premise neighbors. Each read queries current evidence and records references, without caching or replaying a full response. The actual trigger remains fixed; newer attempts paginate as controls. Pure old/manual libraries retain their historical transition; new prediction homes use binary H+ automatically.
+**Purpose / effects:** Read current material for a required review J. `--purpose modelling` prioritizes constraint relationships, and `--purpose implementation` emphasizes implementation and repairs. Use `--query` or `--executions` to select comparisons.
 
-**Read:** The default `induction-material/2` pack contains small execution comparisons, actual/planned methods and sources, source-problem identities, checks/failures, measured resources/masks/scope, and short old rules/state. `modelling` prioritizes constraint relationships across base problems; `implementation` emphasizes implementation/repair contrasts. Similarity/family is discovery. Known source relationships and exact input overlap are advisory facts; the agent chooses validation purpose.
-
-**Budget / detail:** The entire default compact JSON, including history, knowledge, H+, diagnostics and CLI envelope, is bounded at 32000 characters (`OR_HARNESS_INDUCTION_MATERIAL_CHARS`). `budget.chars_used` counts the actual serialization. Values are complete or replaced by detail references; method prefixes are never evidence. Use `budget.next_cursor` for more. Delivered cases are available review references; the agent selects which support its conclusion. Pending necessary evidence is temporarily retained and full copies are released after the receipt. `--view detail` is an expanded legacy diagnostic; inspect by ID for targeted full evidence.
+**Read:** `material[]`, `related_history.executions[]`, `existing_knowledge`, `comparison_table`, and `budget.next_cursor`. Use `--cursor` for more controls or `--view detail` for expanded diagnostics. See [choosing material](induction.md#read-material-and-choose-comparisons) for evidence scope and budget.
 
 ### `orx induce [--induction-id J] [--review JSON_OR_FILE] [--strategy S] [--relation JSON] [--dry-run] [--force] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
 
-**Purpose / effects:** Complete the same positive job with an agent-written when/do/expect rule plus real evidence IDs, or an empty review receipt. Both material and writing enforce job authorization. H+=0 cannot authorize a new/changed body. Existing-body validation/evidence, explicit publication selection and utility management use a maintenance-only path without a positive job. Publication is the agent's explicit choice over its evidence scope. The framework assigns identity, resolves scope/evidence, freezes versions, appends checks/events and synchronizes affected documents. It does not infer a technique from means. Normal interaction is one review round, with current material queries as needed, followed by one idempotent submission.
+**Purpose / effects:** Submit a review with `--review`. For a new or revised rule, include `--relation` and the same J. See [full review examples](induction.md#complete-review-submissions). Use `--relation` for existing-body maintenance and `--attribute-effect` for actual adopted use. See [version use and utility](induction.md#existing-entry-use-and-utility).
 
-Use the [complete A/B submission and covered/insufficient branches](induction.md#complete-review-submissions) as the canonical command example. A new or revised method submits `--relation` and `--review` together with the same J. Existing-body maintenance remains available separately:
+**Read:** `induction_receipt`, `relations[].publication`, `changed`/`idempotent`, `committed`, and `index_sync`. Maintenance-only calls return `maintenance_only` and the affected version or status.
 
-```bash
-orx induce --relation '{"entry_id":"ENTRY","operation":"add_evidence","evidence":["EX_NEW"]}'
-```
-
-Select the actual existing entry and evidence. New bodies require an authorized review; this maintenance command is not a shortcut for adding one.
-
-**Versioning / publication:** Exact and safe formatting repeats reuse the body/version. `publication:{"state":"published"|"candidate","reason":"...","scope":[...]}` selects the offered version; omitting it leaves a new body candidate. An active version remains while its revision is candidate. Agent-confirmed merges use the selected target, with no compulsory old-success regression list. Derivation, numerical checks, exhaustive constructions, boundary tests and future independent transfer report their actual scopes; none is a uniform prerequisite. `--used-entry-ids 3@2` freezes actual adoption. `validation` can record a historical compatibility review; this is not a real v2 use. Full fields: [induction.md](induction.md).
-
-**Compatibility:** Historical claim/evidence/check input remains accepted. Embedded assertions and `--verify` remain audit records (`--verify` wins a reported conflict); their `verified`/`fact_checked`/`insufficient_evidence`/`refuted` states cover only the declared assertions. They are not a universal transfer/publication gate. True unversioned old rows retain their original historical semantics; new writes use v2 candidate publication.
-
-**Job ownership / transactions:** An existing relation `induction_id` or attached `material_id` resolves formal review even for `operation:add_evidence`; no top-level ID or review block is required again. Ownership conflicts precede writes. Unassociated existing-entry maintenance needs no positive job, but frozen libraries reject it. The main `execution_id` fixes its adopted effect version. A merge's candidate version preserves source availability until that exact version is published. Rules/actions/receipts and pending index IDs commit before vectors update. Read `committed` and `index_sync`; repeating an identical committed submission repairs deferred indexing with the same receipt, including equivalent CLI/API default flags. Missing optional cost baselines return their ID, reason and unavailable state without blocking ordinary close-out. Full details: [induction.md](induction.md), [hplus.md](hplus.md).
-
-**Effect / recovery:** `--attribute-effect` records the agent's judgment and actual adopted version. `lifecycle_action:promote|demote|keep` works for legacy and versioned entries with a real use reference and reason. A `refuting` verdict without `lifecycle_action` currently defaults to demoting the adopted version; explicit `keep` leaves status unchanged, `demote` suspends the selected version and `retire` is the separate cold-archive command. Pure maintenance returns `maintenance_only`, state differences and index results, without an induction action or empty receipt. Corrections update evidence validity, not publication; the agent manages utility. Explicit cost comparisons return selected executions' methods, conditions, acceptance and dimension values/provenance without finding a baseline or declaring savings. Read `changed`/`idempotent`, version, publication authority/scope, validation, execution references, knowledge delta and index sync. `--dry-run` writes nothing; `--force` only lifts the cold-archive veto. Deferred indexing can be retried; `rebuild-index` remains explicit repair. `--task` belongs to material, not induce.
+**Options:** `--dry-run` previews without writing, and `--force` lifts the cold-archive veto. `--verify` records scoped assertions and takes precedence over embedded verification on a reported conflict. Use `--task` on `induction-material` and J on the review submission.
 
 ### `orx induction-status [--task T] [--episode E]`
 
-Read/recover required jobs, immutable receipt references, separate explicit-0/missing/invalid/legacy counts and known/unknown learning observations. Read `result.completed`, `result.pending_ids` and `result.observation_counts` (`bound_attempts`, `positive`, `negative`, `unknown`). `completed:true` means there are no pending required reviews; it does not assert that all hypotheses or rules were verified. The building runner consumes each `pending_id` with the SAME material/submission ID. See [hplus.md](hplus.md) for CLI/API callbacks, empty reviews and separate H+/NoH+/equal-budget random frozen-library experiments.
+Read `result.completed`, `result.pending_ids`, `result.signal_counts`, and `result.observation_counts`. Use each pending ID to [resume its review](induction.md#take-a-required-review). See [review result fields](induction.md#read-publication-completion-and-learning-separately) for how completion and learning are reported.
 
 ### `orx [--world-model URL::MODEL] predict-capability --operation JSON [--task t.json] [--bundle bundle.json] [--horizon TEXT] [--horizon-tasks N] [--budget JSON] [--task-id ID] [--episode ep1] [--timeout S]`
 

@@ -24,7 +24,7 @@ from or_harness.cli import build_parser  # noqa: E402
 AGENT_FACING_DOCS = [
     "SKILL.md", "README.md", "README_zh.md",
     "references/commands.md", "references/concepts.md",
-    "references/induction.md", "references/hplus.md", "references/modeling.md",
+    "references/induction.md", "references/modeling.md",
     "references/world_model_contract.md",
     "references/prediction_context.md", "references/strategy_outcome.md",
     "references/episode_closeout.md", "references/snapshot_lifecycle.md",

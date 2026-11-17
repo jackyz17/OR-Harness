@@ -1,8 +1,6 @@
 # Episode close-out and experience calibration
 
-Read this page when you are ending a task episode, reading the published calibration summary, or handling a verdict that arrives after the fact. It covers the close-out record, the per-prediction evaluation, the calibration statistics, retention and archiving, and the known limits of all four.
-
-The normal task close publishes recorded solving calibration and dispatches reviews from frozen H+. The outer agent consumes those jobs; close-out makes no solver/model call and authors no rule.
+Use this page to interpret the close-out record, outcome measurements, calibration, and late corrections.
 
 - Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/3`; risk-event vocabulary: `wm-events/3`; observation rules: `wm-obs/4`; context: `wm-context/4`
 - Python module: `or_harness.world_model.episode_closeout`
@@ -17,24 +15,11 @@ Related: the prediction service in [`references/strategy_outcome.md`](strategy_o
 
 ---
 
-## 1. The loop this phase completes
+## 1. Units of observation
 
-```text
-profile / recall -> plan-next (shared context, predictions and U)
-    -> execute --prediction P (original selected, unused permitted ID)
-    -> check-task EX -> record --from-staged EX
-    -> close-episode (actual terminal state)
-    -> published calibration + induction_schedule.pending_ids
-    -> agent reads material and submits a review using each same J
-    -> induction-status confirms settlement
-    -> next task's plan-next reads applicable pre-decision feedback
-```
-
-Three units stay distinct, and the close-out never conflates them:
-
-- **attempt** — one `execute_strategy` call, one solver invocation;
-- **strategy execution window** — one selection round of one strategy: modelling, possibly several attempts, repair, verification. The same strategy chosen again later (or switched away and back) is a DIFFERENT round (`round_index`), never aggregated into one sample;
-- **episode** — the whole task interaction, closed once, honestly.
+- **Attempt.** One recorded `execute_strategy` action and its execution. A solver script can make multiple internal solver calls.
+- **Strategy execution window.** One selection round, including applicable modelling, attempts, repair, and verification. Each new selection round has its own `round_index`, including when the same strategy is selected again.
+- **Episode.** The full task interaction through its terminal state.
 
 ## 2. Closing an episode
 
@@ -43,25 +28,13 @@ orx close-episode --task t1 --episode ep1 [--terminal completed|failed|aborted|b
     [--finish-action ACTION_ID] [--min-samples N]
 ```
 
-What it does (in order):
+Finish [task-derived checks and retries](../SKILL.md#3b-check-the-original-task-and-decide-whether-to-retry), record each attempt, and commit the answer before closing. Pass the actual terminal state. `--finish-action` links the recorded `finish_task` event, which provides a real terminal timestamp. In benchmarks, reference-based scoring runs on the committed answer in the evaluator, outside the solve and retry loop.
 
-1. **refuses while actions are still running**: an episode with a `running` action returns `state="pending"` with the `unfinished_actions` listed — a running scope has no final numbers, and closing anyway would freeze a record their results could never enter (a re-close just returns the stored record). End the running actions (or let them finish), then close;
-2. **summarizes and evaluates** every ASSOCIATED strategy-outcome prediction of the episode against its real outcome (see §3–4) — associated means the prediction is linked to a real action; whether any of it is CALIBRATABLE is decided here, field by field;
-3. **records the close-out once** — idempotent: re-closing (after a restart, or by mistake) returns the stored record and counts nothing twice;
-4. **publishes the calibration summary** (see §5) — built after the evaluations/close-out are persisted, so the return includes this round;
-5. **dispatches frozen H+ jobs** — read `result.induction_schedule.pending_ids`. Actual executed H+=1 needs a review even after failure or missing checks. H+=0 keeps execution/use facts without new induction; unexecuted candidates remain unobserved.
+Close-out evaluates bound predictions, publishes calibration, and records actual rule use before retention. Read `task_checks` for counts by per-execution verdict and unchecked attempts. Terminal status describes completion of the episode. Solver quality and original-task acceptance retain their separate evidence.
 
-What it never does: run a solver, call the prediction model, author/submit the agent's review, or rewrite a stored prediction. Dispatch and review execution are separate responsibilities. `--terminal failed|aborted| budget_exhausted` closes an honest failure as a failure — `completed` reports task completion without independently certifying acceptance. `--finish-action` links the close-out to the `finish_task` action you recorded (`orx action --report finish_task`); the close-out does not create a second task lifecycle.
+If actions are still running, the result contains `closeout: null`, `state="pending"`, and `unfinished_actions` (CLI exit 2). Resolve the actions and try again. A repeated close returns the stored record without counting observations twice.
 
-**A close-out is the end of the episode, NOT a certification of the answer.** The normal flow is check-and-repair FIRST, then close: a task-result verdict (`orx check-task`) belongs before the close-out. Closing with unchecked answers is legitimate (the check may not be runnable yet), so the close-out never refuses on that ground — but it reports `task_checks = {n_executions, verdicts, unchecked, note}` so "the episode ended" is never misread as "the answer was validated". **Historical solver-gap observation (`wm-obs/2` remains readable):** an execution whose answer a check CONFIRMED does not satisfy the task keeps the solver's own quality figure (`normalized_objective_gap` = how well the solver solved the model) and the task check travels as a SEPARATE fact under `evaluations[].benefit.task_check` — the quality number is never rewritten to `0.0`, so "predicted 0.8, observed 1.0" plus `task_check.state="failed"` reads as "the solver solved its model, but the answer failed the task". Its real cost still counts in the scope's totals. A refused close-out (a running action) returns `closeout: null` with `state="pending"` — the CLI reports it as an open episode (exit 2), never as a crash.
-
-### Check and save before closing
-
-Keep `task.json` and EP across repairs. After `execute --prediction P`, EX is `result.execution_id`. Run `check-task EX --check check.json` using original requirements and sourced evidence, then `record --from-staged EX`, including failures. Read `result.state`, `result.report.checks[]` and `result.report.scope.unchecked[]`. Tool completion, solver optimality and original-task acceptance are separate facts. Missing acceptance support remains unknown.
-
-### Settle the dispatched review
-
-`close-episode` dispatches; the agent calls `induction-material --induction-id J` and submits one rule/review or empty-review branch from [induction.md](induction.md#complete-review-submissions). `induction-status --task T --episode EP` reports `result.completed` and `result.observation_counts`; completion and supported learning are separate. Re-close shows still-pending J values without duplicating the job; resume the same J after interruption. A failed/insufficient positive attempt can settle with a factual empty review. See [hplus.md](hplus.md).
+For library building, `result.induction_schedule.pending_ids` identifies reviews for the agent. Follow [the induction handoff](induction.md#take-a-required-review) to settle the returned IDs.
 
 ## 3. The real outcome summary
 
@@ -70,7 +43,7 @@ For each bound prediction, the close-out derives what ACTUALLY happened from the
 - **benefit observations** use the prediction's own declared metric/unit/version/scope. New G (`task_check_passed_given_faithful_execution`, `wm-g-faithful/1`) requires sourced method fidelity and original-acceptance evidence; its rules are below. The old `task_result_check_passed` adapter and the solver's `normalized_objective_gap` keep their own meanings. Unsupported currencies are never silently relabelled. A feasible solution with no measured gap/bound remains unverified.
 - **window benefit rule** (declared before evaluation, applied uniformly): the LAST qualified in-scope attempt's solution is the window's benefit observation. All in-scope failed retries' measured costs still count.
 - **cost** is scoped to the predicTION's DECLARED COST SPAN (`ExpectedCost.scope`), NOT to the benefit scope, so a predicted span is compared against the SAME real span:
-  - `remaining_to_task_end` (the DEFAULT in r13): the cost from the DECISION ANCHOR (when the prediction was made) to the END of the task — every in-episode execution from the anchor aggregates ONCE, so a failed first attempt and the repaired retry BOTH count. A predicted remaining total of 300 tokens (100 failed + 200 retried) is compared against 300, never the first attempt's 100;
+  - `remaining_to_task_end` (default): the cost from the shared decision anchor to the actual task end. All measured in-scope attempts count once, including failures and retries.
   - `attempt`: the bound action's own execution only;
   - `strategy_window`: the declared selection round's whole window (an 11s-then-17s window reports 28s, not 17s).
 
@@ -162,7 +135,7 @@ The current summary reports `observation_rule_version:wm-obs/4`; every stored ev
 
 A legacy evaluation that wrote no observation-rule version groups under `(unknown)` rather than being assumed current.
 
-### 5b. Deterministic reminders
+### C observations
 
 **C observations (`wm-c-window/1`).** A versioned `or-host-usage/1` report may retain its legacy attempt scope (including the old task/episode identity object) or explicitly name `scope="remaining_to_task_end"`. Optional `window` fields are `anchor_action_id`, `started_at`, `ended_at`, `complete`, and `end_event`. Counter evidence uses `counters.start`/`counters.end` with `prompt_tokens`, `completion_tokens`, `tool_calls` and optionally model `calls`; nonnegative increments replace cumulative totals. Resets/missing sides stay unknown or partial. Alternatively, a complete `call_details` ledger supplies `id`, `kind` (`tool`, `model`/`llm`), `started_at`, `ended_at` and model input/output tokens. IDs deduplicate invocations; a broader complete ledger can be sliced to the anchor/termination boundaries. Crossing calls cannot be divided without evidence. Reasoning/cached tokens are already inside input/output counts.
 
@@ -174,7 +147,9 @@ Full-window numeric totals must match the decision anchor and real termination. 
 
 Per-dimension errors keep both solver time and remaining wall-clock when each is comparable. Explicit zero participates in absolute and signed error (`actual-predicted`); log-ratio uses only strictly positive pairs. `cost_absolute_evidence` uses all raw error pairs; `cost_evidence` uses the log pairs' own distinct episodes. Global residuals are retained for audit and do not yield C multipliers. See [c_signal_improvement.md](../docs/c_signal_improvement.md) for regression coverage and an actual stub-provider request excerpt.
 
-The summary's `reminders` retain risk feedback and interval diagnostics. Global G signed errors and C log-ratios remain in `groups` for audit; neither aggregate nor single-case G/C residuals produce value correction instructions. The request boundary filters retired G/C reminders in BOTH `prediction_reminders` and `strategy_outcome_calibration.reminders`, including cached/published old blocks; stored audit payloads are preserved.
+### Published feedback
+
+The summary's `reminders` carry risk feedback and interval diagnostics. Global G signed errors and C log-ratios remain in `groups` for audit. See [provider feedback](prediction_context.md#6c-the-paired-feedback-and-reminder-blocks) for selection and request filtering.
 
 New G observation starts from the framework's frozen `benefit_convention`, independently of whether the model returned a `benefit` object. Omitting the entire block keeps the prediction `not_predicted`, but bound real executions still enter pass/fail/unknown counts. Brier/bins continue to require a numeric probability as well as an attributable label. Explicit legacy requests retain their own observation and prediction-error semantics.
 
@@ -182,7 +157,6 @@ New G observation starts from the framework's frozen `benefit_convention`, indep
 
 Paired feedback retains the original prediction/error currency. Sourced historical execution facts can additionally appear as `g_observed_fact`, independently of the old forecast. `same_task_comparisons` places actual different methods side by side only for the same task, frozen original problem, acceptance id, solving conditions and scope/version, preserving evidence and evaluation references. One executed method gives its factual case. Two passes on the same binary acceptance are a tie; a verified business objective may stay in the case as `verified_objective`.
 
-<a id="g-attribution-evidence"></a>
 Actual solving conditions come from `ExecutionRecord.solver` and `execution_features.execution_config.values/sources`, not the candidate's omitted settings. `executor` and action-stamped `script_reported` values are observations; `executor_configured` values alone remain instructions. Pairing requires confirmed solver and execution/solver limits, all declared settings, no receipt conflicts, and matching observed conditions. Different actual time limits (including when both candidates omitted them), missing critical receipts or differing in-scope conditions keep the cases unpaired.
 
 Each `check-task` report now includes `acceptance_rule`: `checker`, the check `spec`, and a framework-computed `fingerprint`. The fingerprint uses the entire declaration before checks run, so an early failed probe and a later complete pass under the same rules have the same identity. It covers checker/reference versions, probe thresholds, reference values and provenance, tolerances, integer/recomputation rules and intent; it excludes result values and `g_attribution`. Equal `acceptance_id` text alone cannot establish equivalent rules. Missing rule identity in a historical report leaves that execution as a case, without inventing a comparable pair.
@@ -321,48 +295,10 @@ orx enforce-window [--window-episodes 800] [--open-grace-days 30] [--dry-run]
 
 `ORHarness.strategy_execution_window(..., round_index=N)` (and the `win::task::episode::strategy::rN` window id) selects ONE selection round of a (task, episode, strategy): the actions from the Nth recorded choice of that strategy up to the next recorded choice of any strategy. The same strategy chosen twice — or switched away and back — is TWO windows with TWO ids; a round that does not exist is reported not-comparable with the reason. Legacy three-part window ids still parse (`round_index=None`).
 
-## 8. Known limitations
+## 8. Late evidence and corrections
 
-- **Partial utility needs evidence review**: unavailable G prevents ranking; missing C/R removes dimensions/terms for all ranked candidates. The audit exposes that common basis. A suggestion does not certify business validity or predict a verified empirical advantage; close-out eligibility uses actual binding and measurement evidence.
-- **Technical attribution has limits**: external blockage and ordinary timeouts remain unknown without a verified code cause. Historical classifier-only records cannot establish new technical labels, and sparse agent/interface groups support only their displayed attempts.
-- **No framework channel can adjudicate a MODELLING error (open)**: a task check reports whether its DECLARED bases held, not whether the model was wrong — the cause (misread task, implementation bug, unmet requirement, wrong reference) is the agent's diagnosis. That is why `model_invalid` is retired rather than derived, and why a risk the framework cannot observe keeps label `unknown`.
-- **Budget risk is episode-scoped (open)**: the episode-level over-budget FACT is scored on a prediction that declared `budget_exhausted`, whatever the candidate's execution scope (`wm-events/3`), and the label reads the episode-scoped verdict plus an explicit termination receipt. A per-attempt budget system is deliberately out of scope; a per-attempt `latency_s` overrun is never reported as budget exhaustion.
-- Late-arriving verification: stored evaluations preserve what was known at close-out. Later use re-derives the affected benefit under its own metric and attribution rules while retaining measured cost, and republishes in-window calibration. A failed check alone cannot force faithful G to 0: missing fidelity or candidate-method attribution remains unknown. Corrections apply only to the cited execution; they do not rewrite the frozen prediction or original evaluation.
-- **Archived detail cannot receive a late correction (open)**: once an episode's detail has been archived (past the grace period), a later task check still annotates the EXECUTION (facts are never archived), but that episode's calibration correction channel is closed. The grace period is the bound on how long that channel stays open — there is no permanent retention path.
-- **Constraint satisfaction is only checkable when declared (open)**: the framework does not parse natural-language constraints, so a task check covers the bases you declare (a reference value, a status, integrality, a declared objective recomputation, explicit probes). Undeclared constraints stay in `scope.unchecked` — a `passed` verdict is not proof that the model represents the task.
-- **Task-level verdicts are per-execution (open)**: `task_check` annotates one execution's answer. There is no episode-level "the task was solved" flag, deliberately: an episode may contain a disqualified attempt and a repaired success, and collapsing them into one verdict would lose exactly the distinction this layer exists to preserve.
+A later `check-task` can add evidence to the execution it cites. Stored evaluations retain the facts known at close-out. Later reads re-derive affected observations under their original metric and attribution rules and report `validity_corrections[]`. In-window updates republish calibration (`calibration_republished`). Solver quality and measured cost keep their original values.
 
+Read the check's declared coverage when interpreting acceptance. The agent diagnoses modelling and implementation failures using the original task and execution evidence. A late reference comparison can support [offline induction](induction.md#read-material-and-choose-comparisons) within its recorded scope. Keep benchmark scoring in the evaluator.
 
-Prediction input storage and compatibility are defined in [snapshot_lifecycle.md](snapshot_lifecycle.md). New predictions retain identity, real/hypothetical source, frozen budget conditions, actual selection/version references, prompt version and request/omission diagnostics across success, failure and interruption. Binding and budget evaluation do not require a full snapshot. Individual evaluations and published corrections remain independently auditable; model input uses correction counts/field summaries instead of full correction details. H+ availability remains separate from actual adoption and effectiveness.
-
-## Versioned rule uses and frozen H+ scheduling
-
-Close-out registers existing exact-version uses and freezes decisive checks
-before automatic evidence retention. It then consumes the pre-execution
-`capability_gain.decision` (`wm-hplus-binary/1`). Each bound executed 1 yields a
-unique durable job keyed by episode and original prediction ID; 0 skips formal
-induction and unexecuted candidates stay unobserved. Failed attempts and
-uncompleted learning checks still require the positive job to be reviewed.
-
-`result.induction_schedule.pending_ids` / `next_actions` is the verifiable
-handoff to the outer building agent. Read material once and submit a short
-rule or empty review with the SAME `--induction-id`. `induction-status` recovers
-pending IDs after interruption and reports completion; do not freeze with
-pending receipts. `process_induction_jobs(reviewer)` supports ordinary Python
-building runners without a hidden model call. Completion links the REAL
-induction action and rule versions to the original forecast; a solve is not
-an induction action. Task solving and library-building completion are separate.
-
-Optional sourced `check-task.hplus_verification` records completion of the
-frozen check by prediction ID/condition index and artifact/check references.
-A missing check is reported, not used to cancel 1. The immutable receipt keeps
-hypothesis outcome separate from knowledge increment. Existing rule-use
-assessments and later checks retain their actual adopted version, source identity,
-purpose and coverage. They do not impose a uniform transfer/boundary/regression
-publication gate. Explicit measured cost comparisons retain their comparability
-requirements.
-
-The old `induction_decision=allow|skip|pending` and CLI flags are compatibility
-judgements only; they cannot override a new binary switch. Standalone legacy
-manual work retains its prior transition. Full fields, example, modes and
-controls: [hplus.md](hplus.md), [induction.md](induction.md).
+Once evaluation detail is archived, later checks can annotate retained execution facts, while archived calibration detail remains final. See [retention scopes](#6-retention-three-separate-scopes) for the late-check window.

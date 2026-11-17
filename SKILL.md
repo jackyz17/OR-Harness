@@ -136,5 +136,5 @@ After execution, check integrality and both cart minima. Recompute the cart rati
 
 - [commands.md](references/commands.md) for CLI syntax, host usage, and recovery.
 - [episode_closeout.md](references/episode_closeout.md) for acceptance evidence, G feedback, and calibration.
-- [hplus.md](references/hplus.md) and [induction.md](references/induction.md) for induction, publication, and existing rule use.
+- [induction.md](references/induction.md) for H+ review dispatch, induction, publication, and existing rule use.
 - [prediction_context.md](references/prediction_context.md) and [world_model_contract.md](references/world_model_contract.md) for prediction inputs and fields.

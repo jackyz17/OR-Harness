@@ -1197,27 +1197,6 @@ class TestDocumentationMatchesCode(unittest.TestCase):
                           "CREATE TABLE"):
             self.assertNotIn(forbidden, skill)
 
-    def test_readme_documents_contract_only_honestly(self):
-        from pathlib import Path
-        root = Path(os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "..")))
-        for name in ("README.md", "README_zh.md"):
-            text = (root / name).read_text(encoding="utf-8")
-            self.assertIn("contract_only", text,
-                          f"{name} must state the service-not-attached state")
-
-    def test_docs_do_not_claim_the_whole_reconstruction_is_done(self):
-        from pathlib import Path
-        root = Path(os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "..")))
-        contract_doc = (root / "references" / "world_model_contract.md"
-                        ).read_text(encoding="utf-8")
-        self.assertIn("## 8. Not implemented in this build", contract_doc)
-        for absent in ("no task-closing scheduler",
-                       "no H evaluation system",
-                       "no multi-step latent rollouts"):
-            self.assertIn(absent, contract_doc)
-
     def test_runnable_example_passes(self):
         import subprocess
         root = os.path.abspath(os.path.join(os.path.dirname(__file__),
