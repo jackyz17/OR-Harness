@@ -92,7 +92,7 @@ Use `method.actual` to adapt a method that was performed. `method.planned` recor
 
 Build and save a frozen prediction input for inspection or explicit reuse. `plan-next` builds its own shared context. Use `--no-persist` for a preview and `orx context --context-id CTX_ID` to read a saved context.
 
-`--cir` sets the effective CIR and `--math` supplies known attributes, such as `'{"linearity":"linear","objective_kind":"min"}'`. Read `context_id`, `joint.math`, `joint.unknowns`, `missing` and `degraded[]`. For Python reuse pass the context and the same effective task, episode and CIR to `ORHarness.predict_strategy_outcome`. See [identity and historical reuse](prediction_context.md).
+`--cir` sets the effective CIR and `--math` supplies known attributes, such as `'{"linearity":"linear","objective_kind":"min"}'`. Read `context_id`, `joint.math`, `joint.unknowns`, `missing` and `degraded[]`. For Python reuse pass the context and the same effective task, episode and CIR to `ORHarness.predict_strategy_outcome`. See [prediction inputs and identity](world_model_contract.md#1-prediction-inputs).
 
 ## 4. Plan and inspect predictions
 
@@ -280,7 +280,7 @@ Read `insufficient_evidence` and `reliability:null` below the minimum support. U
 
 Read material for an H+ review J. Choose `--purpose modelling` for constraint relationships or `implementation` for code and repairs. Use `--query` or `--executions` to choose comparisons.
 
-Read `material[]`, `related_history.executions[]`, `existing_knowledge`, `comparison_table` and `budget.next_cursor`. Use `--cursor` for more cases or `--view detail` for expanded diagnostics. See [choosing material](induction.md#read-material-and-choose-comparisons).
+Read `material[]`, `related_history.executions[]`, `existing_knowledge`, `comparison_table` and `budget.next_cursor`. Use `--cursor` for more cases. For full case details from an H+ material pack, follow the case's `inspect_hint`. See [choosing material](induction.md#read-material-and-choose-comparisons).
 
 ### `orx induce [--induction-id J] [--review JSON_OR_FILE] [--strategy S] [--relation JSON] [--dry-run] [--force] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
 

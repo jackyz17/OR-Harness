@@ -26,7 +26,7 @@ AGENT_FACING_DOCS = [
     "references/commands.md", "references/concepts.md",
     "references/induction.md", "references/modeling.md",
     "references/world_model_contract.md",
-    "references/prediction_context.md", "references/strategy_outcome.md",
+    "references/strategy_outcome.md",
     "references/episode_closeout.md", "references/snapshot_lifecycle.md",
 ]
 

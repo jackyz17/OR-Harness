@@ -142,7 +142,7 @@ HTTP 替身只监听本机；检查、求解和示例均使用临时工作区/�
 
 运行时提示词文档、参考和请求产物：
 
-- [references/prediction_context.md](../references/prediction_context.md)
+- [当前的预测反馈参考](../references/world_model_contract.md#2-published-prediction-feedback)
 - [references/world_model_contract.md](../references/world_model_contract.md)
 - [references/episode_closeout.md](../references/episode_closeout.md)
 - [references/strategy_outcome.md](../references/strategy_outcome.md)

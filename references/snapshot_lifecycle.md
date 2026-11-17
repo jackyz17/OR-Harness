@@ -1,105 +1,64 @@
-# Prediction inputs, frozen facts, and explicit maintenance
+# Saved prediction inputs and memory maintenance
 
-OR-Harness keeps two memory layers: execution evidence and strategic knowledge. Prediction inputs are temporary working data. Predictions, calibration and runtime facts support those layers; they do not accumulate another full view of the memory banks at every action.
-
-## Responsibilities
-
-| Object | Stored content | Lifetime |
-| --- | --- | --- |
-| In-memory `BeliefSnapshot` | The current P/X/H/B view assembled for prediction | Caller-owned temporary object |
-| `frozen_conditions` | Problem/progress value references, identity, real/hypothetical source, compact budget aggregates and knowledge-availability revision | Small facts used by action/prediction references; no coverage, knowledge bodies or bank statistics |
-| `condition_values` | Immutable, content-addressed problem/progress values and actually referenced evidence, knowledge, targets, feedback and prompts | Shared historical values; no full-library content versions |
-| `prediction_contexts` (`wm-context/4`) | Small audit manifest, frozen condition reference, selected content versions and input digest | Survives release of the full working input; existing calibration archival can move manifests |
-| `runtime_inputs` | One candidate-related working input per decision, shared by its candidates; large problem content uses a shared version | Released at successful episode close in the normal flow (compatibility `choose-next` can release earlier); expired inputs are removed on subsequent context writes |
-| `knowledge_availability` | Entry identity, predicate/presence changes and revision order, without knowledge bodies | Historical applicability index for H+; availability is separate from adoption and effectiveness |
-| Execution/action records | Real attempts, outcomes/checks, costs/masks, adoption/reuse versions, condition and prediction links | Existing evidence/episode policies apply |
-| Published calibration, pairs and individual evaluations | Existing independent calibration/feedback records | Existing windows, eligibility, observation versions and archive rules apply |
-
-`snapshot()` still returns a current in-memory view. It persists only a lightweight condition receipt. `get_snapshot()` reads that receipt with `coverage.conditions_only=true` and a missing-full-view explanation, or reads a complete legacy snapshot if that is what was stored. It never rebuilds historical knowledge from today's bank. `snapshot(..., persist=False)` and `context --no-persist` do not persist prediction state.
-
-Action pre/post IDs and prediction `input_snapshot_id` remain usable as condition references, so old clients can resolve identity, progress and budget facts. New rows are not appended to `belief_snapshots`. Task progress uses the problem identity: writing the post-selection model preserves progress, while changing the actual problem resets it.
-
-Execution evidence remains one real attempt per record. `method_planned` is never promoted to `method_actual`. A missing adoption declaration differs from `used_entries=[]`; available, displayed, adopted and effective are separate facts. New adoption and reuse declarations reference the content observed before the attempt. Missing old versions remain unknown.
-
-Scripts, result files observed after attempts, captured output clips and internal CIR artifacts can be referenced under `HOME/artifacts/<prefix>/<sha256>`. Paths are relative to that home and carry SHA-256 and byte counts. A result file reference does not certify the result; task/solver checks still determine acceptance. Output clips may be truncated. Artifact I/O failure is reported without turning an observed execution into a fabricated failure.
+Use this page to recover a saved input, run fixed-memory tests or maintain old snapshots. Use the [prediction reference](world_model_contract.md) for request material and forecast fields.
 
 ## Context reuse and expiry
 
-```bash
-# Explicit context creation is optional; plan-next normally creates one itself.
-orx --home /work/run context --task task.json --episode e1
-orx --home /work/run context --context-id ctx_ID
-orx --home /work/run plan-next --task task.json --candidates candidates.json --episode e1
+| Record | What is stored and for how long |
+|---|---|
+| Current `BeliefSnapshot` | In-memory view of the task, progress, capability evidence and budget. `snapshot` persists a compact condition receipt |
+| `runtime_inputs` | Working input shared by a decision's candidates. Released on successful close-out or expired by reuse limits |
+| `prediction_contexts` | Saved input manifest, selected versions and digest for audit. Available after working-input release, subject to calibration archival |
+| `frozen_conditions` and `condition_values` | Shared, immutable problem, progress and referenced evidence values. Action and prediction links resolve these facts |
 
-# Available after consumption/expiry as well as while active:
-orx --home /work/run context --context-id ctx_ID --audit
-```
+A close-out with unfinished actions keeps its working input. A completed close-out releases it. For a released or expired context, read `orx context --context-id CTX --audit` or start a new decision. Ordinary reuse requires an active input and reports `ContextExpired` (CLI exit 2) otherwise. See [input identity and audit](world_model_contract.md#4-inspect-a-prediction-and-its-input).
 
-CLI `plan-next` creates one shared input for its decision. Explicit reuse uses the Python service `predict_strategy_outcome(..., context=h.get_prediction_context("ctx_ID"))`. During the valid lifetime it sends the original stored input and never reruns recall against today's memory. Default limits:
+| Setting | Default |
+|---|---|
+| `OR_HARNESS_CONTEXT_TTL_S` | 86,400 seconds for reuse |
+| `OR_HARNESS_ACTIVE_CONTEXTS` | 128 active inputs per home |
+| `OR_HARNESS_ACTIVE_CONTEXT_BYTES` | 16,777,216 bytes of active payloads per home |
+| `OR_HARNESS_CONTEXT_CALL_LEASE_S` | 3,600 seconds of protection for an in-progress provider call |
 
-- `OR_HARNESS_CONTEXT_TTL_S=86400`: input reuse lifetime, fixed when persisted.
-- `OR_HARNESS_ACTIVE_CONTEXTS=128`: maximum active input count in a home.
-- `OR_HARNESS_ACTIVE_CONTEXT_BYTES=16777216`: active JSON payload capacity; large shared problem versions are not repeatedly counted as inline runtime payloads.
-- `OR_HARNESS_CONTEXT_CALL_LEASE_S=3600`: protection for a provider call in progress; a crashed call cannot pin its working input forever.
+Context writes and consumption apply the limits. Capacity pressure expires older unleased inputs first. A new input is refused if it still exceeds capacity after eligible inputs expire.
 
-Capacity pressure explicitly expires older unleased inputs. If a new input cannot fit while other calls are in progress, it is refused. Active calls are protected until their call lease expires; provider network I/O holds no SQLite write transaction. Cleanup runs on context writes and at consumption boundaries; there is no background timer.
+## Read historical records
 
-The normal flow calls `execute --prediction P` directly and releases remaining working inputs on successful episode close. Compatibility `choose-next` can release the comparison input after recording a choice/rejection; it is not a normal step or an authorization override. Execution and later binding/calibration continue from frozen conditions and the prediction. A pending close with unfinished actions does not release inputs. Successful episode close releases remaining inputs of that task/episode.
+Read the saved record's version and original conditions. New `wm-context/4` contexts reference compact conditions. Old `wm-context/3` and complete legacy snapshots use their saved content. Reading a compact snapshot receipt reports `coverage.conditions_only=true`. Missing historical knowledge, task text or measurements are reported as gaps. Archived calibration uses its own [retention rules](episode_closeout.md#6-retention-three-separate-scopes).
 
-Reading or reusing a released/expired input raises `ContextExpired` (`StorageError`), and CLI reuse returns exit code 2. Use `--audit` to inspect its manifest, or start a new decision. An empty context is never returned as a substitute. Python objects already held by a caller remain their old value; they are not refreshed from the bank.
+| Stored item | How to interpret it |
+|---|---|
+| Context or snapshot | Read the saved input, frozen values and version references for that decision. Use `--audit` for a released input's manifest |
+| Unversioned prediction | Read through `orx contract --payload prediction.json`. `legacy_view` reports mapped fields and gaps. Old quality maps to `benefit.value`, old failure probability to the `task_failure` risk event, and confidence to model-reported uncertainty. Cost keeps its measured mask |
+| Legacy action spec | `measurement_scope="attempt"` maps to attempt scope while retaining the declared parameters. Declare the intended scope explicitly when the old scope cannot be mapped |
+| Execution or artifact | Follow saved execution, action, condition and artifact references. The task check records acceptance, and exact adopted rule versions belong to the execution receipt |
 
-A strategy provider call saves an `invalid` prediction with `call_state=in_flight` before starting, under the same prediction ID that the returned result will update. A process interruption therefore leaves an honest unknown result/usage and durable conditions. Successful and failed responses preserve real usage and all identity/request references on their first returned-result save. No automatic retry is implied by an interrupted call.
-
-Use the [provider-request audit](prediction_context.md#audit-what-the-next-provider-actually-received) to distinguish a stored manifest from the evidence sent to a model.
-
-## Compatibility and model-input changes
-
-Existing `wm-context/3`, execution payloads and full legacy snapshots remain readable without migrating historical content or rebuilding the bank. The reader preserves the original format version. Unsupported versions raise an explicit error. New `wm-context/4` serializes `conditions` rather than a duplicate complete `snapshot`; X/B live once in `solving_context`. Normal new writes do not return to the old full-snapshot path.
-
-Condition lookup prefers new frozen facts, then the original stored legacy data. Budget comparison prefers the prediction's `frozen_budget_state` and falls back to its condition/snapshot reference. Problem binding uses each execution's own precondition identity. Internal CIR remains absent from provider input. Unknown historical text, budget, knowledge availability or actual method is not filled from today's values. An untimed legacy execution carries `execution_features.created_at_unknown`; its numeric timestamp is only a serialization sentinel, and H+ needs an observed record/action time. Missing budget history withholds probability scoring while retaining real cost/masks; an explicitly undeclared budget is distinct from missing history. A missing requested task-text version is not replaced with another version.
-
-The provider view carries a compact `validity_correction_summary`. The published diagnostics and individual evaluation records retain full corrections. See [the validation report](../docs/world_model/snapshot_lifecycle_implementation.md) for storage and projection regression coverage.
+Use the saved `task_text_digest` and rule/body references to identify the content seen at the time. See [rule-version use](induction.md#existing-entry-use-and-utility) for adoption and verification details.
 
 ## Fixed-memory testing with per-question copies
 
-Finish building the base and stop writes to it, including index updates. Create a fresh home from the same base for every test question.
+Finish building the base and stop writes, including index updates, before copying. Give each test question a fresh home from that same base.
 
 ```bash
 orx --home /work/fixed-base fork-memory --destination /work/test-A
 orx --home /work/test-A plan-next --task A.json --episode test --candidates candidates-A.json
-# Use /work/test-A for execution, task-derived checks, retries, recording, and close-out.
 
 orx --home /work/fixed-base fork-memory --destination /work/test-B
-# Use /work/test-B for B's solving episode.
 ```
 
-Lock each question's final answer before reference scoring. Keep reference inputs and scoring results in the evaluator. The question's home carries its own progress and budget while preserving isolation from the base and other test cases.
+Use the question's home for execution, task-derived checks, retries, recording and close-out. Lock its final answer before reference scoring and keep reference inputs and results in the evaluator. `fork-memory` uses a consistent SQLite backup and copies the matching index, archive and artifacts. Supply a new destination for each question.
 
-`fork-memory` requires a new destination. It uses a consistent SQLite backup, including WAL data, and copies the matching index, archive, and immutable artifacts. Keep the source quiescent so the sidecar indexes match the base database.
+## Preview and compact old snapshots
 
-## Explicit old-view cleanup
-
-Preview opens SQLite read-only and does not initialize `Store` or rewrite payloads:
+Use a copy of the bank for maintenance. A preview opens the database read-only.
 
 ```bash
 orx --home /work/bank-copy maintain-snapshots
-
-# Explicit application to a COPY, with a new backup path:
 orx --home /work/bank-copy maintain-snapshots --apply --backup /work/backups/bank-before.db
-
-# Optional physical reclamation, separately requested:
-orx --home /work/bank-copy maintain-snapshots --apply --backup /work/backups/bank-before-vacuum.db --vacuum
-
-# Explicitly preview expiry of inactive, unclosed LEGACY views:
-orx --home /work/bank-copy maintain-snapshots --expire-open-days 30
 ```
 
-Default candidates are verifiably closed snapshots with recoverable identity/profile and conditions. Running actions, staged attempts, active inputs, selected predictions awaiting binding, late task checks, pending H+, unsupported contexts and unresolved old references are reported as protections. Missing conditions are not guessed.
+- `--apply --backup NEW_FILE` rechecks dependencies, verifies a new backup and compacts eligible full legacy views into saved conditions.
+- `--expire-open-days N` adds eligible inactive, unclosed legacy views to the preview or an explicit apply. Active inputs, unfinished actions, staged attempts, late checks, pending induction and unresolved references remain protected.
+- `--vacuum` requests physical reclamation separately. Read the report's before/after payload bytes and SQLite page counts to judge logical and physical savings.
 
-`--expire-open-days N` is an explicit legacy-view expiry policy, not permission to discard attempts or finish actions. It considers only tasks with no newer recorded activity. Add it to an explicit `--apply --backup ...` command to release recoverable inactive views; real pending attempts/actions remain pending. Unresolved references and missing applicability evidence remain protected. H+ availability and adoption never become verified by expiry.
-
-Application creates and verifies a new consistent SQLite backup while holding the store write lock, then rechecks dependencies and atomically converts eligible views into small conditions before removing the old full rows. Historical availability IDs are shared separately; selected legacy context values are preserved as content versions before its full input expires. An unresolved archive pins shared old knowledge versions; this maintenance operation does not guess archive liveness or garbage-collect new cross-reference values/artifact files.
-
-Reports distinguish candidate gross payload bytes, actual payload bytes before/after application, SQLite page/freelist counts and physical DB file bytes. Deleting JSON does not by itself shrink the SQLite file. `--vacuum` is optional; retained pages/WAL are not proof of failure. Rerunning is idempotent but always requires a new backup path. Restore a backup into a separate home, with its original sidecars, for a rollback; older code must not be used to silently ignore new-format records.
-
-No ordinary open, prediction or close path cleans user legacy full snapshots. Main/DS bank cleanup is an independent operation explicitly initiated by the user after testing a copy.
+Use a new backup path for another apply. To roll back, restore the backup and its matching sidecars in a separate home. See [maintenance validation](../docs/world_model/snapshot_lifecycle_implementation.md) for storage details.
