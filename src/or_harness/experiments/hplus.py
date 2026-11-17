@@ -30,7 +30,7 @@ def library_signature(harness):
 
 def run_comparison(*, initial_home, training_tasks, test_tasks, output,
                    provider_factory, propose, attempt, review,
-                   embedding_factory=None, seed=7):
+                   embedding_factory=None, seed=7, evaluate_submission=None):
     """Callbacks are shared across arms; the framework alone changes scheduling.
 
     propose(h, task) returns the usual candidate. attempt(h, task, prediction)
@@ -39,6 +39,12 @@ def run_comparison(*, initial_home, training_tasks, test_tasks, output,
     historical regression checks, never invent future labels. Each question
     has one predicted attempt in this minimal runner. General runners can
     call process_induction_jobs after their existing retry loop instead.
+
+    test_tasks contain public statements/inputs, not reference answers.
+    evaluate_submission(task, submission) is evaluator-owned: it receives a
+    detached committed execution and close-out only after the solving callback
+    returns. Keep references in that callback, not in propose/attempt or the
+    solving bank. Its verdict, not self-check passed, supplies frozen_passes.
     """
     from or_harness.core.schema import task_check_state
     from or_harness.world_model.hplus import get_value
@@ -133,14 +139,32 @@ def run_comparison(*, initial_home, training_tasks, test_tasks, output,
                 prediction=h.strategy_predictions.get(decision['selected_prediction_id'])
                 record=attempt(h,task,prediction)
                 if h.bank.get(record.execution_id) is None:h.record(record)
-                h.close_episode(str(task['task_id']),str(task['task_id']))
+                bound=h.strategy_predictions.get(prediction.prediction_id).trace.model_info.get('bound_action_id')
+                action=h.actions.get(bound) if bound else None
+                if (action is None or action.linked_execution_id!=record.execution_id
+                        or action.task_id!=str(task['task_id'])
+                        or action.episode_id!=str(task['task_id'])):
+                    raise ValueError('test submission must be the actual bound execution')
+                locked=copy.deepcopy(h.bank.get(record.execution_id).to_dict())
+                closed=h.close_episode(str(task['task_id']),str(task['task_id']))
+                if closed.get('closeout') is None or closed.get('unfinished_actions'):
+                    raise ValueError('cannot score an answer before its episode is closed')
+                submission={'execution':locked, 'closeout':copy.deepcopy(closed['closeout']),
+                            'answer_fingerprint':digest(locked)}
+                acceptance=(evaluate_submission(copy.deepcopy(task),copy.deepcopy(submission))
+                            if evaluate_submission is not None else
+                            {'state':'insufficient','conclusion':'No evaluator was supplied for the locked answer.'})
+                if not isinstance(acceptance,dict) or acceptance.get('state') not in ('passed','failed','insufficient'):
+                    raise ValueError('evaluator must return a task-acceptance verdict for the locked answer')
                 unchanged=library_signature(h)==frozen
                 if not unchanged:raise ValueError('test modified the frozen strategy content')
                 tests.append({'task_id':task['task_id'],'execution_id':record.execution_id,
-                    'task_check':task_check_state(h.bank.get(record.execution_id)),
-                    'objective':record.quality.get('objective'),'library_unchanged':unchanged})
+                    'task_check':task_check_state(locked),
+                    'objective':locked['quality'].get('objective'),'library_unchanged':unchanged,
+                    'submission':{k:copy.deepcopy(v) for k,v in submission.items() if k!='execution'},
+                    'reference_acceptance':copy.deepcopy(acceptance)})
         metrics['frozen_tests']=tests
-        metrics['frozen_passes']=sum(t['task_check']=='passed' for t in tests)
+        metrics['frozen_passes']=sum(t['reference_acceptance']['state']=='passed' for t in tests)
         summary['arms'][branch]=metrics
     assert len({m['initial_library_digest'] for m in summary['arms'].values()})==1
     assert summary['arms']['random']['triggers']==summary['arms']['hplus']['triggers']
@@ -182,6 +206,30 @@ def integer_fixture(output,seed=7,positive_min=False):
     def propose(h,t):
         return {'strategy_id':'endpoint','solver':'python','method':{'name':'integer interval enumeration','steps':[GENERAL_RULE['do']]}}
 
+    def task_checks(t,variables):
+        """Only public task data and the returned solution; no reference answer."""
+        f=t['fixture'];n,c=f['n'],f['c'];x,y=variables['X'],variables['Y']
+        objective=({'coefficients':{'Y':1},'constant':(x-3)**2} if f['boundary'] else
+                   {'coefficients':{'X':2,'Y':-5 if f['min'] else 5}})
+        check={'integer':{'variables':['X','Y']},'recompute_objective':objective,
+               'semantic_probe':[{'path':'execution_features.solution_variables.X','min':2*y+c,'max':n-y},
+                                 {'path':'execution_features.solution_variables.Y','min':0}]}
+        if f['boundary']:check['semantic_probe'].append(
+            {'path':'execution_features.solution_variables.reduction_used','equals':False})
+        return check
+
+    def evaluate_submission(t,submission):
+        from or_harness.strategy.verification import verify_task_result
+        f=t['fixture'];n,c=f['n'],f['c']
+        expected=0 if f['boundary'] else 2*c-(n-c)//3 if f['min'] else 2*n+3*((n-c)//3)
+        execution=submission['execution']
+        check=task_checks(t,execution['execution_features']['solution_variables'])
+        check.update(reference_objective=expected,reference_source='bench_declared',
+                     reference_version='independently derived integer optimum')
+        # The reference report is evaluator output, never written to the solve
+        # home or delivered to an attempt/retry callback.
+        return verify_task_result(execution,check)
+
     def attempt(h,t,prediction=None):
         if prediction is None:
             decision=h.plan_next(t,t['task_id'],candidates=[propose(h,t)])
@@ -202,12 +250,7 @@ def integer_fixture(output,seed=7,positive_min=False):
         r=h.execute(t,None,str(ws/'solve.py'),str(ws),
                     episode_id=t['task_id'],prediction_id=prediction.prediction_id,
                     method=propose(h,t)['method'],used_entry_ids=use)
-        y=r.execution_features['solution_variables']['Y']
-        expected=0 if boundary else 2*c-(n-c)//3 if minimum else 2*n+3*((n-c)//3)
-        check={'reference_objective':expected,'reference_source':'bench_declared',
-            'reference_version':'independently derived integer optimum', 'integer':{'variables':['X','Y']},
-            'semantic_probe':[{'path':'execution_features.solution_variables.X','min':2*y+c,'max':n-y}]}
-        if boundary:check['semantic_probe'].append({'path':'execution_features.solution_variables.reduction_used','equals':False})
+        check=task_checks(t,r.execution_features['solution_variables'])
         if use:check['rule_assessments']=[assessment(v,boundary)]
         h.check_task_result(r.execution_id,check)
         return h.bank.get_pending(r.execution_id) or h.bank.get(r.execution_id)
@@ -216,7 +259,7 @@ def integer_fixture(output,seed=7,positive_min=False):
         return {'entry_id':'1','version':version,'applicability':'not_applicable' if boundary else 'applies',
             'response':'disable' if boundary else None,'method_fidelity':'faithful','effect_coverage':'complete',
             'source':'fixture reviewer inspected actual enumeration script, variables and original integer checker',
-            'assessment':'Endpoint follows objective direction; nonmonotone input disables elimination. Independent optimum and both constraints checked.',
+            'assessment':'Endpoint follows objective direction; nonmonotone input disables elimination. Task-domain, constraint and objective-consistency checks ran; the endpoint argument is reviewed separately.',
             'evidence_refs':['artifacts.submitted_script','artifacts.workspace_result']}
 
     def review(h,material,job):
@@ -260,7 +303,7 @@ def integer_fixture(output,seed=7,positive_min=False):
               task('nonmonotone',12,0,boundary=True),task('covered-min',1001,302)]
     report=run_comparison(initial_home=str(initial),training_tasks=training,test_tasks=[task('frozen-independent',901,250)],
         output=str(output),provider_factory=Provider,propose=propose,attempt=attempt,review=review,
-        embedding_factory=LocalHashEmbeddingBackend,seed=seed)
+        embedding_factory=LocalHashEmbeddingBackend,seed=seed,evaluate_submission=evaluate_submission)
     report['fixture_source']='real captured Python enumeration/checks; scripted predictor/reviewer; legacy maximum-only initial rule'
     (output/'summary.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
     return report

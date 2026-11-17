@@ -65,10 +65,12 @@ class RuleCase(HarnessTestCase):
         self.h.record(r)
         if do_check:
             x, y = r.execution_features["solution_variables"]["X"], r.execution_features["solution_variables"]["Y"]
-            check = {"reference_objective": 0 if boundary else 2*n+3*((n-c)//3) if maximum else 2*c-((n-c)//3),
-                "reference_source": "bench_declared", "reference_version": "independent integer optimum",
-                "integer": {"variables": ["X", "Y"]},
-                "semantic_probe": [{"path":"execution_features.solution_variables.X", "min":2*y+c,"max":n-y}]}
+            objective = ({"coefficients": {"Y": 1}, "constant": (x-3)**2} if boundary else
+                         {"coefficients": {"X": 2, "Y": coefficient}})
+            check = {"integer": {"variables": ["X", "Y"]},
+                "recompute_objective": objective,
+                "semantic_probe": [{"path":"execution_features.solution_variables.X", "min":2*y+c,"max":n-y},
+                                   {"path":"execution_features.solution_variables.Y", "min":0}]}
             if boundary:
                 check['semantic_probe'].append({'path':'execution_features.solution_variables.reduction_used','equals':False})
             if use and assessment:
@@ -77,10 +79,23 @@ class RuleCase(HarnessTestCase):
                     "method_fidelity": "faithful", "effect_coverage": coverage,
                     "response": "disable" if boundary else None, "failure_source": failure_source,
                     "source": "fixture auditor inspected captured script and variables against rule premises",
-                    "assessment": "Endpoint choice follows coefficient/direction; nonmonotone case disables reduction. Check covers the stated integer optimum and both constraints.",
+                    "assessment": "Endpoint choice follows coefficient/direction; nonmonotone case disables reduction. Task checks cover integrality, both constraints and objective consistency; the endpoint argument is reviewed separately.",
                     "evidence_refs": ["artifacts.submitted_script", "artifacts.workspace_result"]}]
             report = self.h.check_task_result(r.execution_id, check)
         return task, self.h.bank.get(r.execution_id)
+
+    def check_committed_reference(self, record, objective):
+        previous = record.execution_features['task_check']
+        check = copy.deepcopy(previous['acceptance_rule']['spec'])
+        check.update(reference_objective=objective, reference_source='bench_declared',
+                     reference_version='independent integer optimum')
+        assessments = copy.deepcopy(previous.get('rule_assessments') or [])
+        for assessment in assessments:
+            assessment['assessment'] += (' After submission, the fixture auditor '
+                'also compared this locked result with the independent reference.')
+        if assessments:
+            check['rule_assessments'] = assessments
+        return self.h.check_task_result(record.execution_id, check, post_submission=True)
 
     def seed(self):
         task, r = self.solve()
@@ -173,7 +188,8 @@ class TestRuleLifecycle(RuleCase):
         task, case = self.solve('wrong-upper',use=entry_id,version=2,lower=False,failure_source='rule',
                                performed_method={'name':'upper endpoint','steps':[bad['do']]})
         self.assertEqual(case.quality['objective'],92)
-        result=self.h.close_episode(task['task_id'],task['task_id'])
+        self.h.close_episode(task['task_id'],task['task_id'])
+        result=self.check_committed_reference(case,90)
         self.assertEqual(result['rule_validation']['checks'][0]['state'],'refuted')
         self.assertFalse(is_publishable(self.h.sbank.get(entry_id)))
 
@@ -237,6 +253,7 @@ class TestRuleLifecycle(RuleCase):
         t,bad=self.solve('bad-use',use=entry_id,lower=False,failure_source='rule',
                          performed_method={'name':'upper endpoint','steps':['Choose the upper endpoint.']})
         self.h.close_episode(t['task_id'],t['task_id'])
+        self.check_committed_reference(bad,90)
         self.assertEqual(check_records(self.h.store,entry_id)[-1]['state'],'refuted')
         self.assertTrue(is_publishable(self.h.sbank.get(entry_id)))
         result=self.h.induce(effect_attributions=[{'entry_id':entry_id,'execution_id':bad.execution_id,
@@ -422,7 +439,8 @@ class TestRuleLifecycle(RuleCase):
             return json.loads(out.getvalue()),out.getvalue().strip()
         result,_=cli(__import__('decision_fixtures').scored_cli_argv(self.home,['execute','--task',str(work/'task.json'),'--strategy','endpoint','--solver','python','--code',str(work/'solve.py'),'--workspace',str(work),'--episode','cli-ep']))
         execution_id=result['result']['execution']['execution_id']
-        cli(['check-task',execution_id,'--check',json.dumps({'reference_objective':2699,'reference_source':'bench_declared'})])
+        cli(['check-task',execution_id,'--check',json.dumps({'integer':{'variables':['X','Y']},
+            'recompute_objective':{'coefficients':{'X':2,'Y':5}}})])
         cli(['record','--from-staged',execution_id])
         closed,_=cli(['close-episode','--task','cli-task','--episode','cli-ep'])
         self.assertEqual(closed['result']['induction_gate']['state'],'unavailable')

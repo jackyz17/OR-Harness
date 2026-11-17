@@ -825,7 +825,8 @@ def cmd_check_task(args) -> int:
             return _fail("--check must be a JSON object")
         try:
             result = h.check_task_result(args.execution_id, check,
-                                         episode_id=args.episode)
+                                         episode_id=args.episode,
+                                         post_submission=getattr(args, "post_submission", False))
         except ValueError as exc:
             return _fail(str(exc))
         report = result["report"]
@@ -846,9 +847,13 @@ def cmd_check_task(args) -> int:
             summary = (f"Task check for {args.execution_id}: FAILED. {diffs}. "
                        "The attempt stays recorded with its real cost and "
                        "can be cited as contrast evidence; it can no longer "
-                       "count as a success sample. Diagnose the cause "
-                       "yourself and re-solve in the same episode — never "
-                       "change the task to match a reference value.")
+                       "count as a success sample. "
+                       + ("The submitted episode is locked; use this evidence "
+                          "for offline review, not another solve."
+                          if report.get("phase") == "post_submission" else
+                          "Diagnose the cause and obtain a fresh plan-next "
+                          "selection in the same episode; do not change the "
+                          "task or reference to match the answer."))
         else:
             summary = (f"Task check for {args.execution_id}: INSUFFICIENT — "
                        f"the answer's validity is UNKNOWN, not confirmed. "
@@ -2696,16 +2701,14 @@ def build_parser() -> argparse.ArgumentParser:
                 "which is neither a pass nor a failure. `failed` never "
                 "deletes the attempt — the cost is real and the failure is "
                 "raw material — it stops the answer from counting as a "
-                "success sample. A reference value you do not source with "
-                "reference_source is treated as SELF-DERIVED: a pass is then "
-                "only a consistency check against your own value, not proof "
-                "the answer satisfies the task. Never replace a benchmark "
-                "reference with your own value and call the task passed."))
+                "success sample. Before submission, use only task inputs "
+                "and execution evidence. Reference objective/status checks "
+                "require the execution's actual episode to be closed and a "
+                "declared reference_source. --post-submission does not bypass "
+                "that check. A submitted episode cannot solve or retry again."))
     p.add_argument("execution_id", metavar="EXECUTION_ID")
     p.add_argument("--check", default=None, metavar="JSON",
-                   help=("the check basis, e.g. '{\"reference_objective\": "
-                         "10755, \"reference_source\": \"bench_declared\", "
-                         "\"integer\": {\"variables\": [\"x1\", "
+                   help=("task checks JSON/file, e.g. '{\"integer\": {\"variables\": [\"x1\", "
                          "\"x2\"]}}'. Supported keys: reference_objective "
                          "(+tolerance), reference_status, integer "
                          "({variables?, tolerance?}), recompute_objective "
@@ -2717,6 +2720,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "`insufficient` — never a default pass. A probe path "
                          "that does not resolve reports `insufficient`, NOT a "
                          "refutation"))
+    p.add_argument("--post-submission", action="store_true",
+                   help="associate post-answer evidence only after this EX's "
+                        "actual producing episode has closed; references need "
+                        "reference_source and cannot be used for retries")
     p.add_argument("--episode", default=None,
                    help="episode to scope the check to (defaults to the "
                         "episode of the action that produced the execution)")

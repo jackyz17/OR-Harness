@@ -381,7 +381,10 @@ class TestBinaryHplus(BinaryCase):
         self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],2)
         _,wrong=self.solve('independent-upper',lower=False,performed_method=upper_method)
         self.assertEqual(wrong.quality['objective'],92)
-        self.assertEqual(wrong.execution_features['task_check']['state'],'failed')
+        self.assertEqual(wrong.execution_features['task_check']['state'],'passed')
+        self.h.close_episode('independent-upper','independent-upper')
+        accepted=self.check_committed_reference(wrong,90)
+        self.assertEqual(accepted['state'],'failed')
         self.assertEqual(context.provider_view()['hplus_feedback'],old_feedback)
         self.predict('covered-next',0)
         feedback=self.provider.requests[-1]['prediction_context']['hplus_feedback']

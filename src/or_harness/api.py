@@ -3479,6 +3479,14 @@ class ORHarness:
                                f"dimension(s): {dims}")}
         return {"allowed": True, "view": view, "termination": None}
 
+    def _require_open_episode(self, task_id: str,
+                              episode_id: Optional[str]) -> None:
+        """A submitted episode cannot start another solving decision/attempt."""
+        if self.episode_closeout_record(task_id, episode_id) is not None:
+            raise ValueError(
+                "episode is already closed: its answer is submitted; "
+                "new planning and execution are not allowed")
+
     def _episode_termination(self, task_id: str,
                              episode_id: Optional[str]) -> Optional[Dict[str, Any]]:
         """A recorded episode-termination mark, or None.
@@ -4309,6 +4317,7 @@ class ORHarness:
         executable prediction, preserving stable ties and existing budget
         limits. Execute that ID directly; actual adoption is recorded by execute.
         Shadow/disabled/unscorable decisions authorize no execution."""
+        self._require_open_episode(str(task.get("task_id", "")), episode_id)
         from or_harness.world_model.planner import PlanLimits, PlanResult
         limits = (limits if isinstance(limits, PlanLimits)
                   else PlanLimits.from_dict(limits))
@@ -5589,6 +5598,7 @@ class ORHarness:
                     f"prediction {prediction_id!r} disappeared while claiming "
                     "it for this action")
             info = prediction.trace.model_info
+            self._require_open_episode(action.task_id, action.episode_id)
             decision,row=self._scored_decision(prediction,action_id=action_id)
             other=self._prediction_claimed_by_action(prediction_id)
             if other not in (None,action_id):raise ValueError('prediction is already claimed by another real attempt')
@@ -5807,6 +5817,7 @@ class ORHarness:
             strategy_id = candidate.strategy_id
             solver = candidate.solver or solver
             episode_id = candidate.episode_id
+        self._require_open_episode(str(task.get("task_id", "")), episode_id)
         # ---- (1b) THE BUDGET GATE -----------------------------------------
         # A stopped task must not start NEW solving work. Only an
         # EPISODE-scoped overrun (or a recorded host cancel) refuses here:
@@ -6288,6 +6299,19 @@ class ORHarness:
         Index synchronization is BEST EFFORT: the fact is appended first, and
         an embedding failure is reported as ``index_sync`` (deferred) rather
         than rolling anything back."""
+        original = (self.bank.get(record.execution_id)
+                    or self.bank.get_pending(record.execution_id))
+        if original is not None:
+            producer, bound_episode = self._execution_owner(original)
+            if (producer is not None and self.episode_closeout_record(
+                    original.task_id, bound_episode) is not None):
+                def answer(item):
+                    return self.store.dumps({
+                        "task_id": item.task_id, "quality": item.quality,
+                        "variables": item.execution_features.get("solution_variables")})
+                if answer(record) != answer(original):
+                    raise ValueError("submitted answer is locked; record "
+                                     "cannot replace its result or solution")
         # Persist failure classification once — a first-class fact, not a
         # re-derived view (environment vs model errors feed solver advisories
         # and future failure-pattern induction).
@@ -8087,9 +8111,32 @@ class ORHarness:
 
     # -- task-result checks (solver success vs. task correctness) ---------------
 
+    def _execution_owner(self, record: ExecutionRecord,
+                         episode_id: Optional[str] = None):
+        """Resolve the producing action, never a later verify action for EX."""
+        action = self.actions.get(record.action_id) if record.action_id else None
+
+        def produces(candidate):
+            return (candidate is not None
+                    and candidate.action_type == "execute_strategy"
+                    and candidate.source != "hypothetical"
+                    and candidate.task_id == str(record.task_id)
+                    and candidate.linked_execution_id == record.execution_id)
+
+        if not produces(action):
+            matches = [candidate for candidate in self.actions.query(
+                task_id=str(record.task_id), action_type="execute_strategy")
+                if produces(candidate)]
+            action = matches[0] if len(matches) == 1 else None
+        bound_episode = action.episode_id if action is not None else None
+        if episode_id is not None and (action is None or episode_id != bound_episode):
+            raise ValueError("check episode does not match the execution's producing action")
+        return action, bound_episode
+
     def check_task_result(self, execution_id: str,
                           check: Optional[Dict[str, Any]] = None,
-                          *, episode_id: Optional[str] = None
+                          *, episode_id: Optional[str] = None,
+                          post_submission: bool = False
                           ) -> Dict[str, Any]:
         """Check whether an execution's ANSWER satisfies the ORIGINAL task.
 
@@ -8109,6 +8156,11 @@ class ORHarness:
         ``semantic_probe`` (``{"path", equals|min|max|in}``), and an optional
         ``intent`` (``relaxation`` / ``intermediate``) marking an execution
         whose answer is deliberately NOT the task's answer.
+
+        Before submission, only checks against task inputs and this execution
+        are allowed. Reference objective/status comparisons require the actual
+        producing episode's close-out and a declared reference_source.
+        post_submission explicitly selects that phase but never establishes it.
 
         Three verdicts, and none of them is a default:
 
@@ -8142,19 +8194,44 @@ class ORHarness:
         modeling mistake, does not rebuild the model, and never relaxes the
         task to match a reference value.
         """
-        from or_harness.strategy.verification import verify_task_result
+        from or_harness.strategy.verification import (
+            REFERENCE_SOURCES, verify_task_result)
         from or_harness.strategy.evidence_access import resolve_execution
+        if check is not None and not isinstance(check, dict):
+            raise ValueError("check must be a JSON object")
+        if not isinstance(post_submission, bool):
+            raise ValueError("post_submission must be a boolean")
+        check = check or {}
         record=resolve_execution(self,execution_id)
         staged=self.bank.get_pending(execution_id) is not None
         retained=record is not None and self.bank.get(execution_id) is None and not staged
         if record is None:
             raise ValueError(f'unknown execution_id {execution_id!r}: unavailable or withdrawn evidence')
         task_id = str(record.task_id)
-        resolved_episode = episode_id
-        if resolved_episode is None:
-            action = self.actions.by_execution(execution_id)
-            resolved_episode = action.episode_id if action is not None else None
-        report = verify_task_result(record, check or {})
+        producing_action, resolved_episode = self._execution_owner(record, episode_id)
+        closeout = (self.episode_closeout_record(task_id, resolved_episode)
+                    if producing_action is not None else None)
+        reference_check = any(key in check for key in
+                              ("reference_objective", "reference_status"))
+        if reference_check or post_submission:
+            if (closeout is None or producing_action is None
+                    or producing_action.ended_at is None
+                    or producing_action.ended_at > closeout["created_at"]):
+                raise ValueError(
+                    "post-submission checks require the execution's actual "
+                    "episode to be closed; reference answers are unavailable "
+                    "to pre-answer checks")
+        if reference_check and check.get("reference_source") not in REFERENCE_SOURCES:
+            raise ValueError(
+                "reference checks require reference_source="
+                "bench_declared|independent|self_derived")
+        # All phase/ownership refusals precede both the checker and any writes.
+        report = verify_task_result(record, check)
+        report["phase"] = ("post_submission" if closeout is not None else
+                           "pre_submission" if producing_action is not None else "unbound_self_check")
+        if closeout is not None:
+            report["submission"] = {key: closeout[key] for key in
+                                    ("closeout_id", "task_id", "episode_id", "created_at")}
         from or_harness.strategy.rule_support import inherit_assessments
         inherit_assessments(record,report,check or {})
         if record.execution_features.get('task_check'):
@@ -8237,6 +8314,9 @@ class ORHarness:
             result["reflection_material"] = self._reflection_material(
                 record, report, resolved_episode)
             result["next"] = (
+                "This submitted answer is locked. Retain the acceptance "
+                "evidence for offline review; this episode cannot solve again."
+                if closeout is not None else
                 "the answer does not satisfy the task. Diagnose WHY yourself "
                 "(task statement, model, implementation, or the reference "
                 "basis), state the basis for the change, and re-solve in the "
@@ -8245,6 +8325,9 @@ class ORHarness:
                 "be cited as contrast evidence")
         elif report["state"] == "insufficient":
             result["next"] = (
+                "The submitted answer has insufficient acceptance evidence; "
+                "keep that uncertainty and review available sources offline."
+                if closeout is not None else
                 "the answer's validity is UNKNOWN, not confirmed: declare the "
                 "check basis that applies, or record the solution vector "
                 "(result.json `variables`) so a domain check can run. An "

@@ -16,10 +16,15 @@ not a valid integer answer → the variable domain is repaired → 10755 passes.
 from decision_fixtures import bind_legacy, execute_scored, import_legacy_execution, planned_prediction
 
 
+import copy
+import io
 import json
 import os
 import sys
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
 from helpers import HarnessTestCase
 
@@ -158,16 +163,14 @@ class TestRelaxationRepairLoop(TaskCheckCase):
                              objective=10750.0, tag="relaxed")
 
         check = {
-            "reference_objective": 10750.0,
             "integer": {"variables": ["x1", "x2"]},
         }
         first = self.h.check_task_result(relaxed.execution_id, check)
         self.assertEqual(first["state"], TASK_CHECK_FAILED)
-        # The objective MATCHED the reference; the domain check is what
-        # caught it. This is the whole point: a matching objective does not
-        # make the answer a valid one.
+        # Task-only domain checks identify the relaxation without exposing
+        # a reference answer to the solving/repair loop.
         basis_checks = {c["check"]: c for c in first["report"]["checks"]}
-        self.assertTrue(basis_checks["reference_objective"]["ok"])
+        self.assertNotIn("reference_objective", basis_checks)
         self.assertFalse(basis_checks["integer_domains"]["ok"])
         self.assertEqual(basis_checks["integer_domains"]["n_non_integer"], 2)
         diffs = first["report"]["diffs"]
@@ -187,8 +190,7 @@ class TestRelaxationRepairLoop(TaskCheckCase):
                               objective=10755.0, tag="repaired")
         second = self.h.check_task_result(
             repaired.execution_id,
-            {"reference_objective": 10755.0,
-             "integer": {"variables": ["x1", "x2"]}})
+            {"integer": {"variables": ["x1", "x2"]}})
         self.assertEqual(second["state"], TASK_CHECK_PASSED)
         self.assertEqual(task_check_state(
             self.h.bank.get(repaired.execution_id)), "passed")
@@ -560,7 +562,8 @@ class TestLateCorrection(TaskCheckCase):
         # reads already reflects the new task fact.
         late = self.h.check_task_result(
             record.execution_id,
-            {"reference_objective": 999.0})
+            {"reference_objective": 999.0, "reference_source": "bench_declared"},
+            post_submission=True)
         self.assertEqual(late["state"], "failed")
         self.assertIn("calibration_republished", late)
         second_summary = self.h.calibration_summary()
@@ -612,7 +615,8 @@ class TestLateCorrection(TaskCheckCase):
 
         self.h.check_task_result(
             record.execution_id,
-            {"reference_objective": 999.0})
+            {"reference_objective": 999.0, "reference_source": "bench_declared"},
+            post_submission=True)
         # A context built AFTER the correction sees it WITHOUT any rebuild
         # call: the correction republished the summary.
         after = self.h.build_prediction_context(
@@ -739,8 +743,7 @@ class TestExposedDefectsAreFixed(TaskCheckCase):
         with redirect_stdout(buf):
             code = main(["--home", self.home, "check-task",
                          fixed.execution_id, "--check",
-                         json.dumps({"reference_objective": 10755.0,
-                                     "integer": {}})])
+                         json.dumps({"integer": {}})])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(buf.getvalue())["result"]["state"],
                          "passed")
@@ -956,7 +959,7 @@ class TestCompletionIsObservable(TaskCheckCase):
         task, prediction = self._predict_completion()
         record = self._solve_bound(task)
         report = self.h.check_task_result(
-            record.execution_id, {"reference_objective": 10755.0},
+            record.execution_id, {"integer": {"variables": ["x1", "x2"]}},
             episode_id="ep1")
         self.assertEqual(report["state"], "passed")
         benefit = self._benefit_of_close()
@@ -969,7 +972,7 @@ class TestCompletionIsObservable(TaskCheckCase):
         task, prediction = self._predict_completion()
         record = self._solve_bound(task)
         self.h.check_task_result(record.execution_id,
-                                 {"reference_objective": 99999.0},
+                                 {"recompute_objective": {"coefficients": {"x1": 7, "x2": 3}}},
                                  episode_id="ep1")
         benefit = self._benefit_of_close()
         self.assertEqual(benefit["observed"], 0.0)
@@ -1015,6 +1018,267 @@ class TestCompletionIsObservable(TaskCheckCase):
         benefit = self._benefit_of_close()
         self.assertEqual(benefit["eligibility"], "not_predicted")
         self.assertIn("required convention", benefit["reason"])
+
+
+class TestTaskCheckSubmissionBoundary(HarnessTestCase):
+    """Normal scored attempts: self-check first, reference only after commit."""
+
+    def setUp(self):
+        super().setUp()
+        from decision_fixtures import ExecutionFixtureProvider
+        from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
+
+        class Provider(ExecutionFixtureProvider):
+            decision = 0
+
+            def __init__(self):
+                self.requests = []
+
+            def predict(self, request, timeout_s=None):
+                self.requests.append(copy.deepcopy(request))
+                result = super().predict(request, timeout_s=timeout_s)
+                result["payload"]["capability_gain"] = {
+                    "decision": self.decision,
+                    "claim": "A checked integer-boundary case may clarify the reusable limit.",
+                    "basis": ["The original task and performed candidate steps."],
+                    "verification_conditions": [{"condition": "Inspect the returned integer and task-bound checks."}]
+                    if self.decision else [],
+                }
+                return result
+
+        self.provider = Provider()
+        self.h = ORHarness(home=self.home, world_model=self.provider,
+                           embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(self.h.close)
+        self.task = {"task_id": "submission-task", "family": "assignment",
+                     "text": "Choose an integer x from 0 through 5 to maximize x; return x and the objective."}
+        self.method = {"name": "bounded integer attempt",
+                       "steps": ["Return a bounded integer and check the task's domains and objective."]}
+
+    def plan(self, task=None, episode="E"):
+        return self.h.plan_next(task or self.task, episode, candidates=[{
+            "name": self.method["name"], "steps": self.method["steps"], "solver": "python"}])
+
+    def solve(self, *, task=None, episode="E", value=4, recorded=False, tag="attempt"):
+        task = task or self.task
+        plan = self.plan(task, episode)
+        workspace = Path(self.home) / tag
+        workspace.mkdir()
+        script = workspace / "solve.py"
+        payload = {"status": "optimal", "objective_value": value,
+                   "objective_bound": value, "variables": {"x": value},
+                   "runtime_seconds": 0.01, "method_performed": copy.deepcopy(self.method)}
+        script.write_text("import json,os\nr=" + repr(payload)
+                          + "\nr['method_performed']['action_id']=os.environ['OR_ACTION_ID']\n"
+                          + "json.dump(r,open('result.json','w'))\n")
+        record = self.h.execute(task, prediction_id=plan["selected_prediction_id"],
+                                code_path=str(script), workspace=str(workspace))
+        self.assertEqual(record.quality["status"], "optimal", record.to_dict())
+        if recorded:
+            self.h.record(record)
+        return record, script, workspace
+
+    def cli(self, *args):
+        from or_harness.cli import main
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["--home", self.home, *map(str, args)])
+        return code, json.loads(buf.getvalue())
+
+    def stored_check(self, execution_id):
+        record = self.h.bank.get(execution_id) or self.h.bank.get_pending(execution_id)
+        return copy.deepcopy(record.execution_features.get("task_check"))
+
+    def test_task_only_checks_keep_all_three_verdicts_without_reference(self):
+        record, _, _ = self.solve()
+        for check, state in [
+            ({"integer": {"variables": ["x"]},
+              "recompute_objective": {"coefficients": {"x": 1}},
+              "semantic_probe": {"path": "execution_features.solution_variables.x", "min": 0, "max": 5}}, "passed"),
+            ({"integer": {"variables": ["missing"]}}, "insufficient"),
+            ({"semantic_probe": {"path": "execution_features.solution_variables.x", "max": 3}}, "failed"),
+        ]:
+            with self.subTest(state=state):
+                code, output = self.cli("check-task", record.execution_id, "--check", json.dumps(check))
+                self.assertEqual(code, 0)
+                report = output["result"]["report"]
+                self.assertEqual(output["result"]["state"], state)
+                self.assertEqual(report["phase"], "pre_submission")
+                self.assertIn("unchecked", report["scope"])
+                self.assertNotIn("reference_objective", report["scope"]["basis"])
+        code, _ = self.cli("record", "--from-staged", record.execution_id)
+        self.assertEqual(code, 0)
+        self.assertEqual(task_check_state(self.h.bank.get(record.execution_id)), "failed")
+
+    def test_reference_refusals_run_no_checker_and_write_no_verdict(self):
+        for recorded in (False, True):
+            record, _, _ = self.solve(recorded=recorded, tag="recorded" if recorded else "staged")
+            self.h.check_task_result(record.execution_id, {"integer": {}})
+            before = self.stored_check(record.execution_id)
+            count = len(self.h.actions.query(action_type="verify"))
+            for key, value in (("reference_objective", 987654321), ("reference_status", "hidden-status")):
+                for source in (None, "bench_declared", "self_derived"):
+                    check = {key: value, "reference_source": source}
+                    with self.subTest(recorded=recorded, key=key, source=source):
+                        with patch("or_harness.strategy.verification.verify_task_result") as verifier:
+                            with self.assertRaisesRegex(ValueError, "actual episode to be closed") as error:
+                                self.h.check_task_result(record.execution_id, check)
+                            self.assertNotIn(str(value), str(error.exception))
+                            code, output = self.cli("check-task", record.execution_id,
+                                                    "--check", json.dumps(check))
+                            verifier.assert_not_called()
+                        self.assertEqual(code, 2)
+                        self.assertEqual(set(output["result"]), {"error"})
+                        self.assertNotIn(str(value), json.dumps(output))
+                        self.assertEqual(self.stored_check(record.execution_id), before)
+                        self.assertEqual(len(self.h.actions.query(action_type="verify")), count)
+
+    def test_explicit_post_submission_cannot_override_open_state(self):
+        record, _, _ = self.solve(recorded=True)
+        with self.assertRaisesRegex(ValueError, "actual episode to be closed"):
+            self.h.check_task_result(record.execution_id, {"integer": {}}, post_submission=True)
+        code, output = self.cli("check-task", record.execution_id, "--post-submission",
+                                "--check", '{"integer":{}}')
+        self.assertEqual(code, 2)
+        self.assertEqual(set(output["result"]), {"error"})
+        self.assertIsNone(self.stored_check(record.execution_id))
+
+    def test_failed_self_check_can_retry_through_a_fresh_decision_before_close(self):
+        failed, _, _ = self.solve(value=2.5, recorded=True, tag="fractional")
+        checked = self.h.check_task_result(failed.execution_id, {"integer": {"variables": ["x"]}})
+        self.assertEqual(checked["state"], "failed")
+        repaired, _, _ = self.solve(value=4, recorded=True, tag="repair")
+        checked = self.h.check_task_result(repaired.execution_id, {"integer": {"variables": ["x"]}})
+        self.assertEqual(checked["state"], "passed")
+        self.assertNotEqual(failed.execution_features["prediction_id"], repaired.execution_features["prediction_id"])
+        self.assertEqual(len(self.provider.requests), 2)
+        self.assertEqual(len(self.h.bank.query(task_id=self.task["task_id"])), 2)
+
+    def test_record_after_close_saves_original_facts_but_cannot_replace_answer(self):
+        record, _, _ = self.solve()
+        self.h.check_task_result(record.execution_id, {"integer": {}})
+        self.h.close_episode(self.task["task_id"], "E")
+        changed = copy.deepcopy(record)
+        changed.quality["objective"] = 5
+        changed.execution_features["solution_variables"]["x"] = 5
+        with self.assertRaisesRegex(ValueError, "submitted answer is locked"):
+            self.h.record(changed)
+        code, output = self.cli("record", "--execution", json.dumps(changed.to_dict()))
+        self.assertEqual(code, 2)
+        self.assertEqual(set(output["result"]), {"error"})
+        self.assertEqual(self.h.bank.get_pending(record.execution_id).quality["objective"], 4)
+        # Saving the original staged attempt is still allowed after close.
+        code, _ = self.cli("record", "--from-staged", record.execution_id)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.h.bank.get(record.execution_id).quality["objective"], 4)
+
+    def test_other_closed_episode_and_later_verify_action_cannot_supply_phase(self):
+        record, _, _ = self.solve(recorded=True)
+        other, _, _ = self.solve(episode="other", recorded=True, tag="other")
+        self.h.close_episode(self.task["task_id"], "other")
+        # A verify action linking the same EX is not its producing action.
+        action = self.h.actions.begin_action("verify", self.task["task_id"], "other")
+        self.h.actions.end_action(action.action_id, status="completed",
+                                  linked_execution_id=record.execution_id)
+        check = {"reference_objective": 5, "reference_source": "bench_declared"}
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            self.h.check_task_result(record.execution_id, check, episode_id="other", post_submission=True)
+        with self.assertRaisesRegex(ValueError, "actual episode to be closed"):
+            self.h.check_task_result(record.execution_id, check)
+        code, output = self.cli("check-task", record.execution_id, "--episode", "other",
+                                "--post-submission", "--check", json.dumps(check))
+        self.assertEqual(code, 2)
+        self.assertEqual(set(output["result"]), {"error"})
+        self.assertIsNone(self.stored_check(record.execution_id))
+        self.assertNotEqual(record.execution_id, other.execution_id)
+
+    def test_closed_other_task_cannot_authorize_reference(self):
+        record, _, _ = self.solve(recorded=True)
+        other_task = {**self.task, "task_id": "other-task"}
+        self.solve(task=other_task, recorded=True, tag="other-task")
+        self.h.close_episode(other_task["task_id"], "E")
+        with self.assertRaisesRegex(ValueError, "actual episode to be closed"):
+            self.h.check_task_result(record.execution_id, {"reference_status": "optimal",
+                                                          "reference_source": "independent"})
+
+    def test_post_submission_acceptance_is_sourced_and_available_to_induction(self):
+        self.provider.decision = 1
+        record, _, _ = self.solve(recorded=True)
+        self.h.check_task_result(record.execution_id, {"integer": {}})
+        closed = self.h.close_episode(self.task["task_id"], "E")
+        job = closed["induction_schedule"]["pending_ids"][0]
+        code, output = self.cli("check-task", record.execution_id, "--post-submission", "--episode", "E",
+                                "--check", '{"reference_objective":5,"reference_source":"bench_declared","reference_version":"private-evaluator/1"}')
+        self.assertEqual(code, 0)
+        report = output["result"]["report"]
+        self.assertEqual(output["result"]["state"], "failed")
+        self.assertEqual(report["phase"], "post_submission")
+        self.assertEqual(report["submission"]["closeout_id"], closed["closeout"]["closeout_id"])
+        self.assertEqual(report["reference_source"]["source"], "bench_declared")
+        self.assertEqual(report["reference_source"]["version"], "private-evaluator/1")
+        self.assertNotIn("re-solve", output["summary"])
+        material = self.h.induction_material(induction_id=job)
+        self.assertEqual(material["material"][0]["task_check_state"], "failed")
+        inspected = self.h.inspect(bank="experience", execution_id=record.execution_id)
+        self.assertIn("private-evaluator/1", json.dumps(inspected))
+        self.assertEqual(self.h.bank.get(record.execution_id).quality["objective"], 4)
+        self.h.induce(induction_id=job, review={"outcome": "insufficient_material",
+                       "conclusion": "The locked result fails reference acceptance; the available facts do not support a new rule."})
+        self.assertTrue(self.h.induction_status()["completed"])
+
+    def test_unnamed_bound_episode_and_automatic_post_phase_are_supported(self):
+        record, _, _ = self.solve(episode=None, recorded=True)
+        self.h.close_episode(self.task["task_id"], None)
+        result = self.h.check_task_result(record.execution_id, {
+            "reference_objective": 4, "reference_source": "self_derived"})
+        self.assertEqual(result["state"], "passed")
+        self.assertEqual(result["report"]["phase"], "post_submission")
+        self.assertIsNone(result["report"]["submission"]["episode_id"])
+        self.assertFalse(result["report"]["reference_source"]["independent"])
+
+    def test_post_reference_requires_source_and_normal_solving_stays_locked(self):
+        record, script, workspace = self.solve(recorded=True)
+        unused = self.plan()["selected_prediction_id"]
+        self.h.close_episode(self.task["task_id"], "E")
+        with self.assertRaisesRegex(ValueError, "reference_source"):
+            self.h.check_task_result(record.execution_id, {"reference_objective": 5}, post_submission=True)
+        result = self.h.check_task_result(record.execution_id, {
+            "reference_objective": 5, "reference_source": "independent"}, post_submission=True)
+        self.assertEqual(result["state"], "failed")
+        before = len(self.h.actions.query()), len(self.provider.requests)
+        with self.assertRaisesRegex(ValueError, "already closed"):
+            self.plan()
+        with self.assertRaisesRegex(ValueError, "already closed"):
+            self.h.execute(self.task, prediction_id=unused, code_path=str(script), workspace=str(workspace))
+        code, _ = self.cli("plan-next", "--task", json.dumps(self.task), "--episode", "E",
+                           "--candidates", '[{"name":"retry","steps":["Retry the solve"],"solver":"python"}]')
+        self.assertEqual(code, 2)
+        code, _ = self.cli("execute", "--task", json.dumps(self.task), "--prediction", unused,
+                           "--code", script, "--workspace", workspace)
+        self.assertEqual(code, 2)
+        self.assertEqual((len(self.h.actions.query()), len(self.provider.requests)), before)
+        self.assertEqual(self.h.bank.get(record.execution_id).quality["objective"], 4)
+
+    def test_failed_and_insufficient_self_checks_still_dispatch_positive_hplus(self):
+        self.provider.decision = 1
+        for state, value, check in [
+            ("failed", 2.5, {"integer": {"variables": ["x"]}}),
+            ("insufficient", 4, {"integer": {"variables": ["missing"]}}),
+        ]:
+            with self.subTest(state=state):
+                task = {**self.task, "task_id": state}
+                record, _, _ = self.solve(task=task, value=value, tag=state)
+                result = self.h.check_task_result(record.execution_id, check)
+                self.assertEqual(result["state"], state)
+                self.h.record(record)
+                closed = self.h.close_episode(task["task_id"], "E", terminal_state="failed")
+                self.assertEqual(len(closed["induction_schedule"]["pending_ids"]), 1)
+                job = closed["induction_schedule"]["pending_ids"][0]
+                material = self.h.induction_material(induction_id=job)
+                self.assertEqual(material["material"][0]["task_check_state"], state)
+                self.h.induce(induction_id=job, review={"outcome": "insufficient_material",
+                              "conclusion": "Reviewed the real failed or incomplete self-check; no supported rule is added."})
+                self.assertTrue(self.h.induction_status(task_id=task["task_id"])["completed"])
 
 
 if __name__ == "__main__":
