@@ -1,25 +1,14 @@
 # Episode close-out and experience calibration
 
-Use this page to interpret the close-out record, outcome measurements, calibration, and late corrections.
-
-- Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/3`; risk-event vocabulary: `wm-events/3`; observation rules: `wm-obs/4`; context: `wm-context/4`
-- Python module: `or_harness.world_model.episode_closeout`
-- API: `ORHarness.close_episode` / `episode_closeout_record` / `get_strategy_evaluation` / `strategy_prediction_evaluations` / `calibration_summary` / `archive_calibration` / `calibration_retention`
-- CLI: `orx close-episode` / `orx calibration` / `orx inspect --bank evaluations` / `orx archive-calibration` / `orx inspect --bank retention`
-- Tests: `tests/harness/test_episode_closeout.py`, `tests/harness/test_calibration_v2.py`
-- Normal CLI example: [`unified_solving.py`](examples/unified_solving.py)
-- Historical calibration audit: [`episode_closeout.py`](examples/episode_closeout.py), which imports old pairings and is not an execution-authorization recipe
-- Bounded attribution (which comparison a problem really invalidates): [`references/examples/linkage_attribution.py`](examples/linkage_attribution.py)
-
-Related: the prediction service in [`references/strategy_outcome.md`](strategy_outcome.md), the input context in [`references/prediction_context.md`](prediction_context.md), the contract objects in [`references/world_model_contract.md`](world_model_contract.md).
-
----
+Use this reference to close a task, read the resulting evaluations, and interpret the evidence published for later predictions. For planning and prediction inputs, see [scored strategy selection](strategy_outcome.md) and the [world-model contract](world_model_contract.md).
 
 ## 1. Units of observation
 
-- **Attempt.** One recorded `execute_strategy` action and its execution. A solver script can make multiple internal solver calls.
-- **Strategy execution window.** One selection round, including applicable modelling, attempts, repair, and verification. Each new selection round has its own `round_index`, including when the same strategy is selected again.
-- **Episode.** The full task interaction through its terminal state.
+| Unit | What it covers |
+|---|---|
+| Attempt | One recorded `execute_strategy` action and its execution. The script may make multiple solver calls. |
+| Strategy execution window | One selection round, including its modeling, attempts, repairs, and checks. Each selection gets a `round_index`. |
+| Episode | The task interaction through its terminal state. |
 
 ## 2. Closing an episode
 
@@ -28,144 +17,105 @@ orx close-episode --task t1 --episode ep1 [--terminal completed|failed|aborted|b
     [--finish-action ACTION_ID] [--min-samples N]
 ```
 
-Finish [task-derived checks and retries](../SKILL.md#3b-check-the-original-task-and-decide-whether-to-retry), record each attempt, and commit the answer before closing. Pass the actual terminal state. `--finish-action` links the recorded `finish_task` event, which provides a real terminal timestamp. In benchmarks, reference-based scoring runs on the committed answer in the evaluator, outside the solve and retry loop.
+Finish [task-derived checks and retries](../SKILL.md#3b-check-the-original-task-and-decide-whether-to-retry), record each attempt, and commit the answer. Pass the actual terminal state. Use `--finish-action` to link the recorded `finish_task` event and its end time. In benchmarks, the evaluator scores the committed answer against the reference.
 
-Close-out evaluates bound predictions, publishes calibration, and records actual rule use before retention. Read `task_checks` for counts by per-execution verdict and unchecked attempts. Terminal status describes completion of the episode. Solver quality and original-task acceptance retain their separate evidence.
+Close-out evaluates bound predictions, publishes calibration, and records rule use. Read `task_checks` for counts by verdict and for unchecked attempts. If the result is `state="pending"` with `closeout: null` (exit 2), finish the listed `unfinished_actions` and retry. Repeated close calls return the saved record.
 
-If actions are still running, the result contains `closeout: null`, `state="pending"`, and `unfinished_actions` (CLI exit 2). Resolve the actions and try again. A repeated close returns the stored record without counting observations twice.
-
-For library building, `result.induction_schedule.pending_ids` identifies reviews for the agent. Follow [the induction handoff](induction.md#take-a-required-review) to settle the returned IDs.
+During library building, take the review IDs from `result.induction_schedule.pending_ids` and follow the [induction handoff](induction.md#take-a-required-review).
 
 ## 3. The real outcome summary
 
-For each bound prediction, the close-out derives what ACTUALLY happened from the action log and the execution records — never from the prediction:
+The action log and execution records supply the observed results for each bound prediction.
 
-- **benefit observations** use the prediction's own declared metric/unit/version/scope. New G (`task_check_passed_given_faithful_execution`, `wm-g-faithful/1`) requires sourced method fidelity and original-acceptance evidence; its rules are below. The old `task_result_check_passed` adapter and the solver's `normalized_objective_gap` keep their own meanings. Unsupported currencies are never silently relabelled. A feasible solution with no measured gap/bound remains unverified.
-- **window benefit rule** (declared before evaluation, applied uniformly): the LAST qualified in-scope attempt's solution is the window's benefit observation. All in-scope failed retries' measured costs still count.
-- **cost** is scoped to the predicTION's DECLARED COST SPAN (`ExpectedCost.scope`), NOT to the benefit scope, so a predicted span is compared against the SAME real span:
-  - `remaining_to_task_end` (default): the cost from the shared decision anchor to the actual task end. All measured in-scope attempts count once, including failures and retries.
-  - `attempt`: the bound action's own execution only;
-  - `strategy_window`: the declared selection round's whole window (an 11s-then-17s window reports 28s, not 17s).
+- **Benefit** uses the prediction's declared metric, unit, and scope. A strategy window uses the last qualified in-scope attempt for its solution observation. The original-task check is reported under `evaluations[].benefit.task_check` alongside solver quality.
+- **Cost** uses `ExpectedCost.scope`. Add cumulative measurements once per attempt, including failures and retries. Read `n_measured` and `complete` before comparing a total.
+- **Risk** uses the observation unit for each [risk event](#the-risk-event-vocabulary-wm-events3). Technical R reads the specific bound attempt.
 
-  For `remaining_to_task_end`, in-window modeling, verification, failed attempts and retries belong to the remaining resource window when their measurements support it. Legacy attempt/window scopes retain their own boundaries; out-of-scope overhead remains separate. Per-dimension aggregates report `n_measured`/`complete`; a cumulative dimension's comparable value IS its sum.
-- **A span is never summed, but a SINGLE span is comparable.** For `latency_s` / `remaining_latency_s` the aggregate withholds the SUM (overlapping ranges would double-count) yet still publishes a `comparable` value when there is exactly ONE explicitly measured span (or consistent repeats). A backfilled real `remaining_latency_s=600` therefore IS scored against a prediction of 30 — "cannot be summed" is not "cannot be compared".
-- **The remaining span uses the SHARED decision anchor and the REAL task end.** The anchor is the `select_strategy` decision action's `started_at` (every candidate of one decision shares it) — NOT each prediction's own `created_at`. The end is, in priority order: (1) the `finish_task` action's `ended_at` (the only explicit task-termination event, `basis="finish_task"`); else (2) the latest relevant action end (`execute_strategy`/`verify`), FLAGGED `basis="last_action_not_task_end"` as a LOWER BOUND, not claimed to be the task end; else (3) UNKNOWN with a reason (the close-out's own `created_at` is NOT used). Actions that ended AFTER the close-out are excluded, so a later offline pass cannot push the original task's end forward. The `remaining_latency_s` observation is, in priority order: (1) an explicitly measured value on the records, else (2) the derived timestamp span; when neither exists the dimension stays UNKNOWN and the script-execution cost is NEVER substituted.
-- **risk events** are observed by the framework independently of predicted events. New `implementation_failure` uses the single bound attempt's `wm-r-technical/1` receipt (below). Legacy predictions retain their recorded `error_class` adapter. `task_check_failed` reflects only the check result; `solver_reported_infeasible`, timeout and budget exhaustion remain independent diagnostics. Retired event names receive no label or alias.
-- **verification**: solver `optimal` does not prove business requirements; the summary reports the verification evidence that exists (verify actions, executor checks), nothing more. A task-level check (`orx check-task`) is part of that evidence: under `wm-obs/2` it is carried as a SEPARATE task fact on the benefit observation (`evaluations[].benefit.task_check`), NOT as a rewrite of the solver-side quality. The two measure different things — how well the solver solved the model, and whether the answer satisfies the task — and the same number never means both.
+| Cost scope | Measurements |
+|---|---|
+| `attempt` | The bound execution. |
+| `strategy_window` | The matching selection round. Two in-scope executions with 11 and 17 seconds of solver time contribute 28 seconds. |
+| `remaining_to_task_end` (default) | The shared `select_strategy.started_at` anchor through task termination. Include measured modeling, checks, failed attempts, and repairs in that span. |
+
+For `remaining_latency_s`, use a matching explicit span when available, or derive it from the decision anchor and `finish_task.ended_at`. The last in-scope execute or verify action supplies a lower bound (`basis="last_action_not_task_end"`). Without a measured span or usable timestamps, the value is unknown. Compare one explicit wall-clock span or consistent repeats. Keep distinct spans separate.
 
 ## 4. The per-field evaluation
 
-Each field is judged on its own eligibility — never a blanket verdict:
+| Field | Evidence for comparison |
+|---|---|
+| Solver quality (`solution_quality`) | The same measured metric, unit, and scope. A feasible solution without a measured gap or bound stays `unverified`. |
+| Faithful-execution benefit (G) | In-scope faithful execution and original-task acceptance → 1. Faithful execution and confirmed failure caused by the candidate method → 0. Missing attribution or acceptance evidence → unknown. See [G attribution](#g-attribution-evidence). |
+| Completion (`task_result_check_passed`) | The execution's own confirmed `passed` or `failed` verdict → 1 or 0. In attempt scope, an attempt that ran and failed without a usable result also supplies 0 (`confirmed_failed_no_result`). Otherwise an unchecked or insufficient result stays unobserved. A window is evaluated at its end. |
+| Cost | A complete measured value for the predicted dimension and scope. Estimates and one-sided token counts stay out of the measured total. See [C observations](#c-observations). |
+| Risk | The original probability and an attributable label for the same event and observation rule yield a Brier score. |
+| Interval | An `outcome` interval uses the comparable observed value for coverage and width. `mean` intervals are marked `unobservable` in this build. Read coverage by `interval_by_kind`. |
 
-| Field | Compared when | Excluded when (and why it matters) |
-|---|---|---|
-| benefit — quality | the prediction declared `solution_quality` AND the same metric was observed under the same scope | no baseline/value predicted (`not_predicted`); no qualified observation (`unobserved`); heuristic-only quality (`unverified`); other metric kinds (`scope_mismatch`); the binding could not establish the task/strategy OR the APPROACH (`identity_mismatch`/`identity_unknown` — an unreported `time_limit` does NOT block it). The DECLARED metric/unit always travel with the block, so an unobservable sample still groups by what it said it was predicting |
-| benefit — faithful execution (new default) | `effective_completion/task_check_passed_given_faithful_execution`, unit `probability`, `wm-g-faithful/1` | terminal in-scope faithful execution + original-task acceptance passed → 1; faithful execution + confirmed method-caused failure → 0; otherwise unknown with a reason. Crashes/timeouts without an evaluable result and implementation deviations never become 0 |
-| benefit — legacy completion | the prediction declared `effective_completion` with `metric=task_result_check_passed` | the execution's own `check-task` verdict is the observation: `passed` → 1.0, a confirmed `failed` → 0.0. An UNCHECKED or `insufficient` execution normally contributes NOTHING (`unobserved`). EXCEPTION (attempt scope only): an attempt that RAN, failed and produced no usable result is a KNOWN non-completion → 0.0 (`basis="confirmed_failed_no_result"`), even when `task_check` is absent or `insufficient` (the ANSWER's validity stays UNKNOWN and is not scored). A sandbox-refused attempt (`executed=false`) is NOT an observation; a window/remaining scope is judged by how it ENDED, never by a first failure. A completion claim declared against a QUALITY metric, and `valid_progress` (no observation channel), are `scope_mismatch` |
-| cost | per dimension: predicted AND completely measured on the real scope (the scope being the prediction's DECLARED cost span); error = absolute + directed `log(actual/predicted)` | partially-measured totals are excluded (an incomplete total is not a truth); zero predicted or actual produces no relative ratio (a substituted value would be a fabrication). A wall-clock dimension with a single explicit measurement IS comparable (its `comparable.value`); only MULTIPLE distinct spans are withheld (they can neither be summed nor combined). A known condition DEVIATION (a different solver or config value) blocks the outcome dimensions and PRESERVES the cost: the attempt really spent what it spent |
-| risk | per event and observation version: original predicted probability AND a known label → Brier score | no probability (`not_predicted`); unknown label; retired name; blocked attribution. New R always uses one bound attempt, including when G covers a strategy window |
-| interval | the prediction saved an `outcome` interval AND an observed value exists → covered yes/no + `width` | no interval saved, or nothing comparable to cover. A `mean` interval is NOT decided by a single observation (its claim is about the AVERAGE over repeated runs) and this build has no mean-observation channel, so it is reported `unobservable` with a reason and never enters a coverage numerator — it does not read as "not covered". Coverage is grouped BY interval KIND (`interval_by_kind`): an `outcome` interval and a `mean` interval make different claims, so their hit rates are never averaged together. A bare interval with no kind groups under `(unstated)` |
+Read `binding_mismatch` for recorded disagreements and `binding_unknown` for unreported fields. A wrong task, episode, strategy, or round, or a prediction made after the action started, blocks the comparison. A reported solver or config deviation blocks outcome comparisons and keeps measured cost. Missing config receipts and differences in method wording are reported for review. Check the action's `execution_config` for observed values and sources.
 
-**Bounded attribution.** The binding's unconfirmed (`binding_unknown`) and mismatched (`binding_mismatch`) fields are translated into per-dimension blocking by ONE small framework table (`world_model/attribution.py`): a wrong task/strategy/round or a post-hoc prediction blocks everything; a different solver or config value blocks the outcome dimensions and keeps the cost; an unconfirmed knob blocks nothing (it is reported as a caveat); a performed method whose PROSE differs from the plan is reported as `method_deviation` and blocks NOTHING. Identity comes from the structured fields, so a re-worded receipt (a subscript, a split word, a merge) never invalidates a run whose strategy, solver and reported config all matched; only a GEOMETRIC identity problem — a wrong task, strategy, round, or a post-hoc prediction — excludes the sample. A KNOWN episode mismatch blocks everything, so runs from different episodes are never paired. A missing execution receipt is therefore a caveat, not a discard.
-
-**Only a measured truth is scored.** `summary.cost` drops any dimension whose values came from an `agent_estimate` or from a single-side token report, so the total the prediction is compared against contains only measurements; the number of dropped records is reported beside the total (`excluded`).
-
-**Audit errors.** `benefit.signed_error = observed - predicted` and `cost.per_dim[dim].log_ratio = log(actual/predicted)` retain direction for diagnosis alongside absolute errors. G and C residuals produce no directional tuning instruction in provider requests.
-
-Excluded fields are **neither hits nor misses**: they never enter a denominator. An evaluation with nothing comparable is `excluded` with the per-field reasons; a scope still running is `pending`. The FROZEN prediction is read, never rewritten — no post-hoc "better" prediction is regenerated closer to the result.
-
-**A missing receipt is a caveat, not a discard.** The association records `binding_mismatch` (a KNOWN disagreement) and `binding_unknown` (a field the executed action could not observe — no episode recorded, a config key the action log or the script's config receipt never reported) separately. The close-out then blocks ONE DIMENSION AT A TIME: a wrong task/strategy/round or a post-hoc prediction excludes the sample entirely; a different solver or a different REPORTED config value (a DEVIATION) blocks the outcome dimensions and keeps the measured cost; an unreported knob (`time_limit`, `seed`, `relaxation`, `method`) blocks nothing — it is a caveat. The config comparison reads the action's own `execution_config` (the executor's report plus the script's stamped receipt), so the predicted config is never copied in to manufacture a match. Re-binding the same action re-evaluates the comparability (an action still running at first bind may have completed since).
-
-**An interrupted attempt is an observation, not a gap.** When the executor raises before producing a record (a filesystem error, an interruption), the attempt really started and really failed: an HONEST failure fact (`status=error`, `feasible=false`, a `FailureRecord` with its class) is STAGED, linked to the action, and counted as an observation — so the retry is a SEPARATE attempt, the failure is its own occurrence (it does not become `not_occurred`), and the retry cannot claim a proven `retries=0`. Nothing is fabricated: no objective, gap or solver runtime were observed, so none are recorded.
-
-**`bound` is not `calibratable`.** Being associated with a real action (`bound_action_id` set) is the weaker fact: it says the prediction is linked to a real attempt. Whether ANY of it may be calibrated is a SEPARATE question answered here, FIELD BY FIELD. Each evaluation reports:
-
-- `eligibility` — a per-field index: `benefit` (with its metric), `cost.dimensions[<dim>]`, `risk.events[<event>]`, and `interval`, each with its own `eligibility` and the reason when it is not `evaluable`. A missing observation of ONE field never erases the others: `benefit` can be `evaluable` while `cost.dimensions.llm_tokens` is `unobserved`;
-- `calibratable` — whether ANY part may enter the sample (`state == "evaluated"`). `false` is not a failure; it names which fields were unobservable via `exclusion_reasons`.
-
-The index is DERIVED from the field blocks (the authority), so a legacy evaluation written before it existed stays readable and no second copy of the state can drift.
+If the executor raises before returning a record, close-out has a linked failure fact for the interrupted attempt. Read that failure and its measurements separately from the retry. For each evaluation, `bound_action_id` locates the action, `eligibility` explains which fields can be compared, and `calibratable` is true when at least one field was evaluated. Read `exclusion_reasons` when none can be compared. Running scopes stay `pending`.
 
 ## 5. The experience calibration summary
-
-### Technical R observations
-
-`ExecutionRecord.execution_features.technical_outcome` records the executor's evidence for `wm-r-technical/1`: source, executed flag, exit code, captured exception type, result receipt, protocol problems, label and reason. New predictions use this single bound execution even if G's scope is a multi-attempt strategy window. Failed and repaired attempts keep separate labels.
-
-| Label | Required evidence |
-|---|---|
-| 1 | Clear code construction/API exception, abnormal solver/script exit, or result-delivery protocol failure; `optimal` without its required objective is a protocol failure |
-| 0 | Process completed normally and delivered a readable protocol-valid result; legal `infeasible` is technical success |
-| unknown | No attributable execution, external/environment blockage, normal time limit or insufficient cause evidence |
-
-The captured exception type takes precedence over incidental words: `ValueError: invalid network flow indices` is a code failure. Existing semantic deviation and task-check evidence stays separate for G. A timeout becomes 1 only with an explicit `technical_failure_evidence` assessment (`kind=code_caused_timeout`, nonempty `source` and `assessment`) citing this execution's captured `artifacts.submitted_script` plus `artifacts.stderr_clip` or `artifacts.workspace_result`; each reference must resolve to a saved artifact hash. A bare legacy error class cannot establish the new label.
-
-Published `technical_r` covers all actually recorded attempts in the closed-episode window, including attempts with no prediction or omitted R. Actual attempts and labels deduplicate execution IDs; Brier uses the original probability only with a known, attributable label under this same rule. Counts distinguish `n_actual_attempts`, `n_known_labels`, `n_reported_probabilities` and `n_scorable`. Group conditions are actual execution agent (host/model/optional agent ID), recorded solver interface and coarse structure. Each group reports failures, successes, unknowns, source IDs and independent episode support; Brier has its own scored-episode support. Multiple predictions of one attempt do not create multiple actual labels.
-
-Only pre-close records enter this published population. New requests select a few applicable groups from the frozen publication and expose empirical counts and source references in `implementation_r_evidence`. Missing identity/interface yields insufficient support. A captured script that completed technically may be referenced, without asserting business correctness. Full statistical audit fields remain in `technical_r`; provider history omits Brier diagnostics. Legacy `implementation_failure` calibration remains readable under its old key; new Brier uses `implementation_failure@wm-r-technical/1`.
 
 ```bash
 orx calibration [--min-samples N] [--rebuild]
 ```
 
-Aggregated from the **WINDOW** — the newest N closed task-episodes (default 50, `OR_CALIBRATION_WINDOW`). The window is the sample set: it bounds both the statistics and the work a close-out does, so a prediction reads a small published summary instead of scanning history. An open episode never calibrates anything, least of all itself.
+Calibration uses the newest closed task-episodes (default 50, `OR_CALIBRATION_WINDOW`). `groups` are keyed by predicting model identity, benefit metric, unit, scope, and observation-rule version. If comparing different call settings for the same model identity, give the arms distinct model identities or separate `--home` directories.
 
-Grouped by `strategy_outcome|<model identity>|<metric>|<unit>|<scope>|<observation-rule version>` — a different metric, unit, scope, predicting model **or observation-rule version** is a DIFFERENT group, never pooled. The observation-rule version (`wm-obs/2`, see below) is part of the key because the same metric observed under different rules is a different measurement. The model identity is the NAME (`provider_model` / `provider_version` / `provider_name`), NOT the call configuration: a prediction made with thinking on and one made with it off land in the SAME group. Run the two arms against separate `--home` directories, or give them different model names, when the difference is what you are measuring. Each group reports:
-
-| Statistic | Meaning |
+| Summary fields | How to read them |
 |---|---|
-| `n_samples` / `n_distinct_episodes` / `correlated_predictions` | Prediction-observation pairs, independent episodes, and the pairs that repeat one truth. The threshold counts DISTINCT EPISODES (a `(task_id, episode_id)` pair), so five re-planning predictions over one execution cannot cross it |
-| `mean_benefit_abs_error` / `mean_benefit_signed_error` | Magnitude and DIRECTION of benefit error (signed positive = historically under-predicted) |
-| `mean_cost_log_error` / `mean_cost_log_ratio` per dimension | Magnitude and DIRECTION of cost error (log-ratio positive = historically under-predicted cost) |
-| `interval_coverage` / `mean_interval_width` | Coverage alone cannot tell a tight interval from a mile-wide one. `interval_by_kind` splits it by what the interval was about (`outcome` vs `mean` vs `(unstated)`) — never averaged across kinds |
-| `mean_brier_by_event` / `n_brier_samples_by_event` | Per EVENT NAME, never pooled across names |
-| `mean_predicted_probability` / `scored_occurrence_rate` | Both over the SAME denominator (predictions with a probability AND a label), so their difference is a meaningful over/under-estimate signal |
-| `reminders` | DETERMINISTIC "watch this next time" notes derived from the statistics above — never model-written. See §5b |
+| `n_samples`, `n_distinct_episodes`, `correlated_predictions` | Paired samples, independent task-episodes, and repeated comparisons of the same observation. |
+| `mean_benefit_abs_error`, `mean_benefit_signed_error` | Magnitude and direction (`actual - predicted`). Positive signed error means underprediction. |
+| `mean_cost_log_error`, `mean_cost_log_ratio` | Absolute and signed log ratio by dimension. Positive log ratio means underprediction. |
+| `interval_coverage`, `mean_interval_width` | Coverage and width by interval kind. |
+| `mean_brier_by_event`, `n_brier_samples_by_event` | Error and paired sample count per event and applicable rule. |
+| `mean_predicted_probability`, `scored_occurrence_rate` | Predicted and observed rates over the same scored pairs. |
 
-A group below the sample minimum (`--min-samples`, default 5) reports `insufficient_evidence` with `reliability: null` — no figure is invented. The `groups` residual statistics are labelled `applicability: "global_diagnostic"` and do not establish a candidate-specific G correction. The separate `conditional_g` fact groups carry their own problem/solving conditions and support limits.
+### Observation rules
 
-### 5a. The observation-rule version (`wm-obs/2`)
+The current summary uses `wm-obs/4`. Each evaluation retains its own rule, including `wm-g-faithful/1` or `wm-r-technical/1` where applicable. Read historical groups by the version they report. An absent rule version is grouped under `(unknown)`. For solver quality under `wm-obs/2` and later, `normalized_objective_gap` uses `1.0` for `optimal` or `1 - gap` when observed. Check verdicts travel separately.
 
-The current summary reports `observation_rule_version:wm-obs/4`; every stored evaluation retains the version under which its observations were derived. Faithful G and technical R additionally retain their signal-specific rules (`wm-g-faithful/1`, `wm-r-technical/1`). The historical `wm-obs/2` solver-gap rule below remains readable. **A rule change is a meaning change**, so incompatible measurements never pool.
+### Technical R observations
 
-`wm-obs/2` removes the task-check gate. Before it, a `normalized_objective_gap` observation for an answer that failed the task check was forced to `0.0`, mixing two different measurements (how well the solver solved the model, and whether the answer satisfies the task) into one number. Under `wm-obs/2`:
+R before execution is the probability that one attempt will fail at code construction, execution, or result delivery. The only R input to U is one `implementation_failure` event with a finite numeric `probability` in `[0,1]`. Zero is valid. If any scored candidate lacks a valid R, the decision omits R for all participants. See [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
 
-- the quality observation is ALWAYS the solver's own figure (`optimal` → 1.0, otherwise `1-gap`);
-- the task check travels as a SEPARATE fact under `evaluations[].benefit.task_check`;
-- legacy completion uses `effective_completion/task_result_check_passed`; new faithful-execution G uses its separate `wm-g-faithful/1` adapter. Neither rewrites the solver-quality number.
+For each recorded attempt, `execution_features.technical_outcome` holds the executor's receipt for `wm-r-technical/1`. Close-out reads the one bound execution, including when G covers a strategy window. Read `evaluations[].risk.implementation_observation` for its label and reason. An attempt and its repair get separate labels.
 
-A legacy evaluation that wrote no observation-rule version groups under `(unknown)` rather than being assumed current.
+| Label | Executor evidence |
+|---|---|
+| `1` | Confirmed code construction failure, such as a syntax error before launch. A failed attempt with a code/API exception, a result-protocol failure, or an abnormal script/solver exit without evidence of external blockage also supplies 1. For example, `optimal` with a required objective missing is a protocol failure. |
+| `0` | The process exits with code 0 and delivers a readable, protocol-valid result with a status other than `error` or `timeout`. A valid `infeasible` result qualifies, as does a valid result delivered after a caught or logged exception. |
+| Unknown | No attributable execution, external blockage such as a missing dependency, an ordinary time limit, or insufficient evidence of the cause. |
+
+For an attempt that ran and did not time out, the executor checks for successful delivery before classifying a logged exception. On the failure path, a specific code exception such as `ValueError: invalid network flow indices` supplies code evidence. Timeout, reported infeasibility, and original-task check failure have their own event records.
+
+For a timed-out execution, a sourced cause assessment in `technical_failure_evidence` can supply label 1. Use `kind="code_caused_timeout"`, nonempty `source` and `assessment`, and `evidence_refs` to this execution's `artifacts.submitted_script` plus `artifacts.stderr_clip` or `artifacts.workspace_result`. Each cited artifact must have a saved hash. The assessment supplies the causal judgment and the framework checks its fields and references.
+
+For earlier execution records, the framework can derive technical facts from captured error, result, or protocol evidence. Historical predictions without the technical R convention still use the `error_class == 'model'` event rule for their own comparisons. Current-rule Brier is grouped under `implementation_failure@wm-r-technical/1`.
+
+`technical_r` reports `n_actual_attempts`, `n_known_labels`, `n_reported_probabilities`, and `n_scorable`. Attempt counts cover recorded executions in the closed window, including attempts whose R was omitted or never predicted. Each execution is counted once per task-episode. Brier uses the original probability of each comparable prediction with a known same-rule label. Groups use actual execution-agent identity, solver interface, family, and problem class. Later predictions can receive up to three applicable groups in `implementation_r_evidence`, with counts, source IDs, and available script references. Label and Brier support count independent episodes separately.
 
 ### C observations
 
-**C observations (`wm-c-window/1`).** A versioned `or-host-usage/1` report may retain its legacy attempt scope (including the old task/episode identity object) or explicitly name `scope="remaining_to_task_end"`. Optional `window` fields are `anchor_action_id`, `started_at`, `ended_at`, `complete`, and `end_event`. Counter evidence uses `counters.start`/`counters.end` with `prompt_tokens`, `completion_tokens`, `tool_calls` and optionally model `calls`; nonnegative increments replace cumulative totals. Resets/missing sides stay unknown or partial. Alternatively, a complete `call_details` ledger supplies `id`, `kind` (`tool`, `model`/`llm`), `started_at`, `ended_at` and model input/output tokens. IDs deduplicate invocations; a broader complete ledger can be sliced to the anchor/termination boundaries. Crossing calls cannot be divided without evidence. Reasoning/cached tokens are already inside input/output counts.
+For `wm-c-window/1`, supply `or-host-usage/1` at attempt scope or declare `scope="remaining_to_task_end"`. Describe the span using `window.anchor_action_id`, `started_at`, `ended_at`, `complete`, and `end_event` where available. A complete remaining window needs the decision anchor and a terminal `finish_task` or a complete host span ending in `finish_task`, `final_failure`, or `confirmed_abort`.
 
-**Validate each measured dimension before counting it.** `call_details_complete=["tool_calls","llm_tokens"]` declares complete per-dimension coverage, including an explicitly empty kind; `[]` declares partial coverage. Legacy ledgers without this field establish totals only for the kinds actually present. No model-call rows therefore supplies no token measurement, never an inferred zero. Partial details supply bounds, not whole-window totals. Same-window aggregates, counter increments and complete details must agree, and no total may be below deduplicated in-window call/execution lower bounds. Proven execution floors are summed across distinct receipts; overlapping report/ledger floors combine by maximum, not addition. Conflict reasons retain source references and values; conflicted dimensions stay out of actual ranges and prediction errors even if another report offers a value. Other valid dimensions remain usable. An attempt report below its own bound keeps the legacy rejection behavior; a full-window report records a per-dimension unknown. After upgrading an existing publication, `orx calibration --rebuild` re-derives closed-window facts without rewriting original predictions/receipts.
+- **Counters**. Supply `counters.start` and `counters.end` for `prompt_tokens`, `completion_tokens`, `tool_calls`, and optional model `calls`. Nonnegative differences measure usage. A missing side or reset leaves the dimension unknown or partial.
+- **Call ledger**. Supply `id`, `kind` (`tool`, `model`/`llm`), call timestamps, and model input/output token counts in `call_details`. Use `call_details_complete` to declare complete dimensions such as `tool_calls` and `llm_tokens`. A complete declaration can support an explicit zero for an empty kind. A partial ledger supplies lower bounds. The framework deduplicates call IDs and uses calls inside the measured span. Crossing calls need evidence that allocates usage to the span.
+- **Totals**. Same-window aggregates, counter differences, and complete ledgers must agree and cover known execution/call lower bounds. Conflicted or incomplete dimensions stay out of whole-window comparisons. Repeated references to the same report are counted once. Attempt reports retain their own scope. Use solver-reported time for `solver_runtime_s` and a measured span for latency.
 
-Full-window numeric totals must match the decision anchor and real termination. `finish_task` in completed/failed/cancelled status, or a trustworthy complete host span explicitly ending in `finish_task`/`final_failure`/`confirmed_abort`, establishes termination. Last execute/verify time is a lower bound. Attempt totals retain `execution_attempts` scope and cannot score remaining-window tokens/tool calls. Repeated references to one full report are alternatives, never summed. Conflicting totals/hosts remain unknown. Full-window reports live beside execution/action facts, without overwriting attempt costs or adding auxiliary costs on top. `solver_runtime_s` uses reported solver receipts; a `wall_proxy` is not precise solver time. `latency_s` retains its own attempt scope.
-
-`evaluations[].cost.observed_fact` is produced even when the model omitted all `cost`. `conditional_cost.coverage[dimension]` separately counts actual windows, predictions, error pairs and positive-positive log pairs. Actual windows deduplicate by execution scope and anchor/end. Each conditional group records host/model, scope/coverage, phase, family/known structure, actual receipt configurations and stable restrictions; it contains raw P50/P75/min/max, sample and distinct-episode counts, source references and sparse support. Missing phase/model or incomplete windows provide no common-scale prior. The full population is audit data; the next provider sees only a small applicable selection under `cost_evidence`. Work facts include host rounds, execution/solver-reported attempts, explicit solve calls and recorded repair actions when available. Counts unavailable to the host remain unknown; an execution attempt is not assumed to be one inner solver call.
-
-Per-dimension errors keep both solver time and remaining wall-clock when each is comparable. Explicit zero participates in absolute and signed error (`actual-predicted`); log-ratio uses only strictly positive pairs. `cost_absolute_evidence` uses all raw error pairs; `cost_evidence` uses the log pairs' own distinct episodes. Global residuals are retained for audit and do not yield C multipliers. See [c_signal_improvement.md](../docs/c_signal_improvement.md) for regression coverage and an actual stub-provider request excerpt.
+`evaluations[].cost.observed_fact` can exist with no forecast of C. Read `conditional_cost.coverage` for actual windows, predictions, error pairs, and positive-positive log pairs. An explicit zero participates in signed and absolute errors, and log ratios require both values to be positive. `cost_evidence` in later requests selects applicable raw ranges and support from comparable execution settings. [C measurement examples](../docs/c_signal_improvement.md)
 
 ### Published feedback
 
-The summary's `reminders` carry risk feedback and interval diagnostics. Global G signed errors and C log-ratios remain in `groups` for audit. See [provider feedback](prediction_context.md#6c-the-paired-feedback-and-reminder-blocks) for selection and request filtering.
+New prediction contexts carry the selected publication under `strategy_outcome_calibration`. Read `reminders` for risk and interval diagnostics and `groups` for global benefit and cost errors. See [provider feedback](world_model_contract.md#2-published-prediction-feedback) for request filtering.
 
-New G observation starts from the framework's frozen `benefit_convention`, independently of whether the model returned a `benefit` object. Omitting the entire block keeps the prediction `not_predicted`, but bound real executions still enter pass/fail/unknown counts. Brier/bins continue to require a numeric probability as well as an attributable label. Explicit legacy requests retain their own observation and prediction-error semantics.
+`conditional_g` groups sourced observations by metric, rule, scope, structure, model, observed solving conditions, and declared budget. Real execution facts can contribute pass/fail/unknown counts when G was omitted. Each execution unit uses the earliest attributable prediction. Its Brier score and probability bin require both a numeric G and a known label.
 
-`conditional_g` replaces G correction instructions with measured facts. Each group uses the same metric, G observation version, execution scope, family, known structural cell, model identity, observed solving settings and declared budget limits. Prediction token/latency consumption and changing remaining-budget counters are not grouping keys. It reports `passed`, `failed`, `unknown`, execution-unit count, distinct `(task_id, episode_id)` count and labelled-episode count. Sparse groups explicitly support only their executed cases. Repeated predictions bound to the same execution/range count once (earliest attributable prediction per unit). Brier and probability bins use only units with BOTH a numeric prediction and an attributable binary label: unknown outcomes and missing numeric G never enter their denominators. Labels may be retained as facts when numeric G is missing.
-
-Paired feedback retains the original prediction/error currency. Sourced historical execution facts can additionally appear as `g_observed_fact`, independently of the old forecast. `same_task_comparisons` places actual different methods side by side only for the same task, frozen original problem, acceptance id, solving conditions and scope/version, preserving evidence and evaluation references. One executed method gives its factual case. Two passes on the same binary acceptance are a tie; a verified business objective may stay in the case as `verified_objective`.
-
-Actual solving conditions come from `ExecutionRecord.solver` and `execution_features.execution_config.values/sources`, not the candidate's omitted settings. `executor` and action-stamped `script_reported` values are observations; `executor_configured` values alone remain instructions. Pairing requires confirmed solver and execution/solver limits, all declared settings, no receipt conflicts, and matching observed conditions. Different actual time limits (including when both candidates omitted them), missing critical receipts or differing in-scope conditions keep the cases unpaired.
-
-Each `check-task` report now includes `acceptance_rule`: `checker`, the check `spec`, and a framework-computed `fingerprint`. The fingerprint uses the entire declaration before checks run, so an early failed probe and a later complete pass under the same rules have the same identity. It covers checker/reference versions, probe thresholds, reference values and provenance, tolerances, integer/recomputation rules and intent; it excludes result values and `g_attribution`. Equal `acceptance_id` text alone cannot establish equivalent rules. Missing rule identity in a historical report leaves that execution as a case, without inventing a comparable pair.
-
-For an already published cache, `orx calibration --rebuild` re-derives the feedback from existing execution/check records using these rules. It makes no solver/provider call and does not rewrite frozen predictions or stored evaluations. A legacy report without a complete rule declaration cannot be upgraded to an equivalent-rule comparison from a shared id or its partially executed checks.
+`same_task_comparisons` pairs different methods with the same frozen task, acceptance rule, observed solving conditions, scope, and version. Read actual solver and limits from `ExecutionRecord.solver` and `execution_features.execution_config.values/sources`, including recorded executor or action-stamped script receipts. Missing or conflicting settings keep observations as individual cases. The `check-task` report's `acceptance_rule.fingerprint` covers the full declared check, versions, thresholds, and reference provenance. Use it with `acceptance_id` when comparing cases. Two passes tie on binary acceptance, with a `verified_objective` retained when available.
 
 ### G attribution evidence
 
-Supply the smallest optional `g_attribution` object inside the existing `check-task --check` JSON (or `check_task_result` API):
+Provide optional `g_attribution` inside `check-task --check` JSON or via `check_task_result` when the execution and checks support the attribution.
 
 ```json
 {
@@ -182,70 +132,31 @@ Supply the smallest optional `g_attribution` object inside the existing `check-t
 }
 ```
 
-`method_fidelity` is `faithful|deviated|unknown`; `failure_source` is `candidate_method|implementation|environment|unknown` (use `unknown` on a pass); `acceptance_scope` is `original_task|partial|unknown`. `acceptance_id` names the stable, versioned original-task acceptance standard. `source` and `assessment` identify who assessed what and why. The framework resolves `evidence_refs` to this execution's captured artifacts and hashes; code evidence (`artifacts.submitted_script` or `solver.code_hash`) AND result evidence (`artifacts.workspace_result` or `execution_features.solution_variables`) are required. Invalid/missing references produce unknown G, while the ordinary checker verdict still stands.
-
-G additionally checks which framework checks actually ran and support the verdict. A pass based only on a self-derived or unstated reference is unknown for G, while the ordinary `check-task` pass remains intact. `reference_source.independent=false` concerns the reference value only: a substantive, adequately covered semantic/domain/recomputation check can still support G. On failure, a trusted check must actually fail; a semantic probe skipped after an earlier weak-reference failure cannot supply its evidence. Faithfulness, original-task coverage and candidate-method failure attribution are still required for G=0.
-
-This is a sourced caller assessment, not automatic proof of the mathematical model's fidelity. Check coverage must be audited against the original requirements; objective equality alone does not establish it. `method_actual` must exist, the recorded plan must identify the predicted candidate, and structured binding conflicts still block attribution. Identical step strings never prove faithful implementation. A reworded method receipt can be accepted when the sourced audit establishes fidelity; a changed method or code omission must be assessed as a deviation. Later corrected attempts can supply their own labels without rewriting earlier forecasts or evaluations.
-
-This is a **measured record, not a promise**: writing the summary does not claim future predictions improve, and it is NOT a fitted calibrator or a model weight (training-free is unchanged). It is kept SEPARATE from the legacy knowledge-prediction reliability (`prediction_class_reliability`): a knowledge hit rate never proves OR strategy-outcome accuracy.
+- Use `method_fidelity=faithful|deviated|unknown`, `failure_source=candidate_method|implementation|environment|unknown` (use `unknown` on a pass), and `acceptance_scope=original_task|partial|unknown`. Name the stable acceptance standard in `acceptance_id` and record the source and grounds of the assessment.
+- Cite code evidence (`artifacts.submitted_script` or `solver.code_hash`) and result evidence (`artifacts.workspace_result` or `execution_features.solution_variables`). Inspect `method_actual` and match the recorded plan to the candidate.
+- For G, use checks that actually ran and cover the original task. A substantive semantic, domain, or recomputation check can support the label. A self-derived or unsourced reference alone leaves G unknown. Use a trusted failed check and evidence that the faithful method caused the failure to support label 0. The ordinary task-check verdict is recorded in either case.
 
 ### Two counting units
 
-The summary reports two numbers that are never conflated:
-
-- **prediction-observation pairs** (`groups`): one per eligible prediction. This is the sample for judging a probability.
-- **observation units** (`occurrence`): the framework's own count of how often an event really happened — once per execution (or per episode for `budget_exhausted`), however many predictions were bound to it. Each entry reports `n_observation_units`, `n_occurred` / `n_not_occurred` / `n_unknown` and `unit_occurrence_rate` over its OWN denominator (labelled observation units). It is reported separately and must never be subtracted from a `mean_predicted_probability` computed over a different sample set.
-
-**Labels are PER EXECUTION.** An episode whose two executions had different outcomes (one timed out, one passed its check) is ONE occurrence and ONE absence — a rate of 50%, not 100%. A scope-level verdict assigned to every execution in the scope would report every run as a failure whenever one failed.
-
-**Observation is derived from the CURRENT facts.** `occurrence` is rebuilt from the executions the window's episodes really produced on every read, NOT from the labels frozen in stored evaluations:
-- an episode with NO bound prediction still produced real executions, so its observations still count;
-- a late task check (in either direction) is reflected immediately;
-- a withdrawn (`exclude-execution`) fact still counts as an observation — it really ran — while leaving the prediction-comparison statistics.
-
-An event the model never predicted still counts in `occurrence` and can never produce a Brier score.
+- `groups` evaluates eligible prediction-observation pairs. A probability requires a known label to enter Brier or the paired occurrence rate.
+- `occurrence` counts actual observations from current window facts, once per execution or once per episode for `budget_exhausted`. Read `n_observation_units`, `n_occurred`, `n_not_occurred`, and `n_unknown`. `unit_occurrence_rate` divides by labelled observation units, including labelled executions without predictions. An excluded execution can still contribute an observed event while leaving the prediction-pair sample.
 
 ### The risk-event vocabulary (`wm-events/3`)
 
-| Event | Unit | Range | Source | Note |
-|---|---|---|---|---|
-| `environment_failure` | execution | the execution | `error_class == 'environment'` | A record with no recorded class stays UNKNOWN |
-| `implementation_failure` | execution | one bound attempt | `wm-r-technical/1` executor/protocol receipt; legacy forecasts retain `error_class == 'model'` | Technical implementation failure; business model validity remains separate |
-| `timeout` | execution | the execution | `status == 'timeout'` | An observation, not a verdict on the strategy |
-| `solver_reported_infeasible` | execution | the execution | `status == 'infeasible'` | A verdict, not by itself a failure |
-| `task_check_failed` | execution | the execution | `task_check.state` | The CHECK RESULT only; kind/scope/basis travel with it |
-| `budget_exhausted` | episode | `episode_to_task_end` | the declared budget view | Independent of a candidate's execution scope; scored on the EPISODE verdict |
+| Event | Unit | Evidence |
+|---|---|---|
+| `implementation_failure` | One bound attempt | [Technical receipt](#technical-r-observations) |
+| `environment_failure` | Execution | `error_class == 'environment'` |
+| `timeout` | Execution | `status == 'timeout'` |
+| `solver_reported_infeasible` | Execution | `status == 'infeasible'` |
+| `task_check_failed` | Execution | `task_check.state` |
+| `budget_exhausted` | Episode | Ledger from decision anchor to task end |
 
-**Retired** (no label, no alias): `model_invalid` (a solver error or a failed check cannot establish that the MODEL was wrong — use `task_check_failed` for the check result), `no_feasible_solution` (ambiguous between a reported infeasibility and a failure to find a solution), `model_failure` (renamed `implementation_failure`). The prediction prompt lists ONLY the observable names and explicitly forbids inventing the retired ones.
-
-**The event RANGE is independent of the candidate scope.** A candidate's `scope` says how MUCH of the run a prediction is about (`attempt` / `strategy_window`); an event's RANGE says WHAT the event measures. `budget_exhausted` measures the WHOLE remaining episode (from this decision's anchor to the task end), so an attempt- or strategy-window-scope prediction that declared it IS scored against the episode ledger (the `wm-events/3` fix). It is never a claim that the candidate alone caused the whole episode's spend, and no per-attempt budget system is built.
-
-**The budget label is episode-scoped, three-valued.** `occurred` when a measured EPISODE-scoped dimension is over its limit OR an explicit budget-termination receipt (a proactive host cancel that reached a hard cap) exists; `not_occurred` when the episode ended with every declared EPISODE-scoped dimension measured and within limits; otherwise `unknown` (no episode-budget condition, or a relevant episode dimension unmeasured — a known consumption with an unmeasured declared dimension is a LOWER BOUND, not a confirmed remaining budget). A single per-attempt `latency_s` overrun is a DIFFERENT event and never decides this one; a missing per-attempt dimension never blocks an otherwise-complete episode verdict. An aborted run with no stated cause is NOT a budget stop — its free-text reason is never read as a cap.
-
-**A changed budget is non-comparable, not silently re-based.** `budget_exhausted` is a claim about the budget DECLARED when the prediction was frozen. If the declaration changed afterwards, the frozen condition is kept and the label is withheld with an explicit non-comparable reason; a new limit never overwrites the original prediction's condition. The prediction input carries the frozen condition (limits, known consumption as a lower bound, whether the remaining budget is confirmed, and the unmeasured dimensions WITH their located reason) so the model may DECLINE to predict rather than default to 0.
-
-**When later episodes see it.** A NEW `PredictionContext` carries the published summary's CONTENT under `strategy_outcome_calibration` — a SINGLE-ROW read, no history scan. The block is filtered twice: by the ATTACHED provider's model identity (another model's errors are not evidence about this one, and the withheld keys are named under `withheld_groups`) and, in the request, by the candidate's scope. Stored contexts never change: episode 1's context keeps what it froze.
-
-**The identity used for FILTERING is the identity used for GROUPING.** Groups are keyed `...|<model>@<version>|...`, so the filter compares the SAME label string (`model_identity_label`) — filtering on the bare model name would match nothing and withhold the attached model's own evidence. An identity of `(unknown)` is a real value and **still filters**: a provider that reports no identity is not handed every other model's statistics. Only a caller that states NO identity at all gets the summary whole, and that block is marked `filtered: false` with a note saying so, so an unfiltered block is never mistaken for this predictor's own record.
-
-**The window bounds the READ, not just the sample.** The occurrence tally reads the facts ONCE for the whole window (per-task, SQL-filtered) rather than rescanning the bank per episode, so closing or rebuilding costs what the window holds rather than what the history holds. The published-summary read was already a single-row lookup.
-
-**The archive check does not rescan the action log.** Deciding whether an episode is still awaiting a task verdict needs, per execution, the action it belongs to. That association is resolved from a PASS-SCOPED, task-scoped `{execution_id: action}` index built ONCE per task (`_execution_action_index`, over the existing indexed `actions.query(task_id=...)`), never a per-execution full-log read. So a close-out's archive check (and the evidence-window pass, which shares the same index) costs what the WINDOW holds, not what the action history holds — even when the grace period holds every candidate and nothing is archived.
-
-**A preview never writes.** `archive-calibration --dry-run` and `inspect --bank retention` are pure reads: neither performs the legacy-store registry migration. A pre-registry store therefore previews as an empty window plus a `pending_migration` note naming the explicit step (`orx calibration --rebuild`, or one real archive pass) that performs it.
-
-**Corrections republish, and correct the RIGHT field.** A late task check, an exclusion or a restore on an episode still IN the window rebuilds and republishes the summary. The stored evaluation is never rewritten; the summary uses a LIVE re-derivation instead:
-- a check that now FAILS re-derives the benefit observation to `0.0` **and keeps the measured cost** — a wrong answer still cost what it cost, so the correction must not take a valid measurement with it;
-- a check that was WITHDRAWN restores the un-gated observation;
-- an execution WITHDRAWN from the evidence set removes the sample entirely (there is nothing left to calibrate against);
-- the correction is SCOPED to the executions the evaluation actually compared, so a late verdict on one execution does not disqualify a sibling's evaluation.
-
-Publication is atomic: the evaluations, the close-out record and the registry row are written in ONE transaction, then the summary and its `published` flag in a second. A crash between them leaves `published=0` (or a record with no registry row), which the next close or `orx calibration --rebuild` detects and finishes without re-counting.
+For `budget_exhausted`, a measured episode limit overrun or an explicit budget-termination receipt supplies `occurred`. A finished episode with all declared episode dimensions measured within limits supplies `not_occurred`. Other cases stay unknown. A change to the budget declaration after prediction makes this event non-comparable.
 
 ### Per-statistic thresholds
 
-Every statistic carries its OWN evidence verdict (`benefit_evidence`, `cost_evidence[dim]`, `interval_evidence`, `brier_evidence_by_event[event]`), because a group of 50 episodes where only ONE predicted a given risk has exactly ONE sample for that risk. A group whose statistics are unevenly supported reports `basis: "partially_measured"` and names them under `under_sampled_statistics`; `min_samples_basis` states that the threshold is applied per statistic. A statistic nobody predicted is **absent** (no verdict), not "insufficient evidence" — "nobody asked" is not "too little data".
+`--min-samples` (default 5) counts distinct `(task_id, episode_id)` pairs separately for each statistic. Inspect `benefit_evidence`, `cost_evidence[dim]`, `interval_evidence`, and `brier_evidence_by_event[event]` for support. A statistic below the minimum reports `insufficient_evidence`. `under_sampled_statistics` identifies gaps in partially supported groups.
 
 ## 6. Retention: three separate scopes
 
@@ -254,51 +165,35 @@ orx inspect --bank retention
 orx archive-calibration [--dry-run]
 ```
 
-One "retention" number cannot honestly bound the online database, decide which episodes calibrate, and cap the archive at the same time, so the three questions are answered separately (all configurable, all recorded on the summary):
-
-| Scope | Question | Default | Env var |
+| Scope | What it retains | Default | Setting |
 |---|---|---|---|
-| **window** | Which closed task-episodes calibrate? | 50 | `OR_CALIBRATION_WINDOW` |
-| **late-check grace** | How long is ONLINE detail kept for a possible late check? Applies ONLY to episodes with an unchecked execution | 30 days | `OR_CALIBRATION_LATE_CHECK_GRACE_DAYS` |
-| **archive caps** | What history is kept on disk? Per file / total / age — whichever bites first evicts the oldest file | 64 MB / 1 GB / 365 days | `OR_CALIBRATION_ARCHIVE_*` |
+| Calibration window | Closed task-episodes used as samples | 50 | `OR_CALIBRATION_WINDOW` |
+| Late-check grace | Online details for out-of-window episodes with executions awaiting a task verdict | 30 days | `OR_CALIBRATION_LATE_CHECK_GRACE_DAYS` |
+| Archive caps | Per-file size, total size, and file age. The oldest files expire first. | 64 MB / 1 GB / 365 days | `OR_CALIBRATION_ARCHIVE_*` |
 
-An episode whose executions all carry a verdict is NOT held by the grace period: it leaves the online set as soon as it drops out of the window. Only episodes genuinely awaiting a verdict are kept — there is no blanket extra retention.
+Archive removes online prediction, evaluation, and context details after writing them to `{home}/archive/calibration/calibration-NNNN.jsonl`. The close-out registry keeps the episode identity and close time for repeat close calls and window selection. Restored archive details are available for audit. The registry still determines the window.
 
-**Only DETAIL is archived** (evaluation, prediction and frozen-context payloads) into `{home}/archive/calibration/calibration-NNNN.jsonl`. The **close-out registry tombstone stays online permanently**: it is what keeps a repeated close idempotent and the window locatable after the payloads are gone, so archiving can never cause a duplicate close or a double count. Re-running the archive pass is idempotent AND resumable: a record already on disk is not written again, but its ONLINE copy is still removed and its episode still marked — so an interrupted pass ("file written, delete not done") can finish its cleanup on the next run. Restoring an archived payload is possible for AUDIT, but a restored payload never re-enters the calibration automatically — the window is decided by the registry's `closed_at` ordering.
-
-**Automatic maintenance.** Every close-out runs a LIGHT check (one indexed count of registry rows outside the window and not yet archived). Only when that count crosses `OR_CALIBRATION_AUTO_ARCHIVE_THRESHOLD` (default 200) does an archive pass run, so retention is maintained without archiving on every close.
-
-**Old stores are backfilled.** A store written before the registry existed has `episode_closeout|…` records but no rows. `calibration_window` backfills them once, idempotently, using each close-out's OWN `created_at` as `closed_at` — so the window ordering is historical, not "whenever the migration ran", and an old database's episodes are not silently invisible.
+Close-out automatically checks whether archival is due (`OR_CALIBRATION_AUTO_ARCHIVE_THRESHOLD`, default 200). A preview can report `pending_migration` for a store that needs a close-out registry. Use `orx calibration --rebuild` or a real archive pass to backfill it from the stored close times.
 
 ### The evidence window (bounding the RAW evidence bank)
-
-`window` / `grace` / `archive` bound the CALIBRATION detail. The raw Execution Evidence Bank has its OWN bound:
 
 ```bash
 orx enforce-window [--window-episodes 800] [--open-grace-days 30] [--dry-run]
 ```
 
-| Scope | Question | Default | Env var |
-|---|---|---|---|
-| **evidence window** | How many COMPLETE episodes' raw executions are retained? | 800 | `OR_EVIDENCE_WINDOW_EPISODES` |
-| **open grace** | How long may an UNCLOSED episode's executions stay? | 30 days | `OR_EVIDENCE_OPEN_GRACE_DAYS` |
+| Scope | Default | Setting |
+|---|---|---|
+| Retained closed episodes of raw execution evidence | 800 | `OR_EVIDENCE_WINDOW_EPISODES` |
+| Grace for unclosed episodes | 30 days | `OR_EVIDENCE_OPEN_GRACE_DAYS` |
 
-- The eviction UNIT is the whole episode, oldest first by the registry's `closed_at` — a contrast/repair chain is never split.
-- NEVER evicted: episodes inside the calibration window, episodes awaiting a task verdict within the late-check grace period, and young unclosed episodes. An unclosed episode is exempt while its outcome is unknown, but `open_grace_days` bounds one that never closes (evicted whole, reported separately).
-- It runs LAST after a close-out — after the calibration publish and the archive pass — so every consolidation opportunity is taken first. It is also an explicit command. The close-out hook is guarded by one indexed count, so an ordinary close walks nothing.
-- It drops the evicted vectors and any task-text version no remaining execution references. Idempotent, crash-recoverable, and it never touches your solve sources.
-- **A count, not a byte cap.** Nothing promises a byte budget; the bound is expressed in episodes. This bounds the Evidence Bank — not the whole project directory.
-
-**Eviction is NOT a withdrawal.** An expired source is a historical reference EXPIRING; the stored evaluation of the expired episode stands as FINAL, and the knowledge entry keeps its own content, conditions, expected effect and verification scope. A present-but-non-counting fact (`exclude-execution`) is the withdrawal path, and the two are never conflated. A sample count going down never counts as a claim being refuted.
+The evidence pass runs after publication and archive maintenance. It evicts whole episodes, oldest first, along with their vectors and task-text versions no remaining execution uses. Calibration-window episodes, episodes in late-check grace, and unclosed episodes in open grace are protected. Use `--dry-run` to inspect eviction candidates. Published rules and archived evaluations retain their own records when source executions expire.
 
 ## 7. Window rounds (the identity extension)
 
-`ORHarness.strategy_execution_window(..., round_index=N)` (and the `win::task::episode::strategy::rN` window id) selects ONE selection round of a (task, episode, strategy): the actions from the Nth recorded choice of that strategy up to the next recorded choice of any strategy. The same strategy chosen twice — or switched away and back — is TWO windows with TWO ids; a round that does not exist is reported not-comparable with the reason. Legacy three-part window ids still parse (`round_index=None`).
+Select one round with `ORHarness.strategy_execution_window(..., round_index=N)` or `win::task::episode::strategy::rN`. The window starts at that selection of the strategy and ends at the next recorded selection of any strategy. A second selection of the same strategy gets a separate window. A nonexistent round is non-comparable. A window ID without a round maps to `round_index=None`.
 
 ## 8. Late evidence and corrections
 
-A later `check-task` can add evidence to the execution it cites. Stored evaluations retain the facts known at close-out. Later reads re-derive affected observations under their original metric and attribution rules and report `validity_corrections[]`. In-window updates republish calibration (`calibration_republished`). Solver quality and measured cost keep their original values.
+A later `check-task` adds evidence to the execution it cites. Read `validity_corrections[]` for observations re-derived under their original metrics and attribution rules. A late check, exclusion, or restore inside the window can republish calibration (`calibration_republished`). The stored evaluation preserves the close-out facts. Use `orx calibration --rebuild` to regenerate the publication from current records without rerunning the solver or predictor.
 
-Read the check's declared coverage when interpreting acceptance. The agent diagnoses modelling and implementation failures using the original task and execution evidence. A late reference comparison can support [offline induction](induction.md#read-material-and-choose-comparisons) within its recorded scope. Keep benchmark scoring in the evaluator.
-
-Once evaluation detail is archived, later checks can annotate retained execution facts, while archived calibration detail remains final. See [retention scopes](#6-retention-three-separate-scopes) for the late-check window.
+Use the check's recorded coverage when interpreting acceptance. Later reference comparisons can supply [offline induction evidence](induction.md#read-material-and-choose-comparisons) within their documented scope. Once evaluation detail is archived, later checks can annotate retained execution facts while the archived evaluation stays final.

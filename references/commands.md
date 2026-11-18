@@ -1,51 +1,44 @@
 # Command reference
 
-Use this page to look up syntax, outputs, and recovery steps. Follow [SKILL.md](../SKILL.md) for the solving workflow and [induction.md](induction.md) for review and rule management.
+Follow [SKILL.md](../SKILL.md) for solving and [induction.md](induction.md) for reviewing and maintaining rules.
 
-Commands print one JSON line to stdout: `{"result": {...}, "summary": "..."}`. Exit codes: `0` success, `2` usage/precondition error, `1` crash. Read the result state as well as the exit code. All commands accept `--home DIR`, defaulting to `$OR_HARNESS_HOME`, then `./or_harness_home`.
+Commands print one JSON line with `result` and `summary`. Exit codes are `0` for success, `2` for a usage or precondition error, and `1` for a crash. Use `--home DIR` to select the memory directory. The default is `$OR_HARNESS_HOME` or `./or_harness_home`.
 
 ## 1. Common paths and command index
 
-Use the same task file through preparation, planning, and execution. See [task inputs](modeling.md#start-from-the-shared-original-input) for the minimum fields and optional model or CIR.
+Use the same [task input](modeling.md#start-from-the-shared-original-input) for profiling, planning and execution.
 
-| Purpose | Commands | Effects |
-|---|---|---|
-| Understand and discover | `profile`, `recall` | Read; recall may call an embedding provider |
-| Score and select | `plan-next` | One shared context, one forecast per candidate, saved U selection; inspect reads existing forecasts |
-| Execute, check, record | `execute`, `check-task`, `record` | Runs code; logs checks; stages and records facts |
-| Close the episode | `close-episode` | Writes evaluations/calibration; performs retention |
-| Optional inputs | `context`, `snapshot`, `budget` | Save prediction inputs or snapshots, declare a budget |
-| Offline knowledge | `induction-material`, `induce`, `retire` | Material reads; induction/retirement change knowledge |
-| H+ building handoff | `induction-status`, `induction-material`, `induce` | Review each pending H+ job after close-out. `induce` records the result in an induction receipt |
-| Inspect and diagnose | `doctor`, `contract`, `inspect`, `calibration` | Read/build views; `calibration --rebuild` writes |
-| Repair/report | `bind-strategy`, `amend-cost`, `action`, `exclude-execution`, `restore-execution` | Writes links, costs, actions, or correction history |
-| Store/index maintenance | `rebuild-index`, `archive-calibration`, `enforce-window` | Explicit maintenance; `--dry-run` writes nothing |
+| Goal | Commands |
+|---|---|
+| Understand the task and find relevant memory | `profile`, `recall` |
+| Predict outcomes, score U and select a candidate | `plan-next` |
+| Run, check and record an attempt | `execute`, `check-task`, `record` |
+| Publish calibration and schedule H+ reviews | `close-episode` |
+| Take a pending review, compare evidence and submit a result | `induction-status`, `induction-material`, `induce` |
+| Inspect an input or resource budget | `context`, `snapshot`, `budget` |
+| Inspect stored records or diagnose the environment | `inspect`, `doctor`, `contract`, `calibration` |
+| Repair or report records | `bind-strategy`, `amend-cost`, `action`, `exclude-execution`, `restore-execution` |
+| Maintain knowledge, indexes and retention | `retire`, `rebuild-index`, `archive-calibration`, `enforce-window` |
 
 ## 2. IDs and shared rules
 
-| ID or payload | Source | Consumer |
+| ID | Where to read it | Where to use it |
 |---|---|---|
-| Task / episode | Choose one task ID per logical problem and one episode label per solving effort; retries retain them | Commands accepting `--task` / `--episode` |
-| Decision action | `plan-next`: `result.decision_action_id` | saved authorization; optional compatibility rejection |
-| Candidate prediction | `plan-next`: `result.selected_prediction_id` / `result.plan.candidates[].prediction_id` | `execute --prediction` for the scored winner; independent IDs are inspection only |
-| Execution | `execute`: `result.execution_id` | `check-task`, `record --from-staged`, correction commands |
-| Execution action | `execute`: `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
-| Evidence IDs | `induction-material`: `result.material[].execution_id` | Evidence for the induction submission |
+| Task / episode | One task ID per problem and one episode per solving effort | Reuse both for retries |
+| Decision action | `plan-next` → `result.decision_action_id` | `choose-next --decision` |
+| Selected prediction P | `plan-next` → `result.selected_prediction_id` | `execute --prediction P` |
+| Execution EX | `execute` → `result.execution_id` | `check-task`, `record --from-staged`, evidence corrections |
+| Execution action | `execute` → `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
+| Induction job J | `close-episode` → `result.induction_schedule.pending_ids[]` | `induction-material --induction-id`, `induce --induction-id` |
+| Evidence execution | `induction-material` → `result.material[].execution_id` | Cite in an induction submission |
 
-Keep these boundaries throughout the calls:
-
-- A proposed method is a plan; an execution receipt reports what happened. A retrieval hit or a reuse citation does not establish successful transfer.
-- Missing values are unknown. Cost comparisons require compatible units, scopes, and measured dimensions; estimates and lower bounds are not complete observations.
-- Solver quality measures how well the model was solved. Task checks assess declared requirements of the original task. Knowledge verification covers the submitted assertions. These are separate judgments.
-- See [prediction input identity](prediction_context.md#one-cir-for-the-whole-request-and-one-effective-input-identity) for the fields that must agree between planning and execution.
+Use solver diagnostics to assess the solved model and task checks to assess the original requirements. Compare costs on matching scopes, units and measured dimensions.
 
 ## 3. Understand and retrieve
 
 ### `orx profile --task t.json [--cir cir.json] [--allow-empty-cir]`
 
-**Purpose / effects:** Read-only analysis of CIR, modeling implications, and the pre-strategy structural profile. A task without a `model` is normal; model coupling, when present, is reported separately in `derivation.model_coupling` and does not change the key. Solve scripts are not profile inputs.
-
-**Input:** CIR comes from `--cir` or `task.coupling`. Allowed keys are `entities`, `decisions`, `constraints`, `relations`, `coupling_groups`, `issues`; list keys must contain lists. Members need entity/decision `name`, constraint `id`, relation `source`/`target`, and coupling-group `type`. Relation endpoints must name declared nodes. Types/kinds are free-form strings.
+Read the pre-strategy structure and modelling guidance. CIR comes from `--cir` or `task.coupling`. Use lists under `entities`, `decisions`, `constraints`, `relations`, `coupling_groups` and `issues`. Name entities and decisions, give constraints IDs, and give coupling groups a `type`. Relation endpoints refer to declared nodes.
 
 ```json
 {"coupling": {
@@ -58,159 +51,104 @@ Keep these boundaries throughout the calls:
 }}
 ```
 
-Relation evidence is `structural` (co-occurrence), `semantic` (supported meaning), or `declared` (agent assertion). Co-occurrence alone gives generic dependency, not a semantic resource claim. Scalar annotations belong in `annotations.coupling`, not `task.coupling`.
+Set relation evidence to `structural` for co-occurrence, `semantic` for a supported relationship, or `declared` for an agent assertion. Store scalar annotations in `annotations.coupling`.
 
-**Read:** `result.coupling` contains validated CIR, `health`, and `modeling_guidance`; `result.profile` / `result.derivation` show values, origins, and warnings. Derivation priority is CIR → structured `spec` → annotations; `semantic_coupling` is not derived. Guidance and retrieval identity use the same structure.
+**Read** `result.profile`, `result.derivation` and `result.coupling.{health,modeling_guidance}`. Derivation uses CIR, structured `spec`, then annotations. A supplied model's coupling appears in `derivation.model_coupling`.
 
-**Recover / next:** Malformed CIR exits 2 with `result.error={kind:"cir_format",cause,detail,hint,...}`. Causes include `not_object`, `unknown_keys`, `bad_type`, `empty_cir`; missing members identify their exact path. Fill an empty CIR, omit it, or explicitly use `--allow-empty-cir`. `OR_CIR_STRICT=0` downgrades unknown-key/empty-CIR policy checks to `shape_lints`, never structural parse errors. Read `health.parsed` and `contributes_scalars` rather than assuming presence implies usable structure. Proceed to recall and candidate prediction.
+**Fix input** For a `cir_format` error, read `result.error.hint` and correct the indicated field. Use `--allow-empty-cir` for an intentional empty CIR. See [CIR shape and strictness](modeling.md).
 
 ### `orx recall --task t.json [--top 3] [--exclude S04 S06] [--candidate ID ...] [--memory-mode M] [--include-unverified]`
 
-**Purpose / effects:** Discover relevant memory, without utility ranking or writes. Text embedding is the main discovery route; the structural channel supplies auxiliary evidence and statistics. Both remain visible when one is empty or unavailable.
+Find text matches and related structural evidence. `--top` caps returned hits and `--candidate` filters by strategy ID. `--memory-mode` controls the structural channel. `none` leaves it empty, `cases` returns statistics, and `strategic` or `cost-aware` adds knowledge. Vector retrieval remains available in all modes. Use `--include-unverified` to inspect unpublished candidates.
 
-**Input:** `--candidate` filters by existing method IDs; it does not create evidence or prohibit a fresh method. `--top` caps returned material, not decisions. Modes apply to the structural recommendations: `none` clears that channel; `cases` reports statistics; `strategic` adds entries; `cost-aware` retains that view for experiment settings, without recall-side cost ranking. **Vector retrieval still runs with `--memory-mode none`**, so this flag is not a no-memory isolation switch. `--include-unverified` exposes unpublished candidates in both channels with their state labelled. A host that calls `profile` and `recall` in ONE request can pass the already-built profile object (Python `recall(task, profile=h.profile(task))`) so the task's CIR/structure is parsed ONCE instead of twice; a profile whose `problem_id` is a different task is refused (a cheap id check that does not re-parse).
-
-**Read:** `recall` includes `result.profile`; a separate profile call is optional for structure/guidance inspection.
-
-| Result | Meaning |
+| Result field | What to read |
 |---|---|
-| `recommendations[]` | Structural memory report: published entry first, otherwise conditional statistics; no `score` |
-| `recommendations_basis` / `recall_budget` | Why rows exist or are empty; matched, returned, omitted counts |
-| `candidates_without_evidence` | Proposed IDs without backing memory |
-| `held_claims[]` | Claims outside the ordinary eligibility path, exposed by the inspection option |
-| `vector_recall.execution_evidence[]` | Text hits with execution/task/strategy IDs, text digest/excerpt, observed quality/cost, failures, task check, method, solution/reuse information |
-| `vector_recall.strategic_knowledge[]` | Text hits with claim, expected effects, verification/support, predicates, applicability and reuse judgment |
-| `evidence_candidates[]` / `vector_recall.suggested_candidates[]` | Methods actually recorded by retrieved cases, offered for consideration when admitted knowledge is unavailable |
-| `available_solver_families` / `solver_advisories` | Available concrete solvers and remembered environment failures |
+| `profile` | Task structure |
+| `recommendations[]` | Published rules or conditional statistics, with basis and evidence |
+| `recommendations_basis`, `recall_budget` | Matching basis and counts |
+| `vector_recall.execution_evidence[]` | Past methods, task checks, costs and failures |
+| `vector_recall.strategic_knowledge[]` | Rules, applicability and verification |
+| `evidence_candidates[]`, `vector_recall.suggested_candidates[]` | Methods found in prior executions |
+| `available_solver_families`, `solver_advisories` | Available solvers and observed environment failures |
 
-Structural rows carry `strategy_id`, `expected{quality,cost,failure_prob}`, evidence/refs, confidence, basis, cost-known/basis dimensions, and risk warnings. `knowledge` carries the entry's method/actions, applicability, support, and verification information where available. `recommendations[].knowledge.rule` exposes a short rule and its version. If a vector hit lacks the version, use `inspect --bank strategic --entry ENTRY` and read `result.entries[0].rule.view_version` before declaring adoption. For `conditional_stats`, expected fields are observed recounts, not a verified knowledge commitment.
+Check the rule's conditions against the task. Read `recommendations[].knowledge.rule` or use `inspect --bank strategic --entry ENTRY` to get `rule.view_version` before declaring adoption. `similarity` is cosine similarity. For a rule, `structural_match` reports `applies|conflicts|unknown` from its predicates. For an execution it compares structural cells.
 
-Check admitted knowledge's conditions first. If none applies, inspect execution hits and adapt their methods. Text search has no structural pre-filter; `similarity` is raw cosine, never predicted quality or utility. For executions, `structural_match` compares cells; for entries, it evaluates predicates (`applies|conflicts|unknown`). Neither substitutes for checking semantic premises.
+Use `method.actual` to adapt a method that was performed. `method.planned` records intent. Read its task check or failure details and use `inspect_hint` to open the full record. Cite adapted cases with `execute --adapted-from`. Propose a method from the task when the retrieved material is sparse.
 
-Method evidence is `performed`, `planned_only`, or `none`: `method.actual` comes from the execution receipt; `method.planned` is intent. A failed task check makes a case repair material; a null check is unchecked. Observed solver quality alone does not establish task success. Follow the returned `inspect_hint` when you need the full record, and cite adapted cases through `execute --adapted-from`.
-
-**Recover / next:** Empty memory is a normal cold start: propose your own methods. There is no built-in candidate menu. A `degraded={path:"profile_only",reason:...}` means text search could not run, distinct from empty hits after a successful query:
-
-| Cause | Action |
-|---|---|
-| No embedding backend | Configure it, or use the reported structural fallback |
-| No task text | Supply the actual problem text |
-| Index missing / embedding model changed | `rebuild-index` |
-| Embedding backend error | Inspect the provider failure; structural results remain available |
-
-`stale_indexed` counts outdated vectors excluded from search; `unindexed` counts memories without vectors, still inspectable through banks/profile. Ineligible entries are filtered before the text hit cap. Retrieval text comes from `text`, `description`, `objective`, `requirements`, `business_rules`, `constraints`, `spec`, in that order. Predict the candidate methods you choose to consider.
+**Recover text retrieval** Read `degraded.reason` if retrieval falls back to the profile. Supply task text, configure the backend, or run `rebuild-index` when the index is missing or the embedding model changes.
 
 ### Embedding configuration
 
-| Variable | Meaning |
+| Variable | Value |
 |---|---|
-| `OR_EMBEDDING_BASE_URL` | OpenAI-compatible embedding endpoint base |
+| `OR_EMBEDDING_BASE_URL` | OpenAI-compatible embedding endpoint |
 | `OR_EMBEDDING_MODEL` | Embedding model |
-| `OR_EMBEDDING_API_KEY` | Credential, not persisted |
-| `OR_EMBEDDING_BACKEND` | `auto` (default), `none`, or explicit `local-hashing` |
+| `OR_EMBEDDING_API_KEY` | Embedding credential |
+| `OR_EMBEDDING_BACKEND` | `auto`, `none` or `local-hashing` |
 
-`auto` requires URL, model, and key; otherwise text retrieval is unavailable. It does not substitute hashing. `local-hashing` is for offline tests, not semantic retrieval; its `model_id=local-hashing-embedding-v1` vectors cannot mix with real-model vectors. These settings are separate from `OR_WM_*`. Python callers may inject `ORHarness(home=..., embedding=MyBackend())`.
+`auto` needs the URL, model and key. Use `local-hashing` with its own index for offline tests.
 
 ### `orx context --task t.json [--episode ep1] [--top 3] [--cir cir.json] [--math JSON] [--include-unverified] [--no-persist]`
 
-**Purpose / effects:** Optional explicit construction of a frozen prediction input. It gathers a snapshot and recall once, may call the embedding provider, and persists by default; no world-model call, solver run, or induction. Read an existing context with `orx context --context-id CTX_ID`, which reruns nothing.
+Build and save a frozen prediction input for inspection or explicit reuse. `plan-next` builds its own shared context. Use `--no-persist` for a preview and `orx context --context-id CTX_ID` to read a saved context.
 
-**Input / read:** Freezes task text/payload, CIR relations, math attributes with origins, profile/derivation, execution progress, budget, deduplicated retrieval, capability evidence/version, and execution constraints. Read `result.context_id`, `task_digest`, `joint.math`, `joint.unknowns`, `missing`, `degraded[]`, `evidence_classes`, and `capability_version`. Evidence categories stay distinct: execution facts, verified/unverified/legacy knowledge, and structural recommendations.
-
-`--math` declares known attributes, e.g. `'{"linearity":"linear","objective_kind":"min"}'`. A supplied `--cir` replaces task coupling consistently for representation, profile, and retrieval; `joint.sources.cir` reports its origin. Missing model/CIR/text is reported, not guessed. Retrieval deduplicates `layer:id`; content digests cover consulted knowledge, not read timestamps.
-
-**Recover / next:** Explicit reuse uses `ORHarness.predict_strategy_outcome(..., context=ctx, cir=cir)` with the same effective CIR. CLI `plan-next` builds its own shared context. Task/version/episode or known structural mismatches are refused; unknown structure is not a mismatch. `--no-persist` returns content without creating a later lookup target. Historical `--snapshot` builds use frozen knowledge/retrieval, exclude later-created memories, and mark unavailable reliability/evidence blocks missing; they cannot reconstruct history from today's banks. See [prediction_context.md](prediction_context.md).
+`--cir` sets the effective CIR and `--math` supplies known attributes, such as `'{"linearity":"linear","objective_kind":"min"}'`. Read `context_id`, `joint.math`, `joint.unknowns`, `missing` and `degraded[]`. For Python reuse pass the context and the same effective task, episode and CIR to `ORHarness.predict_strategy_outcome`. See [prediction inputs and identity](world_model_contract.md#1-prediction-inputs).
 
 ## 4. Plan and inspect predictions
 
 ### Candidate format
 
-`plan-next --candidates` accepts an inline JSON list or a path to one. The list may contain one or multiple candidates. A minimal described candidate is:
+Provide an inline JSON list or a file to `--candidates`. Give a new method a name and concrete steps. Use `strategy_id` when referring to a recorded method.
 
 ```json
-{"name":"bounded_enumeration",
- "steps":["derive a finite range covering every feasible integer Y",
-          "derive the feasible X interval for each Y",
-          "choose the best X boundary after checking objective monotonicity in X"],
- "solver":"python","config":{"time_limit":60}}
+[
+  {"name":"bounded_enumeration",
+   "steps":["derive a finite range covering every feasible integer Y",
+            "derive the feasible X interval for each Y",
+            "choose the best X boundary after checking objective monotonicity in X"],
+   "solver":"python","config":{"time_limit":60}}
+]
 ```
 
-Top-level `name`/`steps` normalize into `method={name,steps,why?,fallback?}`; string steps become one step. Without an explicit strategy ID, method content allocates `cand_<hash8>`. Solver/config do not enter that method ID, but do distinguish execution candidates. Allocation is not a claim that historical methods are equivalent; use an existing `strategy_id` when referring to one.
-
-The full shape supports `action_type:"execute_strategy"`, task/episode identity, `strategy_id`, `method`, `solver`, `config`, and `scope:"attempt"`. Legacy `ActionSpec` preserves execution params and budget hints; an unmappable scope such as `task` is refused. Method-like content in config is moved to method; unknown execution-parameter keys are refused. Conflicting top-level and nested method declarations, a named method without steps, or neither ID nor method content are rejected before a model call. A bare ID alone does not describe a cold-start method: supply the actual steps.
-
-**Field responsibilities — do not duplicate.** `solver` (top level) is the declared solver / calling interface. `method` is the modelling form, variable domains, objective, constraints and the method steps. `config` is the execution parameters: time limit, random seed, solve precision, and comparable knobs. Put the solver ONLY at the top level: a `config.solver` copies it, and the two spellings need not agree — so a duplicate is neither matched nor mistaken for a mismatch (it does not block the outcome). Genuine execution params (`warm_start`, `msg`, `time_limit`, `seed`, `mip_gap`, …) stay in `config`; only keys that name no execution parameter at all are refused.
+`method` describes the modelling and solving steps. Put the solver in top-level `solver` and put run parameters such as `time_limit`, `seed`, `mip_gap` and `warm_start` in `config`. Top-level `name` and `steps` form a minimal method. Without an explicit `strategy_id` the method receives a `cand_<hash8>` ID. Different solver or configuration choices are distinct execution candidates.
 
 ### Stored forecasts and their conventions
-
-`plan-next` saves one `wm-so/1` forecast per candidate together with the score
-and execution permission. Read `result.selected_prediction_id` and execute that
-original P. View an existing candidate forecast with:
 
 ```bash
 orx inspect --bank predictions --prediction P
 ```
 
-Inspection makes no provider call. `result.prediction.kind` names the generation;
-`result.prediction.prediction` contains its stored payload. It exposes status, candidate,
-G/C/R/H+, notes and trace. The Python service `ORHarness.predict_strategy_outcome`
-remains available for explicit context reuse and contract inspection; standalone
-API forecasts do not authorize execution.
+Read the stored forecast in `result.prediction.prediction` and its kind in `result.prediction.kind`. Use [contract fields](world_model_contract.md) when declaring a benefit metric or inspecting a forecast.
 
-Set any required benefit convention before planning. See [contract fields](world_model_contract.md) for metric names and [G attribution evidence](episode_closeout.md#g-attribution-evidence) for observations.
+If the plan has no eligible U, read its reason and the saved prediction's `failure.kind` and notes. Fix the input or provider settings and run `plan-next` again.
 
-**Recover / next:** A failed or unsupported forecast retains its status,
-notes, failure details and measured call usage. Inspect that saved prediction;
-repair the candidate or provider response and call `plan-next` again when no
-eligible U is returned. A candidate is predicted once per plan without hidden
-retries or default forecasts. See [strategy_outcome.md](strategy_outcome.md).
-
-Saved forecast diagnostics retain these recovery hints:
-
-| `failure.kind` | Recovery |
+| `failure.kind` | Action |
 |---|---|
-| `truncated` | Increase `--wm-max-tokens` / `OR_WM_MAX_TOKENS`; consider thinking's shared output budget (`OR_WM_ENABLE_THINKING`) |
-| `wrong_top_level` | Fix the payload/prompt; expected JSON object |
-| `empty_response` / `unparsable` | Inspect endpoint output/format |
-| `timeout` / `network_error` | Retry deliberately or adjust `--wm-timeout` / `OR_WM_TIMEOUT` and planning time budget |
-| `unusable_payload` | Fix fields named in validation notes |
-
-Unknown `finish_reason` remains unknown.
+| `truncated` | Raise `--wm-max-tokens` or `OR_WM_MAX_TOKENS`. Check the shared output budget when `OR_WM_ENABLE_THINKING` is enabled |
+| `wrong_top_level` | Check the provider response for a JSON object |
+| `empty_response`, `unparsable` | Inspect the response and output format |
+| `timeout`, `network_error` | Check the endpoint, `--wm-timeout` / `OR_WM_TIMEOUT` and the planning time budget |
+| `unusable_payload` | Fix or review the fields named in the validation notes |
 
 ### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode E] --candidates specs.json [--cost-scales JSON_OR_FILE] [--horizon 1] [--max-calls N] [--prediction-mode M] [--time-budget S]`
 
-**Purpose / effects:** The normal decision entry accepts one or more candidates,
-freezes one shared context, calls the world model once per candidate, saves
-G/C/R/H+ and U, and selects the eligible highest-U candidate with stable ties.
-It does not execute the solver. Read `result.selected_prediction_id`,
-`result.selected_score`, `result.plan.candidates[]`, limits and planning spend.
-When no selection is available these keys are null and the reason is explicit.
+Predict G/C/R/H+ once per candidate under one shared context. Save the scores and select the eligible candidate with highest U. Read `result.selected_prediction_id`, `result.selected_score` and `result.plan.candidates[]`. Use the selected P in `execute`. For a new attempt, get a fresh selection in the same episode.
 
-**Settings:** `--cost-scales '{"tool_calls":30}'` supplies a declared resource scale. The global `--execution-context runner.json` takes precedence over `OR_EXECUTION_CONTEXT` (inline JSON, path, or `@path`) for declared execution host, model, interface, and phase. See [score calculation](strategy_outcome.md#3-score-one-or-more-candidates) and [prediction inputs](prediction_context.md) for how these settings apply.
-
-**Next:** Pass the selected P to `execute --prediction P`. For a repaired attempt, obtain a fresh scored selection.
+Use `--cost-scales '{"tool_calls":30}'` to declare resource scales. `--execution-context runner.json` sets the execution host, model, interface and phase, taking precedence over `OR_EXECUTION_CONTEXT`. See [score calculation](strategy_outcome.md#3-score-one-or-more-candidates).
 
 ### `orx choose-next --decision ACTION_ID (--prediction P | --chosen spec.json | --rejected) [--note "..."]`
 
-Compatibility/rejection record, with no solver or model call. Accept only the
-scored winner from this decision; execute reuses the choice record for its one
-actual adoption. A manual choice cannot override saved U permission. Rejection
-records the reason and prevents executing that decision. Historical choices
-remain readable.
+Record a rejection of a saved decision or confirm its scored winner. Use `--rejected --note TEXT` to record why the plan was rejected. An accepted choice uses the winner already selected by U.
 
 ## 5. Execute and check
 
 ### `orx execute --task t.json --prediction PREDICTION_ID --code solve.py --workspace DIR [--episode ep1] [--method JSON] [--adapted-from ex_a,ex_b] [--adaptation TEXT] [--used-entry-ids ENTRY@VERSION]`
 
-**Purpose / effects:** Run the chosen code, log an action, capture task text/version and observed configuration, and stage every resulting attempt. Staging is not recording; use `record --from-staged` afterward. No automatic second solve is started.
+Run the selected code and stage the resulting attempt. Pass an unused P from `plan-next` with the same task and episode. The saved candidate supplies the strategy, solver and configuration.
 
-**Input / binding:** A selected, unused, finite-U prediction from `plan-next` is required. Bare execution and independent forecasts are refused before execution. With `--prediction`, the frozen candidate supplies strategy, solver, configuration identity, and episode; contradictory explicit values, changed problem identity, or an already-claimed prediction are refused before the run. The action/link is persisted before execution. Adding a post-strategy model does not change problem identity. Bare strategy/solver arguments and an independent API forecast do not authorize formal solving. `--method` describes candidate intent; it cannot replace a scored selection.
+**Workspace** Keep the script inside `--workspace`, which is the working directory. Use in-process solvers such as `highspy` and `ortools`. The sandbox blocks subprocess launches, network libraries and imports such as `pathlib` and `shutil`. Use labels `C1`, `C2` and so on for L2 checks. The script has a wall-clock limit in addition to solver settings.
 
-**Sandbox:** Code must live inside the workspace, which becomes its working directory. Blocked imports include `subprocess`, `socket`, `urllib`, `http`, `requests`, `shutil`, and `pathlib`; only `os` / `os.path` are allowed from `os`, with operations such as `chdir`, `walk`, and `remove` refused. In-process solvers such as `highspy` and `ortools` are allowed; subprocess-based PuLP/CBC cannot run. Constraint labels must be `C1`, `C2`, … for L2 cross-reference. POSIX resource limits and a whole-script wall-clock timeout apply.
-
-**Result file:** Write with literal `open('result.json', 'w')` inside the workspace. Prior output is removed; stale output is refused. `status` is required; `optimal`/`feasible` require a finite `objective_value`. Report actual `objective_bound`, `mip_gap` and `runtime_seconds` when available, and `variables` whenever task checks need solution values. Missing measurements remain unknown. Legal statuses are `optimal|feasible|infeasible|unbounded|timeout|error` (case-normalized). Use the actual solver status: a feasible incumbent does not establish optimality. Boolean statuses are errors.
-
-For a run that actually proved the reported optimum, the result shape is:
+**Result file** Write `result.json` with `open('result.json', 'w')`. Set the solver's `status` to `optimal|feasible|infeasible|unbounded|timeout|error`. For `optimal` or `feasible`, include a finite `objective_value`. Include available bounds, gap, runtime and the values needed for task checks.
 
 ```python
 import json, os
@@ -229,48 +167,32 @@ result = {
 json.dump(result, open('result.json', 'w'))
 ```
 
-This illustrates the reporting shape, not a solve or a reference answer. Replace all values and steps with the run's observations. Stamp optional configuration/method receipts with `OR_ACTION_ID`; only matching receipts are accepted, including on failure paths. Without a receipt, performed method/configuration remains unknown rather than copied from the plan.
+Use the numbers and method steps from the actual run. Stamp `config` and `method_performed` with the current `OR_ACTION_ID`. Read performed steps in `method_actual` and the plan in `method_planned`. `execution_config` identifies executor observations, script read-back and configured settings. Executor observations take precedence. `script_timeout_s` gives the whole-script limit.
 
-**Read:** `result.execution_id`, `action_id`, `execution`, and `prediction_binding`. The execution contains quality diagnostics, raw cost and measured mask, runtime provenance, CIR snapshot, text digest, and `execution_features`. Variables are stored under `solution_variables`, capped at 2000 with a truncation report; checks needing omitted variables stay unchecked.
+Use `--adapted-from` and `--adaptation` to cite past cases. Use `--used-entry-ids 3@2,5@1` to declare versions actually adopted. Pass `--used-entry-ids ''` to report no adoption.
 
-`execution_config` distinguishes `executor` observations, `script_reported` read-back values, and `executor_configured` instructions. Instructions are not evidence that a solver honored them. Executor observations prevail over contradictory receipts, with conflicts retained. Whole-script `script_timeout_s` differs from solver time limit. Method receipts populate `method_actual`, trajectory, and `method_receipt`; candidate intent remains `method_planned`.
-
-Optional `--adapted-from` and `--adaptation` store `reuse_trace`. Citation records the cases considered, not benefit; unknown cited IDs are retained without validating existence.
-
-`--used-entry-ids` declares the actual knowledge versions this attempt ADOPTED (e.g. `3@2,5@1`; `''` records "adopted none"). Bare entry numbers remain accepted for compatibility; read and name the version explicitly in ordinary use. This is a DECLARATION, distinct from recall (`last_consulted_at`) and from `--adapted-from` (cases you read): only declared entries have a forward check computed, so a mere recall never counts as a successful use. The adoption is stored under `execution_features.used_entries`; an unknown number is kept as a citation, and the flag never rewrites a value the record already carries.
-
-**Cost:** The executor observes latency and solver runtime with provenance. Supply whole-attempt tokens/tool calls from a host report; hand-typed defaults are estimates. Tool calls have a provable sandbox lower bound. Retries are measured zero only when no earlier attempt exists for this task/episode/strategy; otherwise remain unknown until supplied. A static-policy rejection has no measured solving cost. See recording/cost rules below.
-
-**Recover / next:** Run `check-task`, then record the staged attempt, including failures. Prediction precondition errors exit 2 before execution. If the executor fails after starting, retain the staged failure/cost. A repair proposes a fresh candidate through `plan-next` in the same episode. Inspect `prediction_binding` (`bound`, `config_observed`, `config_unknown`) as evidence; recovery association cannot replace saved execution permission.
+**Read and continue** Read `result.execution_id`, `action_id`, `execution` and `prediction_binding`. `solution_variables` retains up to 2000 variables. For an exit-2 precondition error, check the saved P and task identity. Run `check-task` and record every real attempt, including a failed one. Use a new `plan-next` selection for a repaired attempt.
 
 ### `orx check-task <execution_id> [--check JSON] [--episode ep1]`
 
-**Purpose / effects:** Verify declared requirements of the original task against a staged or recorded result. Writes a `verify` action and `execution_features.task_check`; no solver or prediction call. This is separate from solver-side model quality.
+Check original task requirements against a staged or recorded execution. `check-task` writes a `verify` action and `execution_features.task_check`.
 
-**Before submitting the answer:** Build `--check` from the original requirements, inputs, and execution. Evaluate constraints from the returned solution. Use these checks and the execution outcome to decide whether to retry.
+**Before answering** Build `--check` from the task's inputs, constraints and observed solution. Use the result to decide whether the same execution needs a better check or the solver needs another attempt.
 
-| Check key | Meaning |
+| Check key | Use |
 |---|---|
-| `integer` | Optional named `variables`, optional tolerance (default `1e-6`); otherwise checks recorded variables |
-| `recompute_objective` | Coefficients, optional constant/tolerance; recompute from solution variables |
-| `semantic_probe` | One or more `{path, equals|min|max|in}` probes over record fields |
-| `intent` | `relaxation|intermediate`: intentionally not the final task answer |
+| `integer` | Check named `variables` or the recorded variables, with optional tolerance (default `1e-6`) |
+| `recompute_objective` | Compute the objective from variables, coefficients and optional constant and tolerance |
+| `semantic_probe` | Apply `{path, equals\|min\|max\|in}` probes to recorded fields |
+| `intent` | Mark a `relaxation` or `intermediate` result |
 
-**Read:** `result.state`, `report.conclusion`, `report.checks[]`, `report.scope.unchecked[]`, and optional `reflection_material` / `next`.
+Read `result.state`, `report.checks[]`, `report.scope.unchecked[]` and `reflection_material`. `passed` means the declared checks held, `failed` means a check found a violation, and `insufficient` means missing evidence or an unusable result. Check missing coverage on the same EX when the evidence is available. For a new solve, obtain a fresh P in the same episode. See [G attribution evidence](episode_closeout.md#g-attribution-evidence) for a sourced G assessment.
 
-- `passed`: the declared checks held. Read `scope.unchecked[]` for requirements outside that verdict.
-- `failed`: a declared check ran and failed. Keep the execution, solver measurements, and real cost; it cannot support task-success claims. For prediction calibration, solver quality stays its own measurement and task completion uses the separate check channel.
-- `insufficient`: a needed value/basis/path is missing or the result is unusable; neither pass nor refutation. Missing probe paths name available fields.
-
-**Recover / next:** Record every attempt. Use `reflection_material` to inspect failures and `result.report.scope.unchecked[]` to identify missing coverage. Recheck the same EX when you can fix the check or supply missing evidence. For a solve retry, use the same episode and obtain a new selection via `plan-next`. To record a sourced G assessment in `--check`, see [G attribution evidence](episode_closeout.md#g-attribution-evidence).
-
-**After submitting the answer:** Benchmark evaluators compare the locked result against the reference outside the solve and retry loop. For offline reference evidence, `reference_objective` compares a numeric objective (default `tolerance` is `1e-6 * max(1, abs(reference))`), and `reference_status` compares a solver status. Declare `reference_source` (`bench_declared`, `independent`, or `self_derived`) and `reference_version` when available. Unspecified provenance is treated as self-derived. For using post-answer evidence in a review, see [induction materials](induction.md#read-material-and-choose-comparisons).
+**After answering** Benchmark evaluators compare the locked answer with reference evidence outside the retry loop. For offline checks use `reference_objective` or `reference_status` with `reference_source` (`bench_declared|independent|self_derived`) and an available `reference_version`. The default objective tolerance is `1e-6 * max(1, abs(reference))`. Omitted source is treated as `self_derived`. See [offline use of reference evidence](induction.md#read-material-and-choose-comparisons).
 
 ### `orx bind-strategy --prediction ID --action ACTION_ID`
 
-**Purpose / effects:** Manual/recovery association for an action already run; same identity rules as automatic binding, no model call or re-billing. Idempotent re-binding re-evaluates comparability. This is a compatibility/recovery entry, not a normal solve step: it cannot grant U permission, select a losing prediction or create an execution that did not happen.
-
-**Read / recover:** Checks action/task/episode/strategy/solver and observed execution config. Known `binding_mismatch` and missing `binding_unknown` are distinct. Missing receipts are caveats, not automatic whole-sample exclusions: an unreported time limit blocks no comparison by itself; a different solver blocks outcome dimensions while keeping actual cost. Read `config_observed` / `config_unknown`; predictions never fill missing observations. Close-out determines eligibility field by field. See [episode_closeout.md](episode_closeout.md).
+Recover the association between a saved prediction and an action already run. Compare their identities and observed configuration. Read `binding_mismatch` for a known mismatch and `binding_unknown` for missing evidence. [Close-out](episode_closeout.md) determines eligibility by signal. Execution permission comes from `plan-next`.
 
 ## 6. Record facts and cost
 
@@ -288,19 +210,15 @@ orx record --session --task T --reason TEXT [--episode E] [--cancelled]
   [--attempted-execution EX_ID] [--override ...]
 ```
 
-**Purpose / effects:** Append an execution fact, or record a confirmed host stop. Prefer `--from-staged` to retain the original payload. `--execution` accepts a bare record, execute envelope, or legacy one-level form. Discarding pending material is a separate explicit mode, not a substitute for recording a real failed attempt.
+Use `--from-staged EX` to save the original attempt, including its check and receipts. `--execution` imports a supplied record. `--discard-staged` drops a pending item. `--method`, `--method-actual` and `--used-entry-ids` fill missing plan, performed-method and adoption fields.
 
-**Execution record:** Applies cost backfill (replace by default), freezes quality checks against the entries this run **DECLARED it adopted** (`--used-entry-ids`) onto `execution_features.quality_feedback`, and compares measured cost with the frozen historical prediction under `cost_feedback`. A check exists ONLY for a declared adoption, and a hit/miss is computed ONLY against a DECLARED prediction (an entry with no declared prediction records the observation with `hit=null`, never a default-interval hit). Recording neither interprets the method nor promotes/demotes knowledge; later induction replays feedback.
+Read `recorded`, `prediction_checks[]`, `cost_completeness`, `cost_feedback` and `index_sync`. Quality feedback uses the versions declared adopted. An entry's declared prediction supports a hit/miss. A recorded observation without a prediction has `hit=null`. Attach available usage and save attempts with incomplete costs. Use `amend-cost` for a late report. Use `index_sync` and `unrecorded_staged_executions[]` to find follow-up work.
 
-`--method` declares the plan; `--method-actual` declares observed performance. Existing record values, including script receipts, are not overwritten. `--used-entry-ids` declares the actual knowledge versions this attempt ADOPTED (e.g. `3@2,5@1`; `''` records "adopted none"), tying them to this attempt's result; a value the record already carries is never overwritten. Explicit `execution_features.contrast` marks contrast evidence; there is no per-record retention label.
-
-**Read / next:** `result.{execution_id,recorded,prediction_checks[],cost_completeness?,cost_feedback?}`, optional `unrecorded_staged_executions[]`, and `index_sync`. Missing cost is reported with dimensions, lower bounds, and an amend hint; it does not block recording. Task text resolves from a supplied digest, otherwise the most recent real task snapshot. If unavailable it stays missing. Index sync is best effort: `synced|deferred|skipped`; a failure never rolls back a durable fact. Record remaining staged attempts, then retry deliberately or close the episode.
-
-**Host stop:** `--session` requires host confirmation that the process ended/cancelled. Keep its stated reason verbatim. With `--attempted-execution`, annotate the staged fact; with a running action but no fact, record an interruption with unobservable result and real cost; with no attempt, record `finish_task`, never invent an execution. This idempotent finish operation marks the episode terminated, permits close-out, and is not blocked by the budget it records. See [strategy_outcome.md](strategy_outcome.md#4-budgets-stops-and-archiving-an-interrupted-run).
+**Host stop** Use `--session` once the host confirms termination or cancellation. Keep the host's stated reason. Attach `--attempted-execution EX` when a staged attempt exists. A running action with no execution fact is recorded as interrupted. With no attempt, the command records `finish_task` for close-out. See [host stops and interrupted runs](strategy_outcome.md#4-budgets-stops-and-archiving-an-interrupted-run).
 
 ### Usage reports and overrides
 
-`--usage-file` accepts inline JSON or a path. Prefer the versioned whole-attempt report:
+The executor records available latency and solver runtime. Pass whole-attempt host usage with `--usage-file` as inline JSON or a path.
 
 ```json
 {"schema":"or-host-usage/1","host":"generic","model":"your-model",
@@ -313,97 +231,76 @@ orx record --session --task T --reason TEXT [--episode E] [--cancelled]
  "notes":"whole-attempt host report"}
 ```
 
-| Rule | Handling |
+| Item | Rule |
 |---|---|
-| Token total | Prompt + completion; reasoning/cached are sub-facts, not added again |
-| Only one token side known | Lower bound with `prompt_only` / `completion_only` basis |
-| Measured whitelist | Only declared measured dimensions enter `cost_measured` |
-| Tool calls | All invocations in attempt scope; below the provable lower bound is refused |
-| Host report + override | Same-dimension conflict is refused; override may fill other dimensions |
-| Bare override | Defaults to `agent_estimate`; displayed, excluded from calibration actuals and measured cost claims |
-| Observed override | Use `agent_observed` for a real report read by the agent, `provider_usage` for provider/host measurements |
+| Token totals | Prompt plus completion. Reasoning and cached tokens are breakdowns |
+| Partial token totals | One observed side is a lower bound with `prompt_only` or `completion_only` |
+| Measured dimensions | Use the report's `measured` list and observed values |
+| Tool calls | Report all calls in scope, at or above the sandbox lower bound |
+| Report plus override | Use overrides to fill different dimensions |
+| Override provenance | Bare overrides are `agent_estimate`. Use `agent_observed` for observed reports and `provider_usage` for provider measurements |
 
-Legacy reports accept optional prompt/completion/reasoning/cached totals, model/source, `report_id`, and per-call `calls[{id,...}]`. Per-call values sum only when totals are absent; repeated report/call IDs deduplicate. A known call marked `late:true` replaces its figure rather than adding it. No numbers means no measurement.
+`--usage-host openclaw` looks for `<home>/host_usage/openclaw-usage.<execution_id>.json`, then `openclaw-usage.json`. `generic` uses `host-usage.json`. `OR_HOST_USAGE_FILE` is the fallback. Missing reports leave the affected measurements unknown.
 
-`--usage-host openclaw` checks `<home>/host_usage/openclaw-usage.<execution_id>.json`, then `openclaw-usage.json`; `generic` uses `host-usage.json`. `OR_HOST_USAGE_FILE` is the last fallback after explicit file/host selection. Missing reports leave dimensions unknown and recording succeeds; an unknown adapter exits 2 with known names. The host owns the usage report: request provider usage (streaming may need `stream_options.include_usage=true` / `compat.supportsUsageInStreaming:true`), aggregate one report per attempt, and deliver it to the adapter or `--usage-file`.
-
-`record --usage-file` and `amend-cost --usage-file` also accept `or-host-usage/1` reports with window/counter/call evidence. They store wider scopes beside the execution, preserving its attempt cost. With the API, pass `host_usage=report` to `report_action(...)` or submit it in `action --report ... --outcome '{"host_usage": ...}'`. See [C observations](episode_closeout.md#c-observations) for supported measurements and their scopes.
+Reports can include window, counter or call evidence for [C observations](episode_closeout.md#c-observations). A wider scope is stored alongside attempt costs. Submit later reports through `amend-cost --usage-file`.
 
 ### `orx amend-cost <execution_id> [--override llm_tokens=1840,tool_calls=9] [--usage-file JSON|PATH] [--usage-host HOST] [--usage-source host] [--mode replace|increment] [--source agent_observed|agent_estimate|provider_usage] [--force]`
 
-**Purpose / effects:** Repair recorded cost in place without rerunning or appending an execution. Uses the report/measurement rules above and recomputes feedback against the frozen prediction.
-
-**Input / read:** Replace is default and idempotent; increment adds a separately measured amount within scope. `--source` defaults to `agent_estimate`. Framework measurements, including latency/runtime and provider-usage dimensions, require `--force` to overwrite. Mixed complete/lower-bound token bases are reported as `token_basis_mixed`. Result includes `execution_id`, `mode`, `cost`, `cost_measured`, `still_missing`, and normalized `usage` when supplied.
-
-**Recover / next:** Tool calls below the sandbox floor exit 2. A late host report can fill both tokens and tool calls at once. Remaining unknown dimensions support no measured cost claim. Task attempt costs sum recorded attempts; retries mean new retries per attempt. End-to-end latency needs explicit task timing, never a sum/max inference. Re-read a historical cost baseline only when a later decision needs the corrected evidence.
+Update recorded costs for EX. `replace` is the default. Use `increment` for an additional measured amount in the same scope. Use `--source` to state provenance and `--force` to replace framework measurements. Read `cost`, `cost_measured`, `still_missing` and normalized `usage` when supplied.
 
 ### `orx snapshot --task t.json [--episode ep1]`
 
-**Purpose / effects:** Return the current temporary belief view and persist a lightweight condition receipt with shared problem/progress values and compact budget facts. Full coverage and knowledge bodies are not added to historical snapshot storage. Progress includes selected plan, model, solution, and verification, each labelled by provenance and epistemic status. Later writes do not change the snapshot.
-
-**Read / next:** Use the returned temporary object to inspect current state. Reading a new receipt later explicitly reports that full coverage was not retained; complete legacy snapshots remain readable. Use `context` for cross-process prediction-input reuse. The default prediction/planning path captures its own inputs; a separate snapshot is unnecessary there. A task missing `task_id` / `family` is refused. Legacy `X` is progress here, not conceptual Q/C/R; coverage is not an aggregate capability score.
+Inspect current problem, progress and budget. The command returns the current view and saves a compact condition receipt. Use `context` to save a reusable prediction input. See [snapshot lifecycle](snapshot_lifecycle.md).
 
 ### `orx action --report TYPE --task t.json [--episode ep1] [--params JSON] [--outcome JSON] [--cost JSON] | --amend-cost ACTION_ID --cost JSON`
 
-**Purpose / effects:** Report an action performed outside framework execution: `TYPE=model|select_strategy|verify|finish_task`. Writes `source=agent_reported`; missing pre-state is `pre_snapshot_missing`, not reconstructed. Explicit cost dimensions, including explicit zero, are tagged measured by this reporting interface; provide only observations you can substantiate.
-
-**Next:** Inspect through `--bank actions`. `--amend-cost` replaces the reported action cost idempotently. Do not report the same automatically logged action again.
+Record an action performed outside `execute`. Choose `model|select_strategy|verify|finish_task` and supply observed parameters, outcome and cost. Supplied cost dimensions are marked measured. Read the action with `inspect --bank actions`. Use `--amend-cost` to replace its cost.
 
 ### `orx budget --task ID [--episode ep1] [--declare llm_tokens=50000,...]`
 
-**Purpose / effects:** Read consumption, or persist a declaration. Covers real own-cost actions plus recorded/staged executions, deduplicating execution IDs and macro reference costs. Unlinked executions are `unattributed`, not charged to a new episode; hypothetical actions are excluded.
-
-**Read:** `exceeded|ok|unconfirmed|no_budget_declared`, `exceeded_dims`, `episode_exhausted`, `attempt_limited`. Tokens, tool calls, solver runtime, and retries accumulate per episode; latency limit applies per attempt. An episode overrun or recorded host termination stops new execute/prediction work. A prior attempt's latency overrun is retained but permits a retry. Unknown declared dimensions mean unconfirmed affordability.
-
-Execute actions are logged automatically; induction logs maintenance under `__maintenance__` / `maint_<ts>` with pre/post state, verification, costs, and knowledge delta. Created-unverified entries are not confirmed capability growth. Failed induction leaves a failed action; dry-run writes nothing. Close the episode when finished; do not add a budget read after every action unless needed for a decision.
+Read episode usage or save limits with `--declare`. Tokens, tool calls, solver runtime and retries accumulate over the episode. Latency limits apply per attempt. Read `status`, `exceeded_dims`, `episode_exhausted` and `attempt_limited`. Unknown usage for a declared dimension leaves the budget `unconfirmed`. An exhausted episode or confirmed host stop blocks new planning and execution.
 
 ## 7. Close out and inspect calibration
 
 ### `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`
 
-**Purpose / effects:** Close the episode with its actual terminal state, evaluate bound predictions, publish calibration, and return scheduled induction IDs. Pass `--finish-action` to link a recorded user-facing task end. See [close-out and calibration](episode_closeout.md#2-closing-an-episode) for evidence and retention.
+Close the episode with its actual terminal state. The command evaluates bound predictions, publishes calibration and schedules H+ reviews. Use `--finish-action` to link a recorded user-facing finish.
 
-**Read:** `closeout`, per-field evaluations and eligibility, `task_checks`, `cost_completeness_warnings`, and `result.induction_schedule.pending_ids`. Finish scheduled reviews with [the returned IDs](induction.md#take-a-required-review).
-
-**Recover / next:** A pending close lists `unfinished_actions`. Resolve them, then close again. A repeated close returns the stored record and current review IDs. `recovered_publication:true` identifies a repaired publication.
+Read `closeout`, `task_checks`, `cost_completeness_warnings` and `induction_schedule.pending_ids`. Resolve any `unfinished_actions` before closing again. Use the pending IDs to [start or resume reviews](induction.md#take-a-required-review).
 
 ### `orx calibration [--min-samples N] [--rebuild]`
 
-**Purpose / effects:** Read published `wm-calib/3`; `--rebuild` explicitly recomputes and republishes for migration/repair. Default window: newest 50 closed task-episodes (`OR_CALIBRATION_WINDOW`). New prediction contexts receive the published summary automatically.
+Read published `wm-calib/3` statistics by model, metric, unit and scope. The window defaults to the newest 50 closed task-episodes (`OR_CALIBRATION_WINDOW`). `--rebuild` recomputes and publishes the summary for repair or migration.
 
-**Read:** Groups separate model identity, metric, unit, and scope. Statistics include signed benefit error, cost log ratio, interval coverage/width, per-event Brier, and predicted probability versus occurrence over the same scored denominator. Separate `occurrence` reports its own observation-unit counts/denominator; do not mix those rates. Below minimum support: `insufficient_evidence`, `reliability:null`. `applicability:"global_diagnostic"` does not imply per-strategy reliability or guaranteed prediction improvement. Legacy knowledge-prediction statistics are separate.
+Read `insufficient_evidence` and `reliability:null` below the minimum support. Use the denominator reported with each `occurrence` rate. See [calibration fields](episode_closeout.md).
 
 ## 8. Offline induction
 
 ### `orx induction-material [--induction-id J] [--strategy S] [--task T] [--episode E] [--limit N] [--cursor C] [--related-top-k K] [--purpose modelling|implementation] [--query TEXT] [--executions EX1,EX2] [--view compact|detail]`
 
-**Purpose / effects:** Read current material for a required review J. `--purpose modelling` prioritizes constraint relationships, and `--purpose implementation` emphasizes implementation and repairs. Use `--query` or `--executions` to select comparisons.
+Read material for an H+ review J. Choose `--purpose modelling` for constraint relationships or `implementation` for code and repairs. Use `--query` or `--executions` to choose comparisons.
 
-**Read:** `material[]`, `related_history.executions[]`, `existing_knowledge`, `comparison_table`, and `budget.next_cursor`. Use `--cursor` for more controls or `--view detail` for expanded diagnostics. See [choosing material](induction.md#read-material-and-choose-comparisons) for evidence scope and budget.
+Read `material[]`, `related_history.executions[]`, `existing_knowledge`, `comparison_table` and `budget.next_cursor`. Use `--cursor` for more cases. For full case details from an H+ material pack, follow the case's `inspect_hint`. See [choosing material](induction.md#read-material-and-choose-comparisons).
 
 ### `orx induce [--induction-id J] [--review JSON_OR_FILE] [--strategy S] [--relation JSON] [--dry-run] [--force] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
 
-**Purpose / effects:** Submit a review with `--review`. For a new or revised rule, include `--relation` and the same J. See [full review examples](induction.md#complete-review-submissions). Use `--relation` for existing-body maintenance and `--attribute-effect` for actual adopted use. See [version use and utility](induction.md#existing-entry-use-and-utility).
+Submit the review for J with `--review`. Include `--relation` when proposing a new or revised rule. Read `induction_receipt`, `relations[].publication`, `committed` and `index_sync`. Later predictions can use the completed receipt as H+ feedback.
 
-**Read:** `induction_receipt`, `relations[].publication`, `changed`/`idempotent`, `committed`, and `index_sync`. Maintenance-only calls return `maintenance_only` and the affected version or status.
-
-**Options:** `--dry-run` previews without writing, and `--force` lifts the cold-archive veto. `--verify` records scoped assertions and takes precedence over embedded verification on a reported conflict. Use `--task` on `induction-material` and J on the review submission.
+Use `--dry-run` to preview and `--force` to override the cold-archive veto when conditions have changed. Assertions in `--verify` take precedence over assertions embedded in `--relation`. Use `--attribute-effect` for a sourced judgment about an adopted rule. See [review examples](induction.md#complete-review-submissions) and [version use and utility](induction.md#existing-entry-use-and-utility).
 
 ### `orx induction-status [--task T] [--episode E]`
 
-Read `result.completed`, `result.pending_ids`, `result.signal_counts`, and `result.observation_counts`. Use each pending ID to [resume its review](induction.md#take-a-required-review). See [review result fields](induction.md#read-publication-completion-and-learning-separately) for how completion and learning are reported.
+Read `result.completed`, `result.pending_ids`, `result.signal_counts` and `result.observation_counts`. Resume pending IDs through `induction-material`. See [review result fields](induction.md#read-publication-completion-and-learning-separately).
 
 ## 9. Diagnostics and inspection
 
 ### `orx doctor`
 
-**Purpose / effects:** Read-only solver (7 adapters), memory, pending staging, home, and retrieval-index health checks. `retrieval_index` reports configured backend, current/index counts, `missing`, `stale`, and `orphaned`; it builds nothing.
-
-**Next:** Record unrecorded real attempts. Rebuild an unhealthy configured index when needed. No backend means structural fallback, not a missing semantic match.
+Check installed solvers, memory, staged attempts and retrieval indexes. Read `retrieval_index` for the configured backend and missing, stale or orphaned vectors. Record outstanding attempts and rebuild an unhealthy index as needed.
 
 ### `orx contract [--kind strategy_outcome] [--payload JSON]`
 
-**Purpose / effects:** Build a strategy-outcome contract locally with `--task`, `--spec` and optional `--benefit`, `--cost` and `--risk`. Use `--payload` to inspect a saved prediction payload.
+Build a strategy-outcome contract with `--task`, `--spec` and optional estimates. Use `--payload` to read a saved contract.
 
 ```bash
 orx contract --kind strategy_outcome --task t.json \
@@ -414,66 +311,50 @@ orx contract --kind strategy_outcome --task t.json \
 orx contract --payload prediction.json
 ```
 
-**Read:** Contract version and separate `provider_configured`, `service_available`, `prediction_made`. Building returns `contract_only` even with a provider; only a produced, validated forecast is `valid`. Unsupported versions exit 2; unversioned payloads use `legacy_view`, without inventing gains/risk/measurements. Legacy specs preserve params/budget hints and refuse unmappable task scope. See [world_model_contract.md](world_model_contract.md).
+Read `status` and `prediction_made` to see whether the payload contains a prediction. A constructed contract reports `contract_only`. See [field definitions and stored payloads](world_model_contract.md).
 
 ### `orx inspect --bank experience|strategic|archive|actions|snapshots|predictions|texts|evaluations|retention [--task ID] [--strategy S] [--status candidate] [--episode EP] [--evaluation ID] [--prediction ID]`
 
-**Purpose / effects:** Read stored layers. No solving, prediction, retirement, or migration. Use filters/key lookup instead of repeatedly listing history.
-
-| Bank | Read |
+| Bank | What to read |
 |---|---|
-| `experience`, `strategic`, `archive` | Facts, active knowledge, archived knowledge; strategic status/verification/provenance/prediction track |
-| `actions`, `snapshots` | Logged actions and frozen execution context |
-| `predictions` | Stored strategy predictions and historical prediction records |
-| `evaluations` | Stored close-out evaluations; pending waits for scope, excluded is neither hit nor miss |
-| `retention` | Calibration window, grace periods, archive caps and counts; evidence window is a separate scope |
-| `texts` | Retained retrieval documents keyed by task ID/text digest; not claims or a learning bank |
+| `experience`, `strategic`, `archive` | Execution evidence, current rules and retired knowledge |
+| `actions`, `snapshots` | Action logs and execution context |
+| `predictions`, `evaluations` | Saved forecasts and close-out evaluations |
+| `retention` | Calibration and evidence windows, grace periods and archive counts |
+| `texts`, `values` | Task-text versions and stored values referenced by ID |
 
-`predictions --prediction ID` returns one stored record and its prediction kind. `--evaluation ID` selects an evaluation. `--status suspect|dormant` finds retirement candidates without deleting them. `texts --task ID` lists that task's versions; no task filter lists all retained versions, including sources for unindexed records. Use each execution's `task_text_digest` to identify its version.
-
-Targeted reads: `inspect --bank strategic --entry 3 [--rule-version candidate|2]` returns body versions and check/use/effect references; `inspect --bank experience --execution ex_ID` reads a full fact. `inspect --bank values --value REF` resolves a frozen body/fact/assessment after its source execution is evicted.
+Use `--prediction ID` or `--evaluation ID` for one record. For specific evidence and rules, use `inspect --bank experience --execution EX` or `inspect --bank strategic --entry ENTRY [--rule-version candidate|2]`. Use `--status suspect|dormant` to find rules to review for retirement. `inspect --bank values --value REF` resolves a saved body, fact or assessment. Use `--bank texts --task ID` and the execution's `task_text_digest` to locate its task version.
 
 ## 10. Corrections and store maintenance
 
 ### `orx exclude-execution --execution EXECUTION_ID --reason "..." [--superseded-by EXECUTION_ID]`
 
-**Purpose / effects:** Explicitly withdraw an incorrect execution fact, retaining the row and correction audit. `source=excluded` removes it from evidence statistics, induction, retrieval, and calibration use; its vector is removed. `--superseded-by` is an explicit link to a corrected rerun.
-
-**Next:** Derived knowledge feedback refreshes through induction; within-window calibration is republished automatically. Use `calibration --rebuild` for explicit repair outside that correction path. A real failed solve is still valid failure evidence: record/check it, rather than withdrawing it merely because the answer failed. Withdrawal differs from reference expiry under retention.
+Withdraw a stored execution with incorrect facts. This removes it from active evidence, retrieval and calibration while retaining the correction record. Use `--superseded-by` to link a corrected rerun. For a real failed solve, keep its record and check as failure evidence. Within-window calibration is republished.
 
 ### `orx restore-execution --execution EXECUTION_ID --reason "..."`
 
-**Purpose / effects:** Reverse an exclusion explicitly, restoring `source=executed` with both decisions retained. Calibration follows current facts under the same republish rule.
-
-**Next:** Re-index with `rebuild-index --layer execution` when text retrieval is needed, and run induction maintenance to refresh derived feedback. Restoration does not automatically recreate its vector.
+Restore an excluded execution to active evidence. Use `rebuild-index --layer execution` to restore text retrieval. Run relevant induction maintenance to refresh derived feedback.
 
 ### `orx retire --entry NUMBER --reason "..."`
 
-**Purpose / effects:** Irreversibly move the numbered knowledge entry to the cold archive and remove its vector. Recall cannot surface retired advice. Inspect suspect/dormant entries first; retirement is explicit, not automatic deletion on a miss. The number is kept on the archive card and is never reused. There is no undo command for this retirement.
+Move a rule to the cold archive and remove it from recall. Inspect its status and use evidence before retiring it. Retirement is permanent and the archive retains its entry number.
 
 ### `orx rebuild-index [--layer both|execution|strategic] [--dry-run]`
 
-**Purpose / effects:** Explicit bulk embedding/index repair after a first build, embedding-model change, deferred item sync, or restored execution. Ordinary writes refresh their own items; a rebuild is not a routine solve step and never changes source facts/claims.
-
-**Read / recover:** Reports `dry_run`, `layers.{execution_evidence|strategic_knowledge}.{items,model_id,dimension,unindexable}`, and backend. A changed model invalidates the old vector space wholesale. Missing source text is `unindexable`, never invented. Without a backend, a real rebuild exits 2. Dry-run counts only: no embeddings, directories, or index writes. Recheck recall/doctor afterward when needed.
+Rebuild embedding indexes after setup, an embedding-model change, deferred indexing or restored evidence. Read `layers` for item counts, model, dimensions and `unindexable` items. `--dry-run` previews the work. Configure an embedding backend for a real rebuild.
 
 ### `orx archive-calibration [--dry-run]`
 
-**Purpose / effects:** Move out-of-window evaluation/prediction/context detail to `<home>/archive/calibration/calibration-NNNN.jsonl`. Registry tombstones remain online for idempotence/window lookup. Unchecked episodes stay online during late-check grace (`OR_CALIBRATION_LATE_CHECK_GRACE_DAYS`, default 30).
-
-**Bounds / recovery:** Oldest archive files expire under per-file bytes (64 MB), total bytes (1 GB), or age (365 days): `OR_CALIBRATION_ARCHIVE_MAX_FILE_BYTES`, `OR_CALIBRATION_ARCHIVE_MAX_TOTAL_BYTES`, `OR_CALIBRATION_ARCHIVE_RETENTION_DAYS`. Restored payloads do not automatically rejoin calibration. Dry-run never migrates a legacy registry; it reports `pending_migration` with the explicit path (`calibration --rebuild` or a real archive pass). Routine close-out already invokes archive maintenance.
+Archive out-of-window calibration detail under `<home>/archive/calibration/`. Close-out also runs archive maintenance. Read `pending_migration` in a preview and use `calibration --rebuild` or an archive pass when migration is needed. See [archive limits and late-check grace](episode_closeout.md#6-retention-three-separate-scopes).
 
 ### `orx enforce-window [--window-episodes N] [--open-grace-days D] [--dry-run]`
 
-**Purpose / effects:** Bound evidence by whole episodes (default 800, `OR_EVIDENCE_WINDOW_EPISODES`), ordered by registry close time. Evicts obsolete vectors and unreferenced text versions with facts; never solve sources. Idempotent/recoverable.
-
-**Bounds / next:** Protects calibration-window episodes, unchecked episodes in late-check grace, and young unclosed episodes. Unclosed protection expires after default 30 days (`OR_EVIDENCE_OPEN_GRACE_DAYS`), reported as `evicted_unclosed`. Keeps an oversized single episode intact; episode count is not a byte guarantee. Expired evidence references do not refute knowledge. Close-out runs this last after publication/archive with a cheap count guard; force a pass after import when needed. Dry-run writes nothing; zero evictions is success.
-
+Enforce the whole-episode execution evidence window. Defaults are 800 episodes (`OR_EVIDENCE_WINDOW_EPISODES`) and 30 days of unclosed grace (`OR_EVIDENCE_OPEN_GRACE_DAYS`). Calibration-window episodes and episodes in late-check grace are protected. Use `--dry-run` to preview evictions. See [evidence retention](episode_closeout.md#the-evidence-window-bounding-the-raw-evidence-bank).
 
 ## Input lifecycle and fixed-memory maintenance
 
-- `orx context --context-id CTX --audit` reads the stored manifest, including after consumption/expiry. Ordinary reuse of an expired input returns exit code 2, never an empty substitute.
-- `orx --home BASE fork-memory --destination NEW_HOME` creates one isolated test-question copy using SQLite backup and copies its fixed index/archive/artifacts. Repeat from BASE for the next question; retries keep the same question home.
-- `orx --home COPY maintain-snapshots` is a read-only preview. `--apply --backup NEW_FILE` explicitly compacts recoverable legacy views; `--vacuum` separately requests physical reclamation. `--expire-open-days N` explicitly previews/applies inactive legacy-view expiry without deleting pending attempts or completing actions.
+- `orx context --context-id CTX --audit` reads the saved input manifest, including after expiry.
+- `orx --home BASE fork-memory --destination NEW_HOME` creates one test-question copy. Use a fresh copy from BASE for each question and keep the same copy for its retries.
+- `orx --home COPY maintain-snapshots` previews compaction. Use `--apply --backup NEW_FILE` to apply it, `--vacuum` to reclaim file space, and `--expire-open-days N` to review inactive legacy views.
 
-Exact lifecycle, protection rules, limits and copy-first commands: [snapshot_lifecycle.md](snapshot_lifecycle.md). Main-bank application is a separate user-initiated maintenance operation.
+See [snapshot lifecycle](snapshot_lifecycle.md) for protections and copy-first commands.

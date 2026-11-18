@@ -4,7 +4,7 @@ Use this page for scored candidate selection, utility, and execution binding. Fo
 
 - Protocol: `wm-so/1`
 - APIs: `ORHarness.predict_strategy_outcome` and `bind_strategy_outcome`
-- [Prediction inputs](prediction_context.md) and [output fields](world_model_contract.md)
+- [Prediction inputs and output fields](world_model_contract.md)
 - Runnable examples: [scored CLI](examples/unified_solving.py), [Python forecasts](examples/strategy_outcome.py), and [binding attribution](examples/linkage_attribution.py)
 
 ## 1. Plan and select
@@ -34,7 +34,7 @@ forecasts remain readable and need a scored plan before formal execution.
 
 **Candidate identity.** The same `strategy_id` under a different solver, `time_limit`, `mip_gap`, `seed` or step scope is a DIFFERENT candidate: the config travels with the candidate into the prediction, the score and selection (a contradictory execution config is refused) and the execution association, so a result is never attributed to a configuration that was not the one predicted.
 
-The provider receives [frozen inputs and a candidate](prediction_context.md), along with the [fixed benefit convention and output contract](world_model_contract.md). In `benefit.notes`, connect a decisive task requirement to the proposed step and its expected consequence. For example, choosing factories separately for two products can violate an original requirement to produce them at the same factory. When numeric G is unavailable, retain the explanation.
+The provider receives the frozen context, the candidate, and the decision's benefit convention. In `benefit.notes`, connect a decisive task requirement to the proposed step and its expected consequence. For example, choosing factories separately for two products can violate an original requirement to produce them at the same factory. When numeric G is unavailable, retain the explanation.
 
 Use `trace.unsupported_fields` and the saved call diagnostics to inspect unusable predictions. [Forecast recovery](commands.md#stored-forecasts-and-their-conventions) describes the CLI outputs.
 
@@ -167,6 +167,6 @@ The action's `execution_config` contains what the executor observed and any scri
 
 ## 6. Compatibility
 
-Historical prediction records retain their original scope and metrics. See [contract migration](world_model_contract.md#7-migration-table) and [stored input lifecycle](snapshot_lifecycle.md). `HttpChatProvider` selects its prompt using the request protocol, with `wm-so/1` selecting the current strategy-outcome prompt.
+Historical prediction records retain their original scope and metrics. See [historical records](snapshot_lifecycle.md#read-historical-records). `HttpChatProvider` selects its prompt using the request protocol, with `wm-so/1` selecting the current strategy-outcome prompt.
 
 Current executions require a saved `wm-u-decision/1` selection. An interrupted adopted attempt retains its failure evidence and consumes the prediction. Repair by planning again.

@@ -1,138 +1,84 @@
-# Concepts: why OR-Harness is built this way
+# OR-Harness concepts
 
-Read this page for the design rationale. Use [commands.md](commands.md) for calls, [modeling.md](modeling.md) for representations, [induction.md](induction.md) for knowledge formation, and [world_model_contract.md](world_model_contract.md) / [prediction_context.md](prediction_context.md) for prediction fields and input assembly.
+OR-Harness uses task structure, execution evidence, and strategy predictions to guide solving and learning. See the [command reference](commands.md), [modeling guide](modeling.md), [world-model contract](world_model_contract.md), and [induction guide](induction.md).
 
-Contents: [Research goal](#1-research-goal-and-core-variables) · [Problem structure](#2-understand-structure-before-selecting-a-strategy) · [Memory and retrieval](#3-learn-from-executions-and-retrieve-for-reuse) · [World model](#4-predict-consequences-to-support-decisions) · [Quality, cost, and risk](#5-preserve-quality-cost-and-risk-as-distinct-evidence) · [Offline evolution](#6-separate-online-solving-from-offline-evolution)
+[Research goal](#1-research-goal-and-core-variables) · [Problem structure](#2-understand-structure-before-selecting-a-strategy) · [Memory and retrieval](#3-learn-from-executions-and-retrieve-for-reuse) · [World model](#4-predict-consequences-to-support-decisions) · [Quality, cost, and risk](#5-preserve-quality-cost-and-risk-as-distinct-evidence) · [Offline evolution](#6-separate-online-solving-from-offline-evolution)
 
 ## 1. Research goal and core variables
 
-OR-Harness studies whether an agent operating on a changing stream of optimization tasks can learn which strategies fit particular problem structures and achieve comparable or better solution quality at lower execution cost.
-
-The difficult part is the interaction among decisions: shared capacity, cross-period state, alternative routes, logical rules, and other coupled constraints. A useful strategy must explain how it handles those interactions and under which conditions it remains applicable.
-
-Use three core variables:
+OR-Harness studies how an agent can adapt its strategies across a stream of optimization problems while preserving or improving solution quality and reducing execution cost. Shared capacity, cross-period state, alternative routes, and logical rules determine which strategies fit a task.
 
 | Variable | Meaning |
 |---|---|
-| **P** | The current externally supplied OR problem and task context |
-| **X = (Q, C, R)** | Outcome quality, execution cost, and risk/uncertainty |
-| **H** | The Harness capability available to solve the problem |
+| **P** | The current externally supplied problem and its task context |
+| **X = (Q, C, R)** | Solution quality, execution cost, and one-attempt technical risk |
+| **H** | The capability available through memory, prediction, planning, retrieval, and tools |
 
-The problem stream is externally driven. Changes in demand, capacity, or constraints produce new problems; they are not transitions caused by Harness actions. The world model predicts the consequences of a candidate strategy for solving the current problem.
-
-Represent capability conceptually as `H = F(M, W, Pi, R, T)`: memory, world-model prediction, strategy/planning, retrieval/transfer, and tools/solvers. These sources interact. Counts of executions or entries provide indirect evidence about capability; they do not define a composite capability score. Here `R` denotes retrieval; the `R` in the outcome tuple denotes risk.
-
-`H+` is the pre-execution binary induction switch, predicted in the same G/C/R call relative to the current rule library. 1 commits one real post-task review; 0 skips it. A hypothesis names a reusable increment/boundary and a concrete fact this run can check. A known method's structural adaptation can qualify. Original hypothesis truth, actual induction product, independent rule validation and later performance improvement remain separate facts. Historical three-state stances retain their original protocol.
+Changes in demand, capacity, or constraints arrive as new tasks. For the current task, the world model forecasts the consequences of the agent's candidate strategies.
 
 ## 2. Understand structure before selecting a strategy
 
-Profiling combines problem understanding with structural analysis. The Coupling-Aware Intermediate Representation (CIR) expresses entities, decisions, constraints, and their relationships before the agent chooses a strategy and builds the canonical optimization model.
+The Coupling-Aware Intermediate Representation (CIR) describes the entities, decisions, constraints, and relationships that guide modeling and solving. For example, an inventory balance connects adjacent periods. A decomposition that respects that connection carries the needed inventory state across periods.
 
-This ordering lets structural understanding inform the modeling and solving approach. For example, a cross-period inventory balance may make preserving state essential when decomposing a planning problem. Discovering that relationship after choosing a decomposition would be too late to guide the choice.
+Coupling scores summarize the CIR. Inspect the relationships behind the scores to identify the mechanism. Variables sharing a constraint indicate a dependency. Constraint semantics identify whether that dependency comes from a shared resource, temporal state, or another source.
 
-Coupling scores summarize the CIR. Preserve the inspectable relationships as well as scalar summaries: the same score can arise from different mechanisms, and those mechanisms may require different methods. Constraint-variable co-occurrence supports a structural dependency; identifying shared resources or temporal state requires the corresponding semantics.
+Freeze the task profile before selection so the forecast and the decision refer to the same problem structure. Store later modeling and solver diagnostics with the execution.
 
-Freeze the task profile before strategy selection. Keep diagnostics from the subsequently built model and solver as execution observations. A strategy's implementation must not retrospectively change the structural identity under which it was selected.
-
-Structural classes and quantized coupling cells organize conditional statistics. Their grouping rules belong in the representation and command references. The conceptual distinction is:
-
-- **Statistical comparability:** whether observations may be pooled into a particular estimate.
-- **Method applicability:** whether a technique's necessary premises hold for the current task.
-
-Different cells may require separate estimates while still admitting transfer of a method after its premises are checked. Membership in one cell likewise does not establish that all methods observed there apply. Unknown structure records missing information; it does not establish similarity.
+Structural classes and coupling cells group observations for conditional estimates. Pool measurements within a comparable scope. Assess whether a method transfers by checking its premises on the new task, including tasks in other cells.
 
 ## 3. Learn from executions and retrieve for reuse
 
-Two memory layers serve different purposes:
-
-| Layer | Content | Role in future solving |
+| Memory layer | Content | Use |
 |---|---|---|
-| **Execution Evidence** | Recorded methods, attempt chains, outputs, task checks, failures, and measured costs | Inspect how a previous task was handled and adapt grounded experience |
-| **Strategic Knowledge** | Reusable methods, applicability conditions, explanations, boundaries, and supported effect claims | Guide what to do under specified conditions |
+| **Execution Evidence** | Actual methods, attempt chains, outputs, checks, failures, and measured costs | Examine how a previous attempt worked, failed, or was repaired |
+| **Strategic Knowledge** | Reusable steps, applicability conditions, reasons, and supported effects | Apply a method within its scope |
 
-Each rule has a framework-assigned entry number. New when/do/expect bodies are immutable candidate versions; add evidence, revise or merge an explicitly selected entry. The agent explicitly chooses candidate or published state with a sourced scope. Existing cases plus reliable derivation or small executable checks can support cold-start publication; third-task transfer, boundary and regression checks are optional evidence purposes rather than a uniform gate. One active version is offered; prior uses retain their frozen version. True unversioned legacy rows keep their historical semantics. Assertion audits do not prove transfer or causal advantage.
-
-An execution record preserves observations and their sources. Its solver result can be valid for the implemented model while the answer remains wrong for the task. Record planned and actually performed methods separately; a plan supplies intent, while execution receipts and inspected artifacts support what happened.
-
-A conditional statistic summarizes retained observations. Strategic knowledge adds an actionable commitment: a method, why it works, where it applies, and which effects the evidence supports. Expected quality or cost may accompany a strategy, but a method does not need a prediction interval to be useful.
-
-Semantic induction is agent-led: compare real methods and necessary premises, write an executable short rule, and explicitly select an existing ID for the same mechanism. Framework evidence resolution, budgeting and versioned checks support that judgement. Same-base retries are controls; similarity and structural buckets discover candidates. See [induction.md](induction.md).
+Keep the proposed method with its prediction and the performed method with the execution receipt and artifacts. A new rule version records **when / do / expect**. The agent uses evidence to decide what to record, whether to revise an existing rule, and whether to keep a candidate or publish it within a supported scope. A sound derivation or a small executable check can support a scoped rule during cold start. Adoption links a specific version to an execution. [Induction and rule use](induction.md)
 
 ### Retrieval and cold start
 
-Embedding retrieval is the primary discovery channel; profile information assists organization and applicability assessment. Retrieve substantive method content, claims, and relevant task semantics rather than relying on method IDs.
+Embedding retrieval finds related methods and executions. The task profile helps organize them. Check the original constraints and the rule's premises to decide what to adapt. A failed attempt can reveal a repair or a boundary, and a retrieved method carries the scope of its existing evidence.
 
-Prefer admitted applicable knowledge as a starting point. When it is absent, inspect execution evidence directly; useful experience does not require prior promotion into strategic knowledge. Historical failures can reveal repair conditions or limitations even when the successful method is unsuitable.
-
-A retrieved item keeps its evidence status. `--memory-mode none` clears structural recommendations in this implementation but does not disable vector retrieval; it is not an isolation mode. Text similarity exposes material to inspect; semantic premises determine whether its method can be adapted. Structural statistics retain their own scope: finding a related execution from another cell does not authorize adding its measured numbers to the target cell's estimate.
-
-When memory offers no relevant experience, report that absence and reason from the current problem to propose a fresh strategy. The framework supplies no built-in method menu and no fabricated historical score for that proposal. An empty bank is a reported state, never a gate: with no prior knowledge, solve the task and its own evidence becomes the first material, and you are never required to publish a first entry. Keep uncertainty explicit and obtain evidence through execution.
-
-Recall makes an entry available for inspection. Actual adoption connects an exact rule version to a real attempt, and task evidence supports judgments about its effect. An entry's declared effect is evaluated against outcomes within its scope. See [rule adoption and utility](induction.md#existing-entry-use-and-utility) for recording and updating those judgments.
-
-Task texts and embedding indexes support discovery within these two layers. They do not form another bank of outcome facts or strategic beliefs.
+When relevant memory is sparse, propose a method from the task itself. The resulting execution provides evidence for later retrieval and review.
 
 ## 4. Predict consequences to support decisions
 
-The world model provides a unified conditional forecast:
+**`(P, H, candidate strategy) → (G, C, R, H+)`**
 
-**`(P, H, candidate strategy) → (predicted X = Q/C/R, predicted H+)`**
+A candidate describes the proposed method and its execution conditions, including the solver and settings. **Q** describes quality on the original task. **G** is the benefit forecast used by `plan-next` to score a proposal. By default it estimates the probability of original-task acceptance given faithful execution. **C** forecasts resources over a declared scope. **R** forecasts the probability of technical implementation failure in one attempt. Utility uses G, normalized C, and R on a comparable basis. [Scored selection](strategy_outcome.md)
 
-A candidate specifies the proposed method and execution conditions. The predictor estimates their consequences: likely solution quality, required resources, failure risks, and potential learning. Solver/configuration choices are candidate inputs whose effects are assessed.
-
-G estimates original-task acceptance given faithful execution. C estimates the resources needed, and R estimates technical failure risk. U uses these estimates to compare current proposals. The candidate's H+ hypothesis identifies what its execution might teach a later review. See [scored selection](strategy_outcome.md) and [H+ review dispatch](induction.md#when-to-start-induction).
+**H+** is the pre-execution learning decision relative to the rule library available at prediction time. Its hypothesis names what reusable method or boundary the execution could reveal. During H+ building, a bound execution with `H+=1` schedules one review at close-out. An executed `H+=0` skips that review. [H+ review dispatch](induction.md#when-to-start-induction)
 
 ### Prediction and observation
 
-Freeze the prediction input before the action. Include the relevant problem structure, consulted memory, current execution context, and predictor version; a historical replay must use the saved content rather than today's revised memory. Input construction itself produces no forecast.
+Freeze the problem profile, retrieved memory, execution context, and predictor version for the decision. Forecast each candidate in that context. Bind the chosen forecast to its actual execution and compare corresponding observations using the forecast's declared scope.
 
-Several unexecuted candidates may receive what-if predictions. Only an executed action supplies a real outcome for comparison. Bind forecasts to their actual executions and compare only defined predictions with corresponding observed dimensions. Missing receipts indicate unconfirmed conditions; known deviations require dimension-specific attribution under the contract.
-
-Keep three forms of uncertainty distinct: missing evidence, the predictor's stated uncertainty, and reliability measured from resolved forecasts. Self-reported confidence is not a calibrated success probability. An unavailable predictor should remain distinguishable from a working service that returned no usable prediction.
-
-Prediction calls also consume tokens and time. Their measured spend belongs in the actual execution ledger; the candidate's forecast cost remains a hypothesis. This makes the overhead of decision support visible in the final cost.
+Record missing evidence, forecast uncertainty, and reliability measured from resolved forecasts in their respective fields. Direct technical failure observations support the R estimate. Record the resources spent on prediction calls in the measured ledger.
 
 ## 5. Preserve quality, cost, and risk as distinct evidence
 
-| Dimension | Meaning | Evidence requirement |
-|---|---|---|
-| **Q: quality** | Task feasibility, correctness, and objective performance under the evaluation criteria | Model results plus task-level checks covering the relevant requirements |
-| **C: cost** | Resources consumed by reasoning, tools, solving, checking, and rework | Measured values with provenance and compatible scope |
-| **R: technical risk** | Probability that one implementation/execution attempt fails technically | Direct code/API/exit/protocol evidence; environment blocks and unattributed timeouts remain unknown |
+| Dimension | What to observe |
+|---|---|
+| **Q · solution quality** | Feasibility, correctness, and objective performance under the original task's acceptance criteria. Record which requirements the task check covers. |
+| **C · execution cost** | Measured reasoning, tool, solver, checking, and repair resources, each with its source and measurement scope. |
+| **R · technical risk** | Code, API, exit, and result-delivery evidence for the bound attempt. Record verified technical failure or valid delivery. External blocks and ordinary deadlines with unverified causes stay unknown. |
 
-Three checks answer different questions:
+The solver status describes the model it solved. The original-task check examines the actual requirements, including domain and business constraints. A knowledge review tests the rule's premises or measured effect within the stated scope. Keep failed attempts and their measured costs as evidence for repair and comparison.
 
-1. **Model result:** did the solver solve the implemented optimization model?
-2. **Task answer:** does the proposed solution satisfy the actual task and evaluation criteria?
-3. **Knowledge claim:** do the stated method premises or empirical effect claims hold within their declared scope?
-
-An optimal solver status does not validate omitted constraints or incorrect variable domains. A matching reference objective also does not establish every semantic requirement. Record task checks as passed, failed, or insufficient according to what was actually checked, with uncovered requirements explicit.
-
-Retain confirmed-wrong attempts as failure evidence and include their measured cost. They must not continue to support a success claim. Repair and reflection can change the later answer while preserving the earlier observations.
-
-Store cost as the raw vector:
+Record the raw cost dimensions.
 
 **`llm_tokens, tool_calls, solver_runtime_s, retries, latency_s, remaining_latency_s`**
 
-Preserve which dimensions were measured, their source, and their measurement scope. Missing cost is unknown. Distinguish estimates from observations, total tokens from partial token counts, and inner solver time from a subprocess wall-clock proxy. Do not silently average incompatible quantities or omit unmeasured records from a claim covering the whole cited set.
-
-Compare attempt costs with attempt costs and complete task costs with complete task costs. The task total includes failed attempts, repairs, checks, and prediction overhead within its declared scope. Normalization and weighting are decision-policy operations; keeping raw dimensions permits later comparisons under different resource priorities.
-
-Quality-preserving cost reduction is therefore a joint claim. Demonstrating lower solver runtime alone may leave total execution cost higher, and lower cost obtained by returning an invalid answer does not meet the research objective.
+Compare costs over matching scopes. Include failed attempts, checks, repairs, and prediction calls in the task measurement where they fall within its declared scope. Record missing dimensions as unknown and retain the source of measured values and proxies. Assess quality-preserving cost reductions with both original-task checks and comparable measurements.
 
 ## 6. Separate online solving from offline evolution
 
 | Phase | Responsibility |
 |---|---|
-| **Online, within an episode** | Profile the problem; retrieve knowledge/evidence; propose and compare strategies; make what-if predictions; execute; check answers; reflect or repair; record outcomes and cost |
-| **Offline, after episode closeout** | Reconcile the full trajectory; assess eligible forecasts; publish calibration updates; review related evidence; induce and verify knowledge; revise the memory used by future tasks |
+| **Online solving** | Build the profile, retrieve evidence, score candidates, execute, check and repair as needed, then commit the answer. |
+| **Episode close-out** | `close-episode` evaluates eligible bound forecasts against the completed trajectory, publishes calibration, and returns any required H+ review IDs. |
+| **Offline induction** | Take the returned reviews and compare execution evidence. Record reusable findings, revise rules, or submit a conclusion about the evidence. |
 
-Within an episode, execution progress informs subsequent decisions while predictor parameters and learned calibration remain fixed. Recording an observation or binding a prediction is not an online model update. Calibrate and update the world model at episode boundaries, using the completed trajectory and real outcomes. An update may use calibration summaries and revised memory/context; weight training is not required by the design.
+Facts from an attempt can guide later decisions within the same episode. Later planning uses the available calibration and learning receipts with the rule versions in its new context. [Episode close-out](episode_closeout.md) · [Learning receipts](induction.md#read-publication-completion-and-learning-separately)
 
-Knowledge evolution likewise occurs through explicit offline review. Match validation to the claim: inspect mathematical premises and solution preservation for method correctness, and compare measured executions for empirical effects. Framework verdicts cover declared computable checks; forward observations test subsequent reuse and refine confidence. These checks complement each other.
-
-Revisions may strengthen, narrow, merge, or retire knowledge. A relevant counterexample challenges a claim whose premises held; a task outside its conditions indicates an applicability boundary. Structural-cell membership alone does not decide between those cases.
-
-Keep evidence retention and belief revision separate. Complete old episode chains may leave a bounded evidence window after closeout processing. Expiry is a storage event, not a refutation; retained claims keep their content and verification scope. An expired reference cannot substitute for fresh support when revising a claim. Retirement and cold-archive policies prevent an unchanged failed pattern from repeatedly reappearing.
-
-Selective induction directs review toward new methods or boundaries that real executions can support. Reviewed evidence shapes subsequent predictions through [learning receipts](induction.md#read-publication-completion-and-learning-separately).
+When extending or narrowing a rule, test its premises, preservation of the original task result, or measured effects as appropriate. Later independent use can strengthen its scope. The evidence window bounds raw execution history. Keep each published rule's scope with its supporting record.

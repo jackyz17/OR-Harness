@@ -1,204 +1,261 @@
 # Offline induction and existing-entry management
 
-Use this guide to turn completed executions into reusable methods and manage existing rules. The agent compares cases and chooses the rule's publication scope. Follow [SKILL.md](../SKILL.md) to solve and close the task.
+Compare recorded executions to extract a method, test its scope, and submit the review. Use [SKILL.md](../SKILL.md) for solving and close-out.
 
 ## When to start induction
 
-`plan-next` freezes a candidate's H+ decision before execution. The same world-model response carries `capability_gain.decision` as the JSON number 0 or 1 (`wm-hplus-binary/1`). G/C/R determine U. With H+ = 1, use `claim` to name a reusable increment or boundary and `verification_conditions` to name a concrete fact that can be checked. With 0, explain the reason in `basis`. Judge the increment relative to the prediction-time library, including adaptations of existing methods.
+`plan-next` freezes `capability_gain.decision` as the JSON number `0` or `1` (`wm-hplus-binary/1`). G, C and R determine U. For H+ = 1, use `claim` to state what could improve or extend the prediction-time library, and `verification_conditions` to name a concrete fact to check. For 0, give the basis.
 
-Carry the frozen condition into the solve and collect actual method receipts, artifacts, and task checks. Optional `check-task.hplus_verification` records the original prediction ID, condition index, source, and evidence references. An unfinished check leaves the condition unknown.
+When a condition is checked, add an item to the `hplus_verification` list in the `check-task --check` JSON. Supply the original `prediction_id`, the zero-based `condition_index`, `state:"checked"`, a `source`, and locatable `evidence_refs` such as `artifacts.submitted_script` and `task_check.checks`. Use `finding` to record what the check showed. An omitted state or missing support leaves the condition unknown.
 
-When building the library, close-out schedules one review per bound executed positive prediction and episode, including failed attempts and incomplete verification. Executed H+ = 0 attempts remain available as evidence for other reviews. Unexecuted candidates remain unobserved. Missing and invalid signals schedule 0 with distinct diagnostics. A valid positive still requires review when its explanatory fields are incomplete.
+During H+ building, close-out schedules one required review per bound executed positive prediction, including failed attempts and incomplete verification. Missing or invalid decisions schedule as 0 with their own diagnostics. Executed H+ = 0 attempts remain available as comparisons.
 
 ## Take a required review
 
-`close-episode` returns each required review's ID J in `result.induction_schedule.pending_ids`. Use J when reading material and submitting the review.
+Read each J from `close-episode` under `result.induction_schedule.pending_ids`. Use `induction-status` to resume interrupted work. Settle the returned jobs before continuing the building stream.
 
 ```bash
 orx induction-status --task T --episode EP
 orx induction-material --induction-id J
 ```
 
-Recover pending IDs with `induction-status` after interruption. Repeated close returns the still-pending IDs without creating new jobs. Python building runners can use `process_induction_jobs(reviewer, ...)`. Finish required reviews before starting the next building task.
-
 ## Read material and choose comparisons
 
-Start with the default material pack, then narrow or page only when needed:
+Read the default pack, then follow the question raised by the evidence. `--purpose` sets the search focus for that read. You can change the focus, request known execution IDs, or page through attempts while keeping the same trigger and J.
 
 ```bash
-orx induction-material --induction-id J --purpose implementation --query "endpoint direction and fallback" --related-top-k 3
-orx induction-material --induction-id J --executions EX_A,EX_B --limit 2
+orx induction-material --induction-id J --purpose modelling --query "MECHANISM_KEYWORDS"
+orx induction-material --induction-id J --purpose implementation --query "ERROR_OR_API_KEYWORDS"
+orx induction-material --induction-id J --executions EX1,EX2
 orx induction-material --induction-id J --cursor CURSOR_FROM_BUDGET
 ```
 
-| Result field | Read it for |
+| Field | How to use it |
 |---|---|
-| `material[]` | The fixed triggering execution first, followed by delivered current-task controls; actual `method`, its source, outcome, task checks, measured costs and references |
-| `related_history.executions[]` | Candidate cross-task/same-source contrasts, including failures; discovery similarity does not certify comparability or transfer |
-| `existing_knowledge` | Relevant short rule/version views; compare their conditions and steps with the proposed increment |
-| `comparison_table` | Execution IDs, relationship labels, actual-method references and check state; this is a factual index, not a framework verdict on generalization |
-| `induction_gate` | Frozen trigger, hypothesis, verification, `source_fact_ref` and `baseline_snapshot_ref` |
-| `budget.next_cursor` | Controls still to read; a bounded page is not the entire evidence bank |
+| `material[]` | The trigger first, then current-task controls. Read `method`, `method_source`, outcomes, checks, and measured costs. |
+| `related_history.executions[]` | Candidate comparisons from history, including failures. Compare the original constraints, actual methods, and check coverage. |
+| `existing_knowledge` | Short views of relevant rules in the current library during ordinary H+ building. Use them to find possible revisions or duplicates. |
+| `comparison_table` | An index of `execution_id`, `relationship`, and `check`. Read the case itself for its method. |
+| `induction_gate` | The frozen hypothesis, verification conditions, `source_fact_ref`, and prediction-time `baseline_snapshot_ref`. |
+| `budget.next_cursor` | The next page of current-task controls. |
 
-Every pending material call queries current evidence. Purpose/query/case IDs may change while the trigger and J remain fixed. The default whole result/CLI envelope is bounded at 32,000 characters (`OR_HARNESS_INDUCTION_MATERIAL_CHARS`). A large value may become a whole-value reference; follow its inspect hint. Source overlap and original-input identity are advisory. The agent decides which methods, assumptions, checks and measurement conditions can be compared.
-
-For closed cases, use available reference answers, checker results, and user feedback as post-answer evidence. Identify their source and the part of the outcome they establish. Pair a numerical comparison with the task checks or derivation needed to justify a broader claim.
+Use `--purpose modelling` for model structure or `--purpose implementation` for code and repairs. Compare retries to diagnose a failure and independent cases to test how the method travels. Pending reviews retain delivered execution facts. The default response budget is 32,000 characters (`OR_HARNESS_INDUCTION_MATERIAL_CHARS`). Follow `inspect_hint` to open a compact or reference-only case.
 
 ```bash
-orx inspect --bank experience --execution EX_A
+orx inspect --bank experience --execution EX1
 orx inspect --bank strategic --entry ENTRY --rule-version candidate
 orx inspect --bank values --value VALUE_REF
 ```
 
-Pending jobs hold necessary execution facts across ordinary eviction/restart. Completed jobs release full temporary copies while retaining minimum audit references. Expired/unavailable evidence is reported; it is not silently reconstructed from today's library. A same-task retry can be a repair control without being an independent transfer task.
+After answering, cite available reference answers, checker results, or user feedback with their source and coverage. Use original-constraint checks or a derivation to support claims about feasibility and why a step transfers.
 
 ## Complete review submissions
 
-Submit a new or revised rule, a supported conclusion that the library already covers the method, or an insufficient-material review according to the evidence.
+### Generalize the method from cases
 
-### A/B setup and ID sources
+Start from the frozen H+ hypothesis and what the execution showed. Identify a specific decision in the model or implementation and the effect it might have on feasibility, objective value, runtime, or reliability. Choose the next comparison by what would clarify that claim.
 
-Use actual recorded cases. The runnable [run_review_eight_demo.py](../docs/validation/run_review_eight_demo.py) supplies small integer enumerations and a scoped publication example. [unified_solving.py](examples/unified_solving.py) exercises the normal CLI handoff with one or more candidates.
+Let the evidence determine what to record. A review can yield a modeling or solving method, an implementation technique, or a rule that combines steps that work together. Submit separate rules for independently useful findings with their own evidence. When the library already covers the method or evidence is insufficient, complete the review with that conclusion.
 
-| Case | Actual original problem and checked result | Role |
+- **Find what changed the result.** A successful run gives a method worth inspecting. A failure and its repair on the same input can identify the step responsible. Compare what the model expressed, what the code actually did, and what the checks observed.
+- **Align the roles across problems.** Look for another task that poses the same decision under different domain details. Map the decision variables, the constraints that connect them, and the quantity or guarantee they affect. Keep the relationship that the cases share and express case-specific capacities or coefficients as parameters.
+- **Explain why the step works.** Derive the effect from the original constraints and objective. Keep the assumptions the argument uses and phrase them as facts the next agent can check. A derivation can support a scoped rule when only one case is available.
+- **Try to break the claim.** Use a similar failed execution, an independent task, or a small constructed case that changes a condition relevant to the explanation. For an exact reformulation, check which feasible decisions and objective values it preserves. For an empirical speed or quality claim, compare measured outcomes under comparable conditions. If the claim fails, narrow its scope or add a fallback.
+- **Record the reusable decision.** Put the applicability conditions and any relevant failure boundary in **when**. Put the method and the checks needed to apply it in **do**. State the guarantee or measured effect the evidence supports in **expect**. Check the relevant existing rule before choosing to add, revise, or supplement it. If the evidence leaves a decisive question open, record what would resolve it.
+
+### Induce implementation methods
+
+Use `--purpose implementation` when the reusable change concerns code or a solver interface, such as data parsing, index mapping, API calls, or result delivery. Compare the submitted scripts, error or protocol receipts, and actual results. A failed attempt and a repair on the same problem, model, and settings can isolate the step that mattered. Look for the same failure mechanism in another task or implementation. Generalize the reusable code step, the interface assumptions it depends on, and the check that detects failure.
+
+Match validation to the claim. Use `execution_features.technical_outcome` and captured artifacts to check technical delivery. For a claim about the computed answer, check the original task. For a cost claim, compare measured values under matching conditions.
+
+#### Implementation example · Deliver solver results
+
+Use the computed objectives from the container and transshipment examples as inputs to a controlled script test. Change the delivery code between attempts.
+
+| Case | Failure | Repair and observed result |
 |---|---|---|
-| A | Nonnegative integers X,Y; X+Y<=1000, X>=2Y+300; maximize 2X+5Y; optimum 2699 | Increasing objective with maximization: choose the upper feasible X endpoint |
-| B | Nonnegative integers X,Y; X+Y<=641, X>=2Y+130; minimize 2X-5Y; optimum 90; always taking the upper endpoint gives 92 | Increasing objective with minimization: choose the lower endpoint |
-| Constructed boundary | Nonnegative integers X,Y; X+Y<=12, X>=2Y; minimize (X-3)^2+Y; optimum 0 at X=3,Y=0 | Nonmonotonicity defeats endpoint-only minimization; full enumeration is the fallback |
+| Container production | The script prints 43,200 and exits without writing `result.json`. The executor records a missing-result protocol failure. | Write `{"status":"optimal","objective_value":43200}` in `result.json` in the execution workspace. The executor reads a valid result. |
+| Transshipment | The script writes `{"status":"optimal","objective":685}`. The executor reports that the objective field is missing. | Use `objective_value` for the numeric objective. The executor reads a valid result with value 685. |
 
-EX_A, EX_B and EX_BOUNDARY below are `result.execution_id` values from those actual `execute` calls, then checked and recorded. J is the positive executed trigger's `close-episode` `result.induction_schedule.pending_ids` item. Retain the same memory home. A prior H+=0 execution can be a comparison for this positive job. A small boundary computation is useful support when actually run and referenced; it is not a compulsory checklist item. Do not paste these placeholder IDs as if they were recorded facts.
+The shared result writer can be a short rule.
+
+- **when** The solve script hands results to the executor through the workspace file.
+- **do** Map the solver's actual status and available solution in one place. Write a fresh `result.json`. For `optimal` or `feasible`, include a finite numeric `objective_value`. When the solver establishes infeasibility, deliver `{"status":"infeasible"}` and any available diagnostics.
+- **expect** The executor can read both the solution and infeasibility branches under the result protocol.
+
+For this claim, use `effect_scope:"technical"` in the relation. For the learning comparison, use `basis:"artifact_inspection"` with the actual before/after executions and their captured artifacts.
+
+### Modeling example · Fixed setup costs in SIRL IndustryOR
+
+These teaching problems are IndustryOR cases 12, 44, and 77 from SIRL. They illustrate one route from recorded cases to a transferable rule. Read the problem statements, then compare the checked outcomes and the constraints that explain them.
+
+#### Example 1 · Container production with substitution
+
+A factory must meet its orders for six container sizes. Each size has its own production equipment. Producing any positive quantity of a size triggers a one-time setup fee of 1,200 yuan for that equipment.
+
+| Size ID | Volume (cm³) | Orders (units) | Variable cost (yuan/unit) |
+|---|---:|---:|---:|
+| 1 | 1,500 | 500 | 5 |
+| 2 | 2,500 | 550 | 8 |
+| 3 | 4,000 | 700 | 10 |
+| 4 | 6,000 | 900 | 12 |
+| 5 | 9,000 | 400 | 16 |
+| 6 | 12,000 | 300 | 18 |
+
+One container can fill one order of the same or a smaller required volume. Choose the production quantities and their allocation to orders. Meet all orders and minimize variable production costs plus setup fees.
+
+#### Example 2 · Transshipment through stations with fixed fees
+
+Send material from two origins to two destinations. Each shipment passes through exactly one station. Destination 1 requires 80 units and destination 2 requires 120. The tables give supply limits, station capacity, and the unit shipping costs on both legs.
+
+| Origin | Available supply | To station 1 | To station 2 |
+|---|---:|---:|---:|
+| 1 | 100 | 2 | 3 |
+| 2 | 150 | 4 | 1 |
+
+| Station | Throughput capacity | One-time fee if used | To destination 1 | To destination 2 |
+|---|---:|---:|---:|---:|
+| 1 | 100 | 10 | 3 | 2 |
+| 2 | 100 | 15 | 1 | 4 |
+
+Choose route flows that meet demand, conserve flow at each station, and respect supply and capacity. Minimize the costs of both shipping legs plus the fees of used stations.
+
+#### Example 3 · Part assignment with mandatory machines
+
+Process one part of each type from 1 to 10. Assign each part to one machine. Using a machine incurs its setup fee once. The per-part processing costs and setup fees are in yuan.
+
+| Machine | Setup fee | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| A | 100 | 10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 | 90 | 100 |
+| B | 135 | 15 | 25 | 35 | 45 | 55 | 65 | 75 | 85 | 95 | 105 |
+| C | 200 | 20 | 30 | 40 | 50 | 60 | 70 | 80 | 90 | 100 | 110 |
+
+Exactly one of parts 1 and 2 must use A. The other uses B or C. Parts 3, 4 and 5 are assigned to A, B and C respectively. Machine C can handle at most three parts. Formulate an integer model that minimizes total processing and setup costs.
+
+#### Compare the cases and test the boundary
+
+| Evidence | Inference |
+|---|---|
+| **Containers.** Selecting a plan by variable cost alone, then scoring it with all fees, costs 43,700 yuan. Joint optimization costs 43,200 yuan by producing size 3 for size 2 orders and size 6 for size 5 orders. | The choice is whether to pay a setup fee to avoid more expensive substitution. Link the setup flag to all production of that size. Bound production by the total demand the size can serve. |
+| **Transshipment.** The optimum costs 685. Each station carries 100 units. In every feasible plan, demand of 200 fills the two capacities of 100. | The quantity controlled by the flag is total station throughput. Use physical capacity for its bound and keep inbound equal to outbound. The network constraints already force both stations open. |
+| **Part assignment.** The optimum costs 1,005 yuan, of which 435 is setup. The three mandatory assignments force all machines to be used in every feasible plan. | A different constraint proves the same simplification. Fix the three flags to one and carry the fees as constants. Keep the part assignment and machine limits. |
+
+The common model uses total nonnegative use `q_j`, a valid upper bound `U_j`, a binary flag `y_j`, and a one-time positive fee `F_j`. The link `q_j <= U_j*y_j` makes any positive use require activation, and `F_j*y_j` charges once. With that fee and no other need to activate an unused resource, cost minimization permits zero activation at zero use. Fixing a flag to one is justified when the original constraints force positive use in every feasible plan.
+
+Probe that last premise by raising station 2's capacity from 100 to 200 in the transshipment example. Route 50 units from origin 1 and 150 from origin 2 through station 2, then send 80 and 120 to the destinations. This satisfies the modified constraints with station 1 closed, so the original proof for fixing both flags no longer applies. The bounded-use linkage still applies.
+
+For the submission below, `EX_CONTAINERS`, `EX_TRANSFER`, and `EX_PARTS` stand for real `result.execution_id` values from running and checking those problems in the same memory home. J is the review ID from the positive trigger. Choose the publication scope from the comparisons and derivation you can support.
 
 ### New or substantively revised method
 
-Read `induction-material --induction-id J`, inspect the actual evidence and derivation, then submit the reusable rule and learning conclusion together:
+This submission uses the fixed-setup-cost modeling example.
 
 ```bash
 orx induce --induction-id J \
   --relation '{
-    "when":"Y is finitely enumerable; at fixed Y, the nonempty feasible integer X set is a finite interval and the objective is monotone in X.",
-    "do":"Skip Y values with no feasible X. For each remaining Y, choose the interval endpoint required by coefficient sign and objective direction, then compare objectives across Y. If the objective is nonmonotone in X, enumerate all feasible X instead.",
-    "expect":"Preserve the original optimum and constraints within this scope while reducing enumeration over X.",
-    "evidence":["EX_A","EX_B","EX_BOUNDARY"],
+    "when":"In a cost minimization model, a resource incurs a positive one-time fee when used. Its total use is bounded and nonnegative, and the setup flag governs that use and fee.",
+    "do":"Use a binary activation variable y_j for each optional resource j. Charge F_j*y_j once and constrain its total use q_j by q_j <= U_j*y_j. Set U_j from capacity or reachable demand. Check total use, original flow balances, and assignment constraints. Fix y_j to one and keep F_j as a constant when the original constraints force positive use in every feasible plan.",
+    "expect":"Choose resource use jointly with variable cost and account for each setup fee once. Fixing a mandatory activation preserves feasibility and total cost.",
+    "evidence":["EX_CONTAINERS","EX_TRANSFER","EX_PARTS"],
     "publication":{
       "state":"published",
-      "reason":"The endpoint derivation and captured enumerations support the monotone scope and the tested nonmonotone fallback.",
-      "scope":["Finite integer intervals with a fixed-Y monotone objective; full enumeration when that premise fails"]
+      "reason":"Substitution and station flow support the use-to-activation link. Capacity bounds and mandatory assignments show how to prove a flag can be fixed.",
+      "scope":["Positive fixed charges on bounded resource use; forced activation only when implied by the original constraints"]
     }
   }' \
   --review '{
     "outcome":"new_rule",
-    "conclusion":"Objective direction selects the endpoint; nonmonotonicity requires the stated fallback.",
+    "conclusion":"Use a setup flag for each optional resource. Fix the flag only when the original constraints imply it.",
     "comparison":{
       "sufficient":true,
       "substantive":true,
       "basis":"derivation",
-      "source":"Actual A/B inputs and captured integer enumerations, endpoint algebra, and the recorded small nonmonotone check.",
-      "assessment":"A and B require opposite endpoints under the same fixed-Y increasing objective. The constructed case checks why endpoint-only minimization must be disabled outside monotonicity.",
-      "evidence_refs":["EX_A","EX_B","EX_BOUNDARY"]
+      "source":"Checked container allocations, station flows and part assignments, together with the activation constraints.",
+      "assessment":"The container comparison isolates the effect of joint setup and variable costs. Transshipment maps total use to throughput. Capacity in transshipment and designated parts in assignment independently show how original constraints can force activation.",
+      "evidence_refs":["EX_CONTAINERS","EX_TRANSFER","EX_PARTS"]
     }
   }'
 ```
 
-`--relation` retains `when / do / expect`, evidence and the author's publication choice. `--review` retains the real comparison and knowledge increment for training. A substantive new/revised version with valid support can yield learning label 1. Publishing alone does not produce that label.
+`--relation` saves **when / do / expect**, evidence and publication choice. `--review` saves the comparison and the learning conclusion. Omit `publication` to leave a new body as a candidate.
 
-For an explicit revision, keep the existing number by adding `"entry_id":"ENTRY","operation":"revise"` to the relation and `"outcome":"revised"` to the review. The existing active version stays available while the revision is a candidate. `operation:"merge"` names the target, `merge_entry_ids`, and `merge_reason`. Source rules stay available until that target version is published. Exact repeats and safe formatting changes reuse the existing body and version.
+To revise, add `"entry_id":"ENTRY","operation":"revise"` and use `outcome:"revised"`. The active version stays available while the revision is a candidate. To merge, set `operation:"merge"` with a target, `merge_entry_ids`, and `merge_reason`. Source rules stay available until the target version is published. Identical bodies reuse their version.
 
 ### Already covered or no reusable increment
 
-Compare the actual method/checks with the library that was available when the prediction was frozen. `SOURCE_FACT_REF` is `result.induction_gate.source_fact_ref`; `BASELINE_SNAPSHOT_REF` is `result.induction_gate.baseline_snapshot_ref` from material. Inspect these real references and the relevant rule versions before claiming coverage. Today's new rule or an empty recall alone cannot establish past coverage.
+Inspect `source_fact_ref` and `baseline_snapshot_ref` from `result.induction_gate`. For `already_covered`, identify the rule version in the prediction-time snapshot that covers the executed method and cite both references. If the available evidence leaves prior coverage unresolved, complete the review as `insufficient_material`.
 
 ```bash
 orx induce --induction-id J \
   --review '{
     "outcome":"already_covered",
-    "conclusion":"The checked execution uses endpoint direction and fallback conditions already present in the prediction-time rule version.",
+    "conclusion":"The prediction-time rule already covers bounded activation and the mandatory-activation case.",
     "comparison":{
       "sufficient":true,
       "substantive":false,
-      "source":"Actual executed method and check report, compared with the available frozen rule version.",
-      "assessment":"The recorded steps and applicable conditions add no reusable method or boundary beyond that version.",
+      "source":"The checked execution and the rule version in the frozen snapshot.",
+      "assessment":"The executed steps and assumptions match that version.",
       "evidence_refs":["SOURCE_FACT_REF","BASELINE_SNAPSHOT_REF"]
     }
   }'
 ```
 
-A supported sufficient comparison yields learning label 0; `outcome:"no_increment"` is also accepted. For optional evidence addition in that same job, include `--relation '{"entry_id":"ENTRY","operation":"add_evidence","evidence":["EX_B"]}'` with this review. It retains the body/version and settles the same J. Rewording alone, unavailable prior rules or insufficient checks do not establish a negative learning label.
+Use `no_increment` for a supported review that finds no reusable addition. To attach evidence to an unchanged rule in the same J, add `--relation '{"entry_id":"ENTRY","operation":"add_evidence","evidence":["EX_TRANSFER"]}'`.
 
 ### Insufficient material
 
 ```bash
 orx induce --induction-id J \
-  --review '{
-    "outcome":"insufficient_material",
-    "conclusion":"The actual method and outputs were reviewed, but constraint coverage is missing; the proposed endpoint preservation claim cannot be checked from the available evidence. No rule is added."
-  }'
+  --review '{"outcome":"insufficient_material","conclusion":"The objective is available, but the execution record lacks resource-level flows needed to check the activation constraints."}'
 ```
 
-This finishes the required review with a receipt and an unknown learning observation. No placeholder rule is written. State the real gap; insufficient evidence is not a no-increment conclusion.
+This completes the review with an unknown learning label. Use it when evidence is insufficient for either a rule or a no-increment conclusion.
 
 ### Read publication, completion and learning separately
 
-| Question | Field | Meaning |
-|---|---|---|
-| Is this submitted version offered for use? | `induce`: `result.relations[].publication.published` | The author's explicit publication choice for that version; omitted publication leaves a new body candidate |
-| Did the actual review commit? | `induce`: `result.induction_receipt` | Original prediction, real induction action, exact rule versions, evidence and conclusion |
-| Are required jobs settled? | `induction-status`: `result.completed` / `result.pending_ids` | No pending reviews; neither mathematical correctness nor a positive learning label is implied |
-| What was learned with support? | `induction-status`: `result.observation_counts` | `positive`, `negative`, `unknown`, and `bound_attempts`; these are review observations, not counts of H+=0 predictions |
-
-A `wm-hplus-review/2` receipt retains the original hypothesis, actual induction action, conclusion, supporting evidence, and exact rule versions. Its learning observation comes from the review's `outcome` and `comparison` or the rule's `mechanism_comparison`.
-
-| Learning label | Support |
+| Result | Field |
 |---|---|
-| `1` | A substantive new or revised rule body, a sourced conclusion, and valid supporting evidence |
-| `0` | A sufficient, sourced comparison showing `already_covered` or `no_increment` relative to the prediction-time library |
-| Unknown | Insufficient material, unavailable support, unexecuted work, or a review without a supported conclusion |
+| Version offered for use | `induce` → `result.relations[].publication.published` |
+| Committed review, evidence and rule versions | `induce` → `result.induction_receipt` |
+| Required jobs remaining | `induction-status` → `result.completed` and `result.pending_ids` |
+| Prediction-time decisions and diagnostics | `induction-status` → `result.signal_counts` |
+| Learning observations | `induction-status` → `result.observation_counts` |
 
-`result.signal_counts` tracks prediction-time decisions and diagnostics separately from these observations. Publication and the hypothesis verdict also have their own fields. A refuted hypothesis can yield a supported boundary rule. Use recorded checks by default, `basis:"derivation"` for a derivation over cited inputs, or `basis:"artifact_inspection"` for captured artifacts. Use resolving references such as `task_check.*` or `artifacts.*`. Existing cases with a reliable derivation or small executable checks can support a scoped cold-start rule. Record the scope of later transfer, boundary, and regression checks separately.
+A `wm-hplus-review/2` receipt supports label 1 for an actual new version with a substantive, sourced comparison. Label 0 requires a supported no-increment conclusion. Source your comparison with `source`, `assessment` and `evidence_refs`. Use recorded checks, `basis:"derivation"` for reasoning over actual inputs, or `basis:"artifact_inspection"` for captured artifacts. A refuted hypothesis can support a new boundary rule.
 
-The relation's `induction_id` or material session associates it with J, including for `add_evidence`. Ownership is checked before writing. Rules, action links, receipt references, and pending index work commit together. For `index_sync.state:deferred`, repeat the identical submission to recover the same action and receipt and retry indexing. A different submission against a completed job is a conflict.
+Read material for J before submitting. If `index_sync.state` is `deferred`, retry the identical submission to resume indexing with the saved receipt. A completed J accepts only the same submission on retry.
 
 ## Existing-entry use and utility
 
-Explicitly adopt a version you have read with `execute --used-entry-ids ENTRY@VERSION`. Structural recall exposes `recommendations[].knowledge.rule`; a semantic hit may omit version details. Resolve it with `orx inspect --bank strategic --entry ENTRY`, reading `result.entries[0].rule.view_version`. Omitted adoption is unknown; `--used-entry-ids ''` means adopted none. A citation, recalled item, historical compatibility review and actual version adoption are separate facts.
+For an adopted rule, pass `execute --used-entry-ids ENTRY@VERSION`. Use `inspect --bank strategic --entry ENTRY` to resolve `result.entries[0].rule.view_version`. An omitted declaration leaves use unknown. Pass `--used-entry-ids ''` to declare no adoption.
 
-Normal check/record/close retains use. Add an optional item in `check-task`'s `rule_assessments` only when making a sourced transfer/boundary/counterexample judgment:
+Add a sourced transfer, boundary or counterexample observation in `check-task` through `rule_assessments`. Each item identifies the `entry_id`, `version`, `purpose`, `verdict`, `source`, `assessment` and `evidence_refs`.
 
-```json
-{
-  "entry_id":"ENTRY", "version":2, "purpose":"transfer", "verdict":"supported",
-  "source":"Agent inspected the actual adopted script, original input and declared checks.",
-  "assessment":"The endpoint follows the objective direction within the listed interval conditions; only the declared acceptance coverage is claimed.",
-  "evidence_refs":["artifacts.submitted_script","artifacts.workspace_result"]
-}
-```
-
-Existing-body evidence addition, validation and publication selection can use `induce --relation` without a new positive job if they select an existing entry and introduce no new body. Utility/status judgments use the existing separate interface:
+To add evidence, validate, or change publication for an existing body, select its entry and version with `induce --relation`. For utility judgments use the actual adoption execution.
 
 ```bash
-orx induce --attribute-effect '{"entry_id":"ENTRY","execution_id":"EX_USED","verdict":"helped","lifecycle_action":"keep","note":"Actual adopted use meets its declared checks; no comparative cost advantage is claimed."}'
-orx retire --entry ENTRY --reason 'The agent concludes this method should leave ordinary recall.'
+orx induce --attribute-effect '{"entry_id":"ENTRY","execution_id":"EX_USED","verdict":"helped","lifecycle_action":"keep","note":"The adopted activation rule matched the recorded constraints and checks."}'
+orx retire --entry ENTRY --reason 'The rule should leave ordinary recall under current operating conditions.'
 ```
 
-| Action | Current behavior |
+| Action | Effect |
 |---|---|
-| `keep` | Leaves the selected version/status unchanged; records the reasoned use judgment |
-| `demote` | Suspends the selected version; if it is the active adopted version, the entry becomes paused/suspect and leaves ordinary recall |
-| `promote` | Explicitly activates the selected version, subject to existing identity/merge checks |
-| `retire` | Separate command moving the entry to the cold archive |
-| `verdict:"refuting"` with no `lifecycle_action` | The current implementation defaults to demotion of the adopted version; it is not annotation-only |
+| `keep` | Records the judgment and keeps the selected version and status. |
+| `demote` | Suspends the selected version and removes it from ordinary recall if active. |
+| `promote` | Activates the selected version after identity and merge checks. |
+| `retire` | Moves the entry to the cold archive. |
 
-Use a real use reference and reason. A primary `execution_id` fixes the version from frozen adoption; auxiliary evidence cannot substitute another version. Managing an older version does not silently demote a different current version. A `rule_assessments` observation is separate from utility-effect management. Pure maintenance returns `maintenance_only:true` and changes/index results without a new induction action or empty receipt. Frozen libraries reject these writes too.
+`verdict:"refuting"` defaults to demotion when `lifecycle_action` is omitted. Specify `keep` to record the judgment while retaining the version. The primary `execution_id` identifies the frozen adopted version. Existing-body maintenance returns `maintenance_only:true`.
 
 ## Scoped checks, costs and corrections
 
-A solver status, a reference objective comparison and a method derivation answer different questions. Objective agreement alone does not prove original-constraint coverage. Legacy assertions (`probe`, `status`, `comparison`, `code_changed`, `code_unchanged`) retain their scopes; a code hash change is not proof of improvement. An assertion failure is not automatically a refutation of an entire method.
+Use task checks and derivations that cover the actual effect claimed. For cost comparisons, supply `comparator_execution_id` and optional `cost_dimensions`. Compare the observed settings, acceptance criteria, measured dimensions and their sources. A missing optional baseline is reported as `cost_comparison.state:unavailable`.
 
-The agent chooses cost baselines, comparability and causal interpretation. Optional `comparator_execution_id` / `cost_dimensions` return actual methods, conditions, acceptance, values and provenance, without searching for a baseline or declaring a winner. Measured, estimated, partial and unknown costs remain distinct. An expired optional baseline returns `cost_comparison.state:unavailable` and its reason without blocking ordinary close-out; explicit validation with an invalid comparator is a correctable input error.
-
-`exclude-execution` / `restore-execution` change evidence validity and which facts support a later observation. Retain failed attempts as contrast. A late check can supply missing support, and withdrawn or excluded sole support makes the observation unknown. Original checks, versions, and issued prediction inputs remain auditable. Rule publication and retirement are explicit author decisions.
+Keep failed attempts as contrasts. Use `exclude-execution` and `restore-execution` to correct evidence validity. Later checks can supply missing support. A learning label can return to unknown if its supporting facts are withdrawn.
 
 ## Learning feedback and experiment modes
 
-The next `plan-next` in the same memory home selects applicable settled receipts from before its decision cutoff. See [prediction input audit](prediction_context.md#audit-what-the-next-provider-actually-received) to trace which feedback reached the provider.
+Later `plan-next` calls in the same memory home select applicable receipts recorded before the decision cutoff. Read [prediction input audit](world_model_contract.md#4-inspect-a-prediction-and-its-input) to see which feedback reached the provider.
 
-New ordinary prediction homes use H+ automatically. Use global `--induction-mode hplus` or `OR_INDUCTION_MODE=hplus` to set the building mode explicitly. H+, NoH+, and random controls use separate homes. NoH+ opportunity reviews use the prediction-time library. Drain required jobs before freezing the library. For execution isolation in fixed-memory tests, follow [the per-question copy procedure](snapshot_lifecycle.md#fixed-memory-testing-with-per-question-copies).
+Ordinary prediction homes enable H+ by default. To set it explicitly, use global `--induction-mode hplus` or `OR_INDUCTION_MODE=hplus`. Settle required reviews before freezing the library. Use separate homes for [H+, NoH+ and random controls](../docs/validation/hplus_binary.md) and follow the [fixed-memory test procedure](snapshot_lifecycle.md#fixed-memory-testing-with-per-question-copies).

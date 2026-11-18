@@ -58,9 +58,9 @@ The first two exercise normal CLI planning, execution, checking, recording, clos
 | U permission, G/C/R, resource scales, missing terms and budgets | [strategy_outcome.md](references/strategy_outcome.md) |
 | Acceptance scope, terminal states, calibration and H+ dispatch | [episode_closeout.md](references/episode_closeout.md) |
 | H+ review dispatch, submissions, learning receipts, and rule management | [induction.md](references/induction.md) |
-| Next-task evidence, request budgets and frozen feedback audit | [prediction_context.md](references/prediction_context.md) |
-| Input lifetime, historical reading and optional cleanup | [snapshot_lifecycle.md](references/snapshot_lifecycle.md) |
-| Design and serialized contracts | [concepts.md](references/concepts.md), [world_model_contract.md](references/world_model_contract.md) |
+| Prediction inputs, output fields and request audit | [world_model_contract.md](references/world_model_contract.md) |
+| Input lifetime, historical records and memory maintenance | [snapshot_lifecycle.md](references/snapshot_lifecycle.md) |
+| Design concepts | [concepts.md](references/concepts.md) |
 
 ## Development and experiments
 
