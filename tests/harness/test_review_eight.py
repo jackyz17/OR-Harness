@@ -33,11 +33,14 @@ class AgentCase(ReviewCase):
             calibration_policy=CalibrationPolicy(window=1,late_check_grace_days=0))
 
     def cli(self,args):
+        return self.cli_output(args)['result']
+
+    def cli_output(self,args):
         out=io.StringIO()
         with patch.dict('os.environ',{'OR_EMBEDDING_BACKEND':'local-hashing'}),redirect_stdout(out):
             code=main(['--home',self.home]+args)
         self.assertEqual(code,0,out.getvalue())
-        return json.loads(out.getvalue())['result']
+        return json.loads(out.getvalue())
 
     def historical_execution(self,name='unpredicted'):
         from pathlib import Path
@@ -51,6 +54,181 @@ class AgentCase(ReviewCase):
         self.h.close_episode(name,name)
         return self.h.bank.get(r.execution_id)
 
+
+
+class TestInductionSubmissionPreview(AgentCase):
+    def pending_submission(self):
+        _,record,closed=self.run_task(task('preview'),decision=1)
+        job=closed['induction_schedule']['pending_ids'][0]
+        self.h.induction_material(induction_id=job)
+        return {'induction_id':job,'relations':[{**RULE,'evidence':[record.execution_id],
+                    'publication':{'state':'published','reason':'The actual enumeration and endpoint derivation support this scope.'}}],
+                'review':{'outcome':'new_rule','conclusion':'Endpoint choice preserves the finite monotone optimum.',
+                    'comparison':self.comparison(job,substantive=True,basis='derivation',evidence_refs=[record.execution_id])}}
+
+    def stored_state(self):
+        return (list(self.h.store.conn.iterdump()),
+                copy.deepcopy(self.h.embedding_index.items('strategic_knowledge')))
+
+    def assert_both_reject(self,args,field):
+        before=self.stored_state();errors=[]
+        for dry in (True,False):
+            with self.assertRaises(ValueError) as caught:
+                self.h.induce(**args,dry_run=dry)
+            errors.append(str(caught.exception))
+            self.assertIn(field,errors[-1])
+            self.assertEqual(self.stored_state(),before)
+            self.assertEqual(get_job(self.h,args['induction_id'])['state'],'pending')
+        self.assertEqual(errors[0],errors[1])
+
+    def call_cli(self,args):
+        output=io.StringIO()
+        with patch.dict('os.environ',{'OR_EMBEDDING_BACKEND':'local-hashing'}),redirect_stdout(output):
+            code=main(['--home',self.home]+args)
+        return code,json.loads(output.getvalue())
+
+    def test_bad_review_reference_matches_real_rejection_and_same_job_can_publish(self):
+        args=self.pending_submission()
+        original=copy.deepcopy(args)
+        args['review']['comparison']['evidence_refs']=['execution:missing-preview-evidence']
+        self.assert_both_reject(args,'review.comparison.evidence_refs[0]')
+        args=original
+        before=self.stored_state()
+        with patch.object(self.h.index_sync,'sync_entries') as sync:
+            preview=self.h.induce(**args,dry_run=True)
+        sync.assert_not_called()
+        self.assertEqual((preview['would_create'],preview['would_update'],preview['would_complete']),(1,[],True))
+        self.assertEqual((preview['saved'],preview['published']),(0,0))
+        self.assertFalse(preview['relations'][0]['publication']['published'])
+        self.assertTrue(preview['relations'][0]['publication']['would_publish'])
+        self.assertTrue(preview['validation']['comparison_support']['review.comparison']['supported'])
+        self.assertNotIn('induction_receipt',preview)
+        self.assertEqual(self.stored_state(),before)
+        self.assertEqual(get_job(self.h,args['induction_id'])['state'],'pending')
+        committed=self.h.induce(**args)
+        self.assertEqual((committed['saved'],committed['published']),(1,1))
+        self.assertTrue(committed['relations'][0]['publication']['published'])
+        self.assertEqual(get_job(self.h,args['induction_id'])['state'],'completed')
+        self.assertEqual(receipt_observation(self.h,get_job(self.h,args['induction_id']))['label'],1)
+        before=self.stored_state()
+        with patch.object(self.h.index_sync,'sync_entries') as sync:
+            retried=self.h.induce(**args,dry_run=True)
+        sync.assert_not_called()
+        self.assertTrue(retried['already_completed'])
+        self.assertFalse(retried['would_complete'])
+        self.assertEqual(retried['receipt_ref'],committed['induction_receipt']['receipt_ref'])
+        self.assertEqual(self.stored_state(),before)
+        self.assertEqual(self.h.induce(**args)['induction_receipt'],committed['induction_receipt'])
+
+    def test_invalid_review_fields_are_shared_input_errors(self):
+        args=self.pending_submission()
+        invalid=[([], 'review must'),
+            ({'hypothesis_outcome':'maybe'},'review.hypothesis_outcome'),
+            ({'outcome':'invented'},'review.outcome'),
+            ({'conclusion':[]},'review.conclusion'),
+            ({'comparison':[]},'review.comparison'),
+            ({'comparison':{'evidence_refs':'not-a-list'}},'review.comparison.evidence_refs'),
+            ({'comparison':{'evidence_refs':[None]}},'review.comparison.evidence_refs[0]'),
+            ({'comparison':{'sufficient':'true'}},'review.comparison.sufficient'),
+            ({'comparison':{'basis':'invented'}},'review.comparison.basis')]
+        for review,field in invalid:
+            with self.subTest(field=field):
+                self.assert_both_reject({**args,'review':review},field)
+
+    def test_invalid_publication_parameters_match_and_leave_the_job_reusable(self):
+        original=self.pending_submission()
+        for decision,field in [({'state':'invented','reason':'checked'},'publication.state'),
+                ({'state':'published'},'publication.reason'),
+                ({'state':'published','reason':' '},'publication.reason'),
+                ({'state':'candidate','reason':False},'publication.reason')]:
+            with self.subTest(decision=decision):
+                args=copy.deepcopy(original);args['relations'][0]['publication']=decision
+                self.assert_both_reject(args,'relations[0].'+field)
+        self.assertEqual(self.h.induce(**original)['saved'],1)
+
+    def test_per_rule_comparison_is_checked_and_insufficient_support_can_complete(self):
+        args=self.pending_submission()
+        for comparison,field in [([], 'relations[0].mechanism_comparison'),
+                ({'evidence_refs':['execution:missing-mechanism']},'relations[0].mechanism_comparison.evidence_refs[0]')]:
+            with self.subTest(comparison=comparison):
+                args['relations'][0]['mechanism_comparison']=comparison
+                self.assert_both_reject(args,field)
+        args['relations'][0]['mechanism_comparison']={'sufficient':False,
+            'evidence_refs':args['relations'][0]['evidence']}
+        preview=self.h.induce(**args,dry_run=True)
+        self.assertTrue(preview['validation']['valid'])
+        self.assertFalse(preview['validation']['comparison_support']['relations[0].mechanism_comparison']['supported'])
+        result=self.h.induce(**args)
+        self.assertEqual(result['published'],1)
+        self.assertIsNone(receipt_observation(self.h,get_job(self.h,args['induction_id']))['label'])
+
+    def test_cli_preview_errors_and_minimal_review_only_submission(self):
+        args=self.pending_submission()
+        args['review']['comparison']['evidence_refs']=['execution:bad-cli-reference']
+        command=['induce','--induction-id',args['induction_id'],
+                 '--relation',json.dumps(args['relations'][0]),'--review',json.dumps(args['review'])]
+        before=self.stored_state()
+        code,preview=self.call_cli(command+['--dry-run'])
+        self.assertEqual(code,2)
+        self.assertIn('review.comparison.evidence_refs[0]',preview['result']['error'])
+        self.assertIn('induction-material',preview['summary'])
+        code,rejected=self.call_cli(command)
+        self.assertEqual(code,2)
+        self.assertEqual(preview['result']['error'],rejected['result']['error'])
+        self.assertEqual(self.stored_state(),before)
+        command=['induce','--induction-id',args['induction_id'],'--review',json.dumps({
+            'outcome':'insufficient_material','conclusion':'No comparable checked boundary case is available.'})]
+        code,preview=self.call_cli(command+['--dry-run'])
+        self.assertEqual(code,0)
+        self.assertTrue(preview['result']['would_complete'])
+        self.assertEqual((preview['result']['saved'],preview['result']['published']),(0,0))
+        self.assertIn('without --dry-run',preview['summary'])
+        self.assertEqual(self.stored_state(),before)
+        self.assertEqual(get_job(self.h,args['induction_id'])['state'],'pending')
+        code,submitted=self.call_cli(command)
+        self.assertEqual(code,0)
+        self.assertEqual(submitted['result']['induction_receipt']['outcome'],'insufficient_material')
+        self.assertEqual(submitted['result']['saved'],0)
+        self.assertEqual(self.h.sbank.count(),0)
+        self.assertEqual(get_job(self.h,args['induction_id'])['state'],'completed')
+        self.assertIsNone(receipt_observation(self.h,get_job(self.h,args['induction_id']))['label'])
+
+    def test_cli_reports_creation_and_revision_without_writing(self):
+        args=self.pending_submission()
+        command=['induce','--induction-id',args['induction_id'],'--relation',json.dumps(args['relations'][0]),
+                 '--review',json.dumps(args['review'])]
+        before=self.stored_state()
+        code,preview=self.call_cli(command+['--dry-run'])
+        self.assertEqual(code,0)
+        self.assertEqual(preview['result']['would_create'],1)
+        self.assertIn('without --dry-run',preview['summary'])
+        self.assertEqual(self.stored_state(),before)
+        code,submitted=self.call_cli(command)
+        self.assertEqual(code,0)
+        self.assertEqual(submitted['result']['published'],1)
+        entry=submitted['result']['relations'][0]['saved']
+        _,record,closed=self.run_task(task('revision-preview',812,200),decision=1)
+        job=closed['induction_schedule']['pending_ids'][0]
+        self.h.induction_material(induction_id=job)
+        relation={**RULE,'entry_id':entry,'operation':'revise','do':RULE['do']+' Recompute the reported objective.',
+            'evidence':[record.execution_id]}
+        before=self.stored_state()
+        for invalid in ({**relation,'operation':'add_evidence'},
+                        {**relation,'operation':'merge','merge_entry_ids':['missing-merge-source']}):
+            result=self.h.induce(induction_id=job,relations=[invalid],
+                review={'outcome':'revised'},dry_run=True)
+            self.assertFalse(result['validation']['valid'])
+            self.assertEqual(result['saved'],0)
+            self.assertFalse(result['would_complete'])
+        # Invalid relation previews did not reserve an action or persist a result.
+        self.assertEqual(self.stored_state(),before)
+        code,preview=self.call_cli(['induce','--induction-id',job,'--relation',json.dumps(relation),
+            '--review',json.dumps({'outcome':'revised','conclusion':'Added an explicit objective check.'}),'--dry-run'])
+        self.assertEqual(code,0)
+        self.assertEqual((preview['result']['would_create'],preview['result']['would_update']),(0,[entry]))
+        self.assertEqual(preview['result']['saved'],0)
+        self.assertEqual(self.stored_state(),before)
+        self.assertEqual(get_job(self.h,job)['state'],'pending')
 
 
 class TestAgentPublicationAndVersions(AgentCase):
@@ -796,16 +974,15 @@ class TestReviewNineTransactionsAndRouting(AgentCase):
             with self.subTest(budget=budget),patch.dict('os.environ',{'OR_HARNESS_INDUCTION_MATERIAL_CHARS':str(budget)}):
                 cursor=None;seen=set();cursors=set()
                 for _ in range(5):
-                    material=self.cli(['induction-material','--induction-id',j,'--limit','1','--related-top-k','0']+
-                                      (['--cursor',cursor] if cursor else []))
+                    response=self.cli_output(['induction-material','--induction-id',j,'--limit','1','--related-top-k','0']+
+                                             (['--cursor',cursor] if cursor else []))
+                    material=response['result']
                     self.assertEqual(material['material'][0]['execution_id'],a.execution_id)
                     seen.update(r['execution_id'] for r in material['material'])
                     for row in material['material']:
                         if row.get('view')=='whole_record_by_reference':self.assertTrue(row['inspect_hint'])
                     self.assertLessEqual(chars(material),budget)
-                    summary=(f"Read {material['count']} task attempt(s) with cross-task controls and short rules. "
-                       "Submit when/do/expect plus evidence IDs with `induce --relation`; select the existing entry for revisions.")
-                    self.assertEqual(material['budget']['chars_used'],chars({'result':material,'summary':summary}))
+                    self.assertEqual(material['budget']['chars_used'],chars(response))
                     self.assertLessEqual(material['budget']['chars_used'],budget)
                     cursor=material['budget']['next_cursor']
                     if not cursor:break

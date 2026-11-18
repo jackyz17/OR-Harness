@@ -59,6 +59,15 @@ Other registered benefit kinds include `solution_quality` (normalized quality), 
 
 C's default measurement window runs from the shared decision anchor to task termination. Compare forecasts with matching actual dimensions and time scopes. Use `trace.call_cost` for the measured spend of making the forecast itself. See [C observations](episode_closeout.md#c-observations) for supported host reports and cost coverage.
 
+The token forecast is `cost.output_tokens`: execution-model tokens generated
+during the remaining modelling, coding, self-checks and expected rework. The
+task text and its length are known inputs. Missing output is unknown, not zero.
+The host's trustworthy complete `completion_tokens` in that same window supply
+the actual value; an initial decision includes later retries, and a retry's
+decision starts its own window. Raw usage, budgets and historical `llm_tokens`
+still mean input plus output. They cannot substitute for output-token evidence
+or its normalization scale. See [generated-token observations](strategy_outcome.md#4-budgets-stops-and-archiving-an-interrupted-run).
+
 R uses the one-attempt technical-failure convention `wm-r-technical/1`. A finite numeric `implementation_failure.probability` in `[0,1]` supplies R. Other event predictions remain useful for diagnosis. U treats an explicit zero as a supplied value and records unavailable terms. See [technical R observations](episode_closeout.md#technical-r-observations) and [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
 
 The candidate can cover an `attempt` or a `strategy_window` spanning the declared modelling, execution, repair and verification activities. Window scoring requires a matching task, episode and strategy, ended linked attempts, and `trace.comparable=True`. Read coverage and auxiliary cost when inspecting a window total.

@@ -937,6 +937,8 @@ def _predicted_cost_dims(predicted_cost: Any) -> set:
 
     Utility charging still deduplicates components; per-dimension errors
     do not sum costs and must retain both time measurements.
+    ``output_tokens`` pairs only with observed completion counts;
+    historical ``llm_tokens`` keeps its separate total-token error series.
     """
     if predicted_cost is None or predicted_cost.expected is None:
         return set()

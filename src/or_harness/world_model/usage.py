@@ -23,6 +23,9 @@ This module is the ONE place a provider's ``usage`` is turned into a
   build targets, so adding them would double-count.
 * the breakdown travels with the call so a reader can tell WHICH口径
   produced the number (see :data:`TOKEN_BASIS_*`).
+* host observations also expose ``output_tokens`` from completion counts.
+  This is strategy C's generated-token dimension; it never changes raw
+  ``llm_tokens`` usage or billing for the prediction call itself.
 """
 
 from __future__ import annotations
@@ -413,9 +416,45 @@ HOST_USAGE_SCHEMA = "or-host-usage/1"
 #: recorded under when the report supplies no explicit map.
 _HOST_REPORT_DEFAULT_SOURCES = {
     "llm_tokens": "provider_usage",
+    "output_tokens": "provider_usage",
     "tool_calls": "agent_observed",
     "remaining_latency_s": "agent_observed",
 }
+
+
+def with_output_token_dimension(info: Mapping[str, Any]) -> Dict[str, Any]:
+    """Expose measured completion counts, including old normalized reports.
+
+    A legacy total-token whitelist covers its recorded completion sub-fact
+    or complete model-call ledger, but the total number itself supplies no
+    output measurement. No database rewrite or subtraction is needed.
+    """
+    info = copy.deepcopy(dict(info))
+    measured = set(info.get("measured") or [])
+    declared = set(info.get("reported_measured", measured))
+    if not declared & {"llm_tokens", "completion_tokens", "output_tokens"}:
+        return info
+    measured.add("output_tokens")
+    info["measured"] = sorted(measured)
+    provenance = info.setdefault("provenance", {})
+    provenance.setdefault("output_tokens", provenance.get("completion_tokens") or
+                          provenance.get("llm_tokens") or
+                          ("provider_usage" if "reported_measured" in info else "unknown"))
+    completion = _as_count(info.get("completion_tokens"))
+    if completion is not None:
+        dimensions = info.setdefault("dimensions", {})
+        if "output_tokens" in dimensions and dimensions["output_tokens"] != completion:
+            info.setdefault("dimension_conflicts", {})["output_tokens"] = (
+                "output_tokens disagrees with the recorded completion_tokens")
+        dimensions["output_tokens"] = completion
+        info["output_tokens_basis"] = "provider_completion"
+    # Old normalized records cannot tell which token side conflicted.
+    # New reports retain that distinction in dimension_conflicts.
+    conflicts = info.get("dimension_conflicts") or {}
+    if "reported_measured" not in info and "llm_tokens" in conflicts:
+        info.setdefault("dimension_conflicts", {})["output_tokens"] = (
+            "legacy token evidence conflicts: " + conflicts["llm_tokens"])
+    return info
 
 
 def is_host_usage_report(report: Any) -> bool:
@@ -437,8 +476,9 @@ def host_report_dimensions(report: Mapping[str, Any]
     Returns ``(dimensions, info)``. ``dimensions`` holds only what the
     report's ``measured`` whitelist allows — a number outside the whitelist
     is a sub-fact, never a cost measurement — and ``llm_tokens`` is the
-    full口径 total (prompt + completion; reasoning/cached are sub-facts
-    inside those sides and are never added again). ``info`` carries the
+    input-plus-output total. ``output_tokens`` uses only measured
+    completion_tokens; reasoning/cached are sub-facts never added again.
+    ``info`` carries the
     per-dimension provenance map, the token basis and the sub-facts, so the
     caller can store the口径 beside the number.
 
@@ -466,9 +506,13 @@ def host_report_dimensions(report: Mapping[str, Any]
                 original = _as_count(report.get(key) if key == "tool_calls" else original_tokens.get(key))
                 if report.get("scope") == "remaining_to_task_end" and original is not None \
                         and not math.isclose(original, after - before, rel_tol=1e-9, abs_tol=1e-6):
-                    dimension_conflicts["tool_calls" if key == "tool_calls" else
-                                        "host_rounds" if key == "calls" else "llm_tokens"] = \
-                        f"aggregate disagrees with the same-window counter increment ({original:g} vs {after - before:g})"
+                    affected = ({"tool_calls"} if key == "tool_calls" else
+                                {"host_rounds"} if key == "calls" else
+                                {"llm_tokens", "output_tokens"} if key == "completion_tokens" else
+                                {"llm_tokens"})
+                    for dim in affected:
+                        dimension_conflicts[dim] = (
+                            f"aggregate disagrees with the same-window counter increment ({original:g} vs {after - before:g})")
                 if key == "tool_calls":
                     report[key] = after - before
                 else:
@@ -498,7 +542,8 @@ def host_report_dimensions(report: Mapping[str, Any]
     elif prompt is not None:
         total, basis = prompt, TOKEN_BASIS_PROMPT_ONLY
     else:
-        total, basis = None, None
+        total = _as_count(tokens.get("total_tokens"))
+        basis = TOKEN_BASIS_TOTAL if total is not None else None
     tool_calls = _as_count(report.get("tool_calls"))
     lower_bound = _as_count(report.get("tool_calls_lower_bound"))
     if tool_calls is not None and lower_bound is not None \
@@ -513,10 +558,11 @@ def host_report_dimensions(report: Mapping[str, Any]
                 "tool invocations in the attempt's scope (shell commands, "
                 "file reads/writes, sandbox runs, solver calls)")
     measured = {str(m) for m in (report.get("measured") or [])}
+    reported_measured = sorted(measured)
     # The whitelist names the report's OWN fields (prompt_tokens,
-    # completion_tokens, tool_calls); the cost dimensions they feed are
-    # llm_tokens and tool_calls. Either side of the token report being
-    # measured means the FULL口径 total is measured (it is their sum).
+    # completion_tokens, tool_calls). Preserve the original whitelist so
+    # measuring only the input side cannot promote an unmeasured output
+    # sub-fact. The llm_tokens basis still records any partial total.
     if measured & {"prompt_tokens", "completion_tokens", "total_tokens"}:
         measured.add("llm_tokens")
     provenance = report.get("provenance") \
@@ -541,6 +587,7 @@ def host_report_dimensions(report: Mapping[str, Any]
         "cached_tokens": cached,
         "model_calls": calls,
         "measured": sorted(measured),
+        "reported_measured": reported_measured,
         "tool_calls_lower_bound": lower_bound,
         "basis": basis,
         "provenance": {
@@ -548,17 +595,22 @@ def host_report_dimensions(report: Mapping[str, Any]
                      or _HOST_REPORT_DEFAULT_SOURCES.get(dim, "agent_estimate"))
             for dim in (set(dimensions) | (measured & {"llm_tokens", "tool_calls", "remaining_latency_s"}))
         },
-        "note": ("llm_tokens is the FULL口径 total (prompt + completion); "
+        "note": ("llm_tokens is the input-plus-output total; output_tokens "
+                 "is measured completion_tokens only. "
                  "reasoning/cached tokens are sub-facts already inside those "
                  "sides and are never added again. Only dimensions listed in "
                  "the report's 'measured' whitelist enter cost_measured; "
                  "everything else stays unknown, never zero"),
     }
+    for dim in ("output_tokens", "completion_tokens"):
+        if provenance.get(dim):
+            info["provenance"][dim] = str(provenance[dim])
     info["dimensions"] = dict(dimensions)
     if dimension_conflicts:
         info["dimension_conflicts"] = dimension_conflicts
-        for dim in dimension_conflicts:
-            dimensions.pop(dim, None)
+    info = with_output_token_dimension(info)
+    dimensions = {dim: value for dim, value in info["dimensions"].items()
+                  if dim not in dimension_conflicts}
     if isinstance(report.get("scope"), Mapping):
         info["scope_identity"] = copy.deepcopy(dict(report["scope"]))
     if invalid_counters:

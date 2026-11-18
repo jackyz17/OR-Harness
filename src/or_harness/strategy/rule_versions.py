@@ -384,6 +384,7 @@ def _convert_legacy(harness, entry):
 
 def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=False):
     harness = engine.harness
+    publication = validate_publication(raw.get('publication'))
     resolved = _resolve(engine, raw.get("evidence"))
     records = resolved["records"]
     from or_harness.world_model.hplus import formal, require_job
@@ -432,9 +433,16 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
             body_ref='rule:'+digest(body)
     if not records and entry is None:
         raise ValueError("a new rule needs real evidence IDs")
-    if dry_run:
-        return {"saved": None, "would_create": entry is None, "would_update": entry.entry_id if entry else None,
-                "body": body, "publication": {"published": False, "authority":"agent", "decision":raw.get("publication")}}
+    if entry is not None and operation not in ('revise','merge'):
+        if entry.rule:
+            same=harness.store.conn.execute(
+                'SELECT 1 FROM rule_versions WHERE entry_id=? AND body_ref=?',
+                (entry.entry_id,body_ref)).fetchone()
+            changed_body=same is None
+        else:
+            changed_body=body_signature(body)!=body_signature(prior)
+        if changed_body:
+            raise ValueError('changed rule content requires operation=revise or merge')
     merged = []
     for entry_id in raw.get("merge_entry_ids") or []:
         other = harness.sbank.get(str(entry_id))
@@ -445,6 +453,10 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
         if entry is not None and other.entry_id in _merge_ancestors(harness,entry.entry_id):
             raise ValueError('merge would create a cycle in rule identities')
         merged.append(other)
+    if dry_run:
+        return {"saved": None, "would_create": entry is None, "would_update": entry.entry_id if entry else None,
+                "body": body, "publication": {"published": False, "authority":"agent", "decision":publication,
+                    "would_publish": bool(publication and publication['state'] in ('published','publish'))}}
     created, changed, new_version = entry is None, False, False
     session_ref, session = _session(harness, raw, records)
     with harness.store.transaction() as conn:
@@ -688,17 +700,24 @@ def _apply_confirmed_merges(harness,entry_id,version):
     return applied
 
 
+def validate_publication(decision):
+    """Normalize an author choice without changing a rule or its events."""
+    if decision is None:return None
+    choice={'state':decision} if isinstance(decision,str) else copy.deepcopy(decision)
+    if not isinstance(choice,dict) or choice.get('state') not in ('published','publish','candidate'):
+        raise ValueError('publication.state must be published, publish or candidate')
+    if not isinstance(choice.get('reason'),str) or not choice['reason'].strip():
+        raise ValueError('publication.reason must be nonempty text explaining the evidence and offered scope')
+    return choice
+
+
 def update_publication(harness,entry_id,version,decision=None):
     """Apply an explicit author choice, otherwise report the existing state."""
     entry=harness.sbank.get(str(entry_id));row=version_row(harness.store,entry_id,version)
     merged=[]
     if row is None:raise ValueError('unknown rule version')
-    if decision is not None:
-        choice={'state':decision} if isinstance(decision,str) else copy.deepcopy(decision)
-        if not isinstance(choice,dict) or choice.get('state') not in ('published','publish','candidate'):
-            raise ValueError('publication needs state published or candidate and a reason')
-        if not isinstance(choice.get('reason'),str) or not choice['reason'].strip():
-            raise ValueError('publication choice requires a short reason')
+    choice=validate_publication(decision)
+    if choice is not None:
         if entry.rule.get('state')=='merged':raise ValueError('manage the selected merge target')
         with harness.store.transaction() as conn:
             if choice['state'] in ('published','publish'):

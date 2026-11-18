@@ -210,6 +210,7 @@ class TestHostUsageReport(unittest.TestCase):
         # llm_tokens is the FULL口径 total (prompt + completion); the 291
         # reasoning tokens are a sub-fact inside completion, never added.
         self.assertEqual(dimensions["llm_tokens"], 12345 + 678)
+        self.assertEqual(dimensions["output_tokens"], 678)
         self.assertEqual(dimensions["tool_calls"], 38.0)
         self.assertEqual(info["basis"], TOKEN_BASIS_TOTAL)
         self.assertEqual(info["provenance"]["llm_tokens"],
@@ -225,7 +226,7 @@ class TestHostUsageReport(unittest.TestCase):
         report = dict(HOST_REPORT, measured=["prompt_tokens",
                                              "completion_tokens"])
         dimensions, info = host_report_dimensions(report)
-        self.assertEqual(dimensions, {"llm_tokens": 12345 + 678})
+        self.assertEqual(dimensions, {"llm_tokens": 12345 + 678, "output_tokens": 678})
         self.assertNotIn("tool_calls", info["provenance"])
 
     def test_a_dimension_outside_the_whitelist_stays_unknown(self):
@@ -240,6 +241,33 @@ class TestHostUsageReport(unittest.TestCase):
         dimensions, info = host_report_dimensions(report)
         self.assertEqual(dimensions["llm_tokens"], 50.0)
         self.assertEqual(info["basis"], TOKEN_BASIS_COMPLETION_ONLY)
+        self.assertEqual(dimensions["output_tokens"], 50)
+
+    def test_input_only_whitelist_does_not_measure_output(self):
+        dimensions, _ = host_report_dimensions(dict(HOST_REPORT, measured=["prompt_tokens"]))
+        self.assertNotIn("output_tokens", dimensions)
+
+    def test_prompt_counter_conflict_does_not_invalidate_known_output(self):
+        dimensions, info = host_report_dimensions(dict(HOST_REPORT,
+            scope="remaining_to_task_end", tokens={"prompt_tokens": 10000, "completion_tokens": 400},
+            counters={"start": {"prompt_tokens": 0, "completion_tokens": 0},
+                      "end": {"prompt_tokens": 9000, "completion_tokens": 400}}))
+        self.assertNotIn("llm_tokens", dimensions)
+        self.assertEqual(dimensions["output_tokens"], 400)
+        self.assertNotIn("output_tokens", info["dimension_conflicts"])
+
+    def test_old_output_subfact_does_not_create_trust_without_provenance(self):
+        from or_harness.world_model.usage import with_output_token_dimension
+        info = with_output_token_dimension({"measured": ["llm_tokens"],
+            "completion_tokens": 400, "dimensions": {"llm_tokens": 10400}})
+        self.assertEqual(info["provenance"]["output_tokens"], "unknown")
+
+    def test_conflicting_output_subfact_is_not_silently_overwritten(self):
+        from or_harness.world_model.usage import with_output_token_dimension
+        info = with_output_token_dimension({"measured": ["output_tokens"],
+            "completion_tokens": 400, "dimensions": {"output_tokens": 500},
+            "provenance": {"output_tokens": "provider_usage"}})
+        self.assertIn("output_tokens", info["dimension_conflicts"])
 
     def test_tool_calls_below_the_reports_own_bound_is_refused(self):
         report = dict(HOST_REPORT, tool_calls=0,

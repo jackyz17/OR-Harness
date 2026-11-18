@@ -140,17 +140,17 @@ def _support_still_present(original,current):
     return original.get('reference_source')==current.get('reference_source')
 
 
-def supported_comparison(harness,job,comparison,cutoff,*,strict=False):
+def supported_comparison(harness,job,comparison,cutoff,*,strict=False,field='comparison'):
     if not isinstance(comparison,dict):return False,{'reason':'no agent learning assessment'}
     refs=comparison.get('evidence_refs') or []
     if not isinstance(refs,list):
         if strict:raise ValueError('comparison.evidence_refs must be a list')
         return False,{'reason':'comparison.evidence_refs must be a list'}
     resolved=[];issues=[]
-    for ref in refs:
+    for index,ref in enumerate(refs):
         try:resolved.append(_reference(harness,job,ref,cutoff))
         except (ValueError,StorageError,OSError,KeyError,TypeError) as exc:
-            if strict:raise ValueError('invalid learning evidence '+str(ref)+': '+str(exc)) from exc
+            if strict:raise ValueError(f'{field}.evidence_refs[{index}]: invalid learning evidence {ref}: {exc}') from exc
             issues.append(str(exc))
             resolved.append({'reference':ref,'valid':False,'reason':str(exc)})
     named=bool(isinstance(comparison.get('source'),str) and comparison['source'].strip() and
@@ -178,13 +178,39 @@ def supported_comparison(harness,job,comparison,cutoff,*,strict=False):
         'reason':None if valid else '; '.join(issues) or 'insufficient, not yet checked, or excluded supporting facts'}
 
 
-def freeze_comparison(harness,job,comparison,cutoff):
+def validate_comparison(harness,job,comparison,cutoff,*,field='comparison'):
+    """Check input and resolve references without retaining or writing facts.
+
+    Well-formed but insufficient evidence is a supported=False observation,
+    not an input error. The same check precedes previews and receipt writes.
+    """
+    if not isinstance(comparison,dict):
+        raise ValueError(f'{field} must be a JSON object')
+    for key in ('sufficient','substantive'):
+        if key in comparison and type(comparison[key]) is not bool:
+            raise ValueError(f'{field}.{key} must be a JSON boolean')
+    for key in ('source','assessment'):
+        if key in comparison and not isinstance(comparison[key],str):
+            raise ValueError(f'{field}.{key} must be text')
+    if comparison.get('basis','recorded_checks') not in ('recorded_checks','derivation','artifact_inspection'):
+        raise ValueError(f'{field}.basis must be recorded_checks, derivation or artifact_inspection')
+    refs=comparison.get('evidence_refs',[])
+    if not isinstance(refs,list):
+        raise ValueError(f'{field}.evidence_refs must be a list of sourced references')
+    for index,ref in enumerate(refs):
+        if not isinstance(ref,str) or not ref.strip():
+            raise ValueError(f'{field}.evidence_refs[{index}] must be a nonempty reference')
+    declared=copy.deepcopy(comparison)
+    declared.pop('support_snapshot',None)  # only the framework freezes support
+    return supported_comparison(harness,job,declared,cutoff,strict=True,field=field)
+
+
+def freeze_comparison(harness,job,comparison,cutoff,*,field='comparison'):
     """Validate and retain every direct support before releasing working evidence."""
     if comparison is None:return None
-    if not isinstance(comparison,dict):raise ValueError('learning comparison must be a JSON object')
+    _,proof=validate_comparison(harness,job,comparison,cutoff,field=field)
     frozen=copy.deepcopy(comparison)
     frozen.pop('support_snapshot',None)  # dependency snapshots are framework facts
-    _,proof=supported_comparison(harness,job,frozen,cutoff,strict=True)
     from or_harness.strategy.rule_versions import _facts_ref
     support={}
     for fact in proof.get('references') or []:

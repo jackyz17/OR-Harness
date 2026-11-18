@@ -12,6 +12,7 @@ import math
 from collections import defaultdict
 
 from or_harness.core.schema import COST_DIMENSIONS
+from or_harness.world_model.usage import with_output_token_dimension
 
 COST_OBSERVATION_VERSION = "wm-c-window/1"
 TRUSTED = {"agent_observed", "provider_usage"}
@@ -116,8 +117,8 @@ def _call_values(info, anchor, end):
     unique, conflicts = {}, {}
     def dimensions(call):
         return ({"tool_calls"} if call.get("kind") == "tool" else
-                {"llm_tokens"} if call.get("kind") in ("model", "llm") else
-                {"tool_calls", "llm_tokens"})
+                {"llm_tokens", "output_tokens"} if call.get("kind") in ("model", "llm") else
+                {"tool_calls", "llm_tokens", "output_tokens"})
     def invalid(call, reason):
         for dim in dimensions(call):
             conflicts[dim] = reason
@@ -147,13 +148,16 @@ def _call_values(info, anchor, end):
     models = [c for c in unique.values() if c.get("kind") in ("model", "llm")]
     complete = info.get("call_details_complete")
     if isinstance(complete, list) and not all(isinstance(d, str) and
-            d in ("tool_calls", "llm_tokens") for d in complete):
+            d in ("tool_calls", "llm_tokens", "output_tokens") for d in complete):
         invalid({}, "invalid per-dimension call-detail coverage")
         complete = []
     complete = (set(complete) if isinstance(complete, list) else
                 ({"tool_calls"} if tools else set()) | ({"llm_tokens"} if models else set()))
+    if "llm_tokens" in complete:
+        complete.add("output_tokens")
     bounds = {"tool_calls": float(len(tools)), "llm_tokens": sum(
-        (number(c.get("prompt_tokens")) or 0) + (number(c.get("completion_tokens")) or 0) for c in models)}
+        (number(c.get("prompt_tokens")) or 0) + (number(c.get("completion_tokens")) or 0) for c in models),
+        "output_tokens": sum(number(c.get("completion_tokens")) or 0 for c in models)}
     values = {}
     if "tool_calls" in complete:
         values["tool_calls"] = float(len(tools))
@@ -161,8 +165,10 @@ def _call_values(info, anchor, end):
                                        number(c.get("completion_tokens")) is not None for c in models):
         values["llm_tokens"] = sum(float(c["prompt_tokens"]) + float(c["completion_tokens"])
                                    for c in models)
+    if "output_tokens" in complete and all(number(c.get("completion_tokens")) is not None for c in models):
+        values["output_tokens"] = sum(float(c["completion_tokens"]) for c in models)
     facts = {"call_ids": sorted(unique), "_bounds": bounds, "_conflicts": conflicts}
-    if "llm_tokens" in complete and "llm_tokens" not in conflicts:
+    if "output_tokens" in complete and "output_tokens" not in conflicts:
         facts["host_rounds"] = len(models)
     explicit_solves = [c for c in tools if c.get("phase") == "solve"]
     if explicit_solves:
@@ -214,6 +220,7 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
     if anchor is None:
         return {}, {}, {}, {}, ["decision anchor unknown"]
     for info, ref in candidates:
+        info = with_output_token_dimension(info)
         identity = info.get("scope_identity") or {}
         if (identity.get("task_id") not in (None, task_id) or
                 str(identity.get("episode_id") or "") not in ("", str(episode_id or ""))):
@@ -336,7 +343,7 @@ def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor
             and info.get("host") and info.get("model")}
         if len(recorded_hosts) == 1:
             host = json.loads(next(iter(recorded_hosts)))
-    for dim in ("llm_tokens", "tool_calls"):
+    for dim in ("llm_tokens", "output_tokens", "tool_calls"):
         legacy = summary.cost.get(dim) or {}
         if dim not in actual and (legacy.get("comparable") or {}).get("value") is not None:
             legacy["observation_scope"] = "execution_attempts"

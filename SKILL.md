@@ -99,7 +99,11 @@ Fetch evidence for each induction ID J.
 orx induction-material --task T --induction-id J
 ```
 
-Compare the actual method, task constraints, and checked outcomes across cases. During this post-answer review, use available reference answers, checker verdicts, or user correctness feedback as evidence. Cite their sources and what they check. Test the proposed scope with an available contrast, a derivation, or a small executable case. Submit the conclusion with `--review` using the same J, including when the available evidence supports no rule. For a new or revised rule, add **when / do / expect**, evidence IDs, and a publication choice in `--relation`. Follow the [complete submission examples](references/induction.md#complete-review-submissions).
+Compare the actual methods, task constraints, checked outcomes, and relevant existing rules. During this post-answer review, available reference answers, checker verdicts, or user correctness feedback can supply evidence; cite their sources and coverage. Form a conclusion about the reusable method and its supported scope, using a contrast, derivation, or small executable check as needed.
+
+Submit that conclusion with `orx induce --induction-id J --review ...`. For a new or revised rule, include **when / do / expect**, real evidence IDs, and a publication choice in `--relation` in the same command. If material is insufficient, a short `insufficient_material` review can settle J without a rule. See [minimal submissions](references/induction.md#minimal-submissions) for both commands and [detailed comparisons](references/induction.md#complete-review-submissions) for broader examples.
+
+When unsure about the input, optionally add `--dry-run` to the same submission command. Fix any reported field or evidence reference, then remove `--dry-run` to submit. A successful preview leaves J pending; check `induction-status` after the real submission.
 
 ### 6. Continue with the next task
 

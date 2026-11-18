@@ -17,7 +17,7 @@ from tests.harness.g_fixtures import GCase, GProvider, G_PAYLOAD, COUPLED
 def payload(probability=.2, *, cost=None, diagnostics=None):
     out = copy.deepcopy(G_PAYLOAD)
     out["benefit"]["value"] = .5
-    out["cost"] = {"llm_tokens": 0} if cost is None else cost
+    out["cost"] = {"output_tokens": 0} if cost is None else cost
     out["risk"] = {"events": ([] if probability is None else [
         {"event": "implementation_failure", "probability": probability}]) + (diagnostics or [])}
     return out
@@ -262,7 +262,7 @@ class TestCommonCRScoring(RCase):
             ActionSpec("execute_strategy", self.task["task_id"], strategy_id=s, solver="highs", method=COUPLED)
             for s in ("S04", "S06")], limits={"horizon": 1, "alpha": 1, "beta": 1, "gamma": 1,
                 "cost_weights": {"llm_tokens": 1, "remaining_latency_s": 1, "solver_runtime_s": 1, "latency_s": 1},
-                "cost_scales":{"llm_tokens":700000,"remaining_latency_s":240,"solver_runtime_s":3,"latency_s":2}, **limits})
+                "cost_scales":{"output_tokens":700000,"remaining_latency_s":240,"solver_runtime_s":3,"latency_s":2}, **limits})
         return [row["score"] for row in result["candidates"]]
 
     def test_only_implementation_failure_is_r_despite_timeout_point_eight(self):
@@ -277,10 +277,10 @@ class TestCommonCRScoring(RCase):
         self.assertTrue(all(s["risk_effective"] is None and "R" not in s["scoring_basis"]["terms"] for s in scores))
 
     def test_common_tokens_do_not_charge_unknown_time(self):
-        a = payload(None, cost={"llm_tokens": 500000, "remaining_latency_s": 120})
-        b = payload(None, cost={"llm_tokens": 700000})
+        a = payload(None, cost={"output_tokens": 500000, "remaining_latency_s": 120})
+        b = payload(None, cost={"output_tokens": 700000})
         scores = self.plan(a, b)
-        self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["llm_tokens"] for s in scores))
+        self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["output_tokens"] for s in scores))
         self.assertAlmostEqual(scores[0]["cost_normalized"], __import__("math").log1p(500000)/__import__("math").log1p(700000), places=6)
         self.assertEqual(scores[1]["cost_normalized"], 1)
         self.assertIsNone(scores[1]["cost_reported"]["values"].get("remaining_latency_s"))
@@ -304,19 +304,19 @@ class TestCommonCRScoring(RCase):
         self.assertAlmostEqual(scores[0]["cost_normalized"], __import__("math").log1p(2)/__import__("math").log1p(3), places=6)
 
     def test_all_valid_data_uses_common_container_and_keeps_components_visible(self):
-        scores = self.plan(payload(.2, cost={"llm_tokens": 50, "remaining_latency_s": 120, "solver_runtime_s": 2}),
-                           payload(.3, cost={"llm_tokens": 70, "remaining_latency_s": 240, "solver_runtime_s": 3}))
-        self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["llm_tokens", "remaining_latency_s"] for s in scores))
+        scores = self.plan(payload(.2, cost={"output_tokens": 50, "remaining_latency_s": 120, "solver_runtime_s": 2}),
+                           payload(.3, cost={"output_tokens": 70, "remaining_latency_s": 240, "solver_runtime_s": 3}))
+        self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["output_tokens", "remaining_latency_s"] for s in scores))
         self.assertTrue(all(s["scoring_basis"]["terms"] == ["G", "C", "R"] for s in scores))
         self.assertTrue(all(not s["scoring_basis"]["partial"] for s in scores))
         self.assertEqual(scores[0]["cost_reported"]["values"]["solver_runtime_s"], 2)
 
     def test_off_yardstick_candidate_does_not_change_the_common_basis(self):
-        a, b = payload(.2, cost={"llm_tokens": 10}), payload(None, cost={"llm_tokens": 1000000})
+        a, b = payload(.2, cost={"output_tokens": 10}), payload(None, cost={"output_tokens": 1000000})
         b["benefit"].update(kind="solution_quality", metric="normalized_objective_gap", unit="1-gap")
         scores = self.plan(a, b)
         self.assertIsNone(scores[1]["utility"])
-        self.assertEqual(scores[0]["scoring_basis"]["cost_scales"]["llm_tokens"], 700000)
+        self.assertEqual(scores[0]["scoring_basis"]["cost_scales"]["output_tokens"], 700000)
         self.assertEqual(scores[0]["scoring_basis"]["terms"], ["G", "C", "R"])
         self.assertEqual(len(scores[0]["scoring_basis"]["participant_prediction_ids"]), 1)
 
@@ -326,7 +326,7 @@ class TestCommonCRScoring(RCase):
         a.cost.scope = "attempt"  # replay a legacy explicit narrow declaration
         scores = score_strategy_outcome_predictions([a, b], PlanLimits())
         self.assertTrue(all(s.cost_normalized is None for s in scores))
-        self.assertTrue(all(s.scoring_basis["omitted_cost_dimensions"]["llm_tokens"]["reason"] ==
+        self.assertTrue(all(s.scoring_basis["omitted_cost_dimensions"]["output_tokens"]["reason"] ==
                             "different or unknown measurement scopes" for s in scores))
 
     def test_non_json_r_values_become_unknown_without_losing_g_or_c(self):

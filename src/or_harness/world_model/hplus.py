@@ -16,6 +16,8 @@ from or_harness.world_model.induction_gate import meta_read, meta_write
 HPLUS_VERSION = "wm-hplus-binary/1"
 JOB_PREFIX = "hplus_job:"
 MODES = ("auto", "hplus", "nohplus", "random", "frozen", "manual")
+REVIEW_OUTCOMES = ("knowledge_submitted", "new_rule", "revised", "evidence_added", "already_covered",
+                   "no_increment", "hypothesis_refuted", "insufficient_material")
 
 
 def signal_from_payload(raw):
@@ -392,7 +394,7 @@ def put_submission(harness,arguments,review):
 def submission_fingerprint(arguments,review):
     # CLI supplies default flags; API callers may omit them. Both identify
     # the same review. Other payload differences remain explicit conflicts.
-    canonical={k:v for k,v in arguments.items() if v is not None and not (k in ('force','dry_run') and v is False)}
+    canonical={k:v for k,v in arguments.items() if k!='dry_run' and v is not None and not (k=='force' and v is False)}
     return digest({'arguments':canonical,'review':review})
 
 
@@ -406,23 +408,44 @@ def submission_matches(harness,job,arguments,review):
 def submission_conflict(harness,job,arguments,review):
     original=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
     old=original.get('arguments') or {}
-    fields=['arguments.'+key for key in sorted(set(old)|set(arguments)) if old.get(key)!=arguments.get(key)]
+    fields=['arguments.'+key for key in sorted(set(old)|set(arguments)) if key!='dry_run' and old.get(key)!=arguments.get(key)]
     if original.get('review')!=review:fields.append('review')
     return ValueError('completed induction submission conflicts in '+', '.join(fields or ['payload'])+
         '; reuse the original payload or inspect receipt '+str(job.get('receipt_ref')))
 
 
-def complete(harness, job, result, review=None):
+def validate_submission(harness, job, review=None, relations=None):
+    """Read-only input validation shared by preview, submission and receipt."""
     if review is not None and not isinstance(review,dict):
         raise ValueError('review must be a JSON object')
     review = copy.deepcopy(review or {})
     if review.get('hypothesis_outcome','unknown') not in ('supported','refuted','unknown'):
-        raise ValueError('hypothesis_outcome must be supported, refuted or unknown')
-    comparison=review.get('comparison')
-    if comparison is not None and (not isinstance(comparison,dict) or
-            not isinstance(comparison.get('evidence_refs',[]),list) or
-            not all(isinstance(ref,str) for ref in comparison.get('evidence_refs',[]))):
-        raise ValueError('comparison must carry a list of sourced evidence references')
+        raise ValueError('review.hypothesis_outcome must be supported, refuted or unknown')
+    if review.get('outcome') is not None and review['outcome'] not in REVIEW_OUTCOMES:
+        raise ValueError('review.outcome: unknown induction review outcome; use '+', '.join(REVIEW_OUTCOMES))
+    for key in ('conclusion','deviation_reason'):
+        if review.get(key) is not None and not isinstance(review[key],str):
+            raise ValueError('review.'+key+' must be text')
+    from or_harness.world_model.hplus_support import validate_comparison
+    from or_harness.strategy.rule_versions import validate_publication
+    support={};cutoff=time.time()
+    def check(comparison,field):
+        if comparison is not None:
+            supported,proof=validate_comparison(harness,job,comparison,cutoff,field=field)
+            support[field]={'supported':supported,**proof}
+    check(review.get('comparison'),'review.comparison')
+    for index,relation in enumerate(relations or []):
+        check(relation.get('mechanism_comparison'),f'relations[{index}].mechanism_comparison')
+        try:validate_publication(relation.get('publication'))
+        except ValueError as exc:raise ValueError(f'relations[{index}].{exc}') from exc
+    return support
+
+
+def complete(harness, job, result, review=None):
+    submission=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
+    submitted=(submission.get('arguments') or {}).get('relations') or []
+    validate_submission(harness,job,review,submitted)
+    review = copy.deepcopy(review or {})
     action = harness.actions.get(job["action_id"])
     if not action or action.action_type != "induce" or not action.ended_at:
         raise ValueError("completion requires the actual finished induction action")
@@ -431,16 +454,15 @@ def complete(harness, job, result, review=None):
     source.update((job.get('submitted_execution_ids') or []))
     from or_harness.world_model.hplus_support import increment,freeze_comparison
     cutoff=time.time()
-    review['comparison']=freeze_comparison(harness,job,review.get('comparison'),cutoff)
+    review['comparison']=freeze_comparison(harness,job,review.get('comparison'),cutoff,field='review.comparison')
     updates=[]
-    submission=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
-    submitted=(submission.get('arguments') or {}).get('relations') or []
     for index,row in enumerate(result.get('relations') or []):
         if not row.get('saved'):continue
         update={k:row.get(k) for k in ('version','body_ref','operation','new_version')}
         update['entry_id']=row['saved']
         declared=(submitted[index].get('mechanism_comparison') if index<len(submitted) else None)
-        comparison=freeze_comparison(harness,job,declared,cutoff) if declared else review.get('comparison')
+        comparison=freeze_comparison(harness,job,declared,cutoff,
+            field=f'relations[{index}].mechanism_comparison') if declared is not None else review.get('comparison')
         update['increment']=increment(harness,job,update,comparison)
         update['substantive']=update['increment']['substantive']
         updates.append(update)
@@ -460,9 +482,6 @@ def complete(harness, job, result, review=None):
         "conclusion": str(conclusion), "hypothesis_outcome": review.get("hypothesis_outcome", "unknown"),
         "comparison": review.get("comparison"), "deviation_reason": review.get("deviation_reason"),
         "created_at": time.time(), "observation_rule_version":"wm-hplus-review/2"}
-    if fact["outcome"] not in ("knowledge_submitted", "new_rule", "revised", "evidence_added", "already_covered",
-                               "no_increment", "hypothesis_refuted", "insufficient_material"):
-        raise ValueError("unknown induction review outcome")
     # Minimal direct-support facts belong to the receipt even when they were
     # never shown on a material page or used as a rule's seed evidence.
     comparisons=[review.get('comparison')]+[

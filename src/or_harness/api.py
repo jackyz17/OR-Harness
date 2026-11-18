@@ -5215,8 +5215,8 @@ class ORHarness:
                         record.execution_id,
                         source=info["provenance"].get(
                             dim, "provider_usage"),
-                        basis=(info.get("basis")
-                               if dim == "llm_tokens" else None),
+                        basis=(info.get("basis") if dim == "llm_tokens" else
+                               info.get("output_tokens_basis") if dim == "output_tokens" else None),
                         **{dim: float(value)})
                 self.bank.annotate_features(
                     record.execution_id, {"host_usage": info})
@@ -5463,7 +5463,7 @@ class ORHarness:
             return self._maintain_entries(**kwargs)
         from or_harness.world_model.hplus import (
             reserve_action, complete, get_job, completed_result, put_submission,submission_conflict,
-            submission_fingerprint,submission_matches,
+            submission_fingerprint,submission_matches,validate_submission,
         )
         from or_harness.world_model.hplus import submission_job
         job=submission_job(self,induction_id,kwargs.get('relations'),submission_fingerprint(kwargs,review))
@@ -5472,20 +5472,33 @@ class ORHarness:
         if job['state'] == 'completed':
             if not submission_matches(self,job,kwargs,review):
                 raise submission_conflict(self,job,kwargs,review)
+            if kwargs.get('dry_run'):
+                return {'dry_run':True,'induction_id':job['induction_id'],'already_completed':True,
+                    'receipt_ref':job['receipt_ref'],'would_complete':False,'would_create':0,'would_update':[],
+                    'saved':0,'published':0,'relations':[],'validation':{'valid':True}}
             result = completed_result(self, job)
             result['already_completed'] = True
             self._sync_induction_result(result)
             return result
-        if kwargs.get('dry_run'):
-            self._active_induction_job=job
-            try:
-                return self._induce_impl(**kwargs)
-            finally:
-                self._active_induction_job=None
         if not kwargs.get('relations') and not (review or kwargs.get('notes')):
             raise ValueError('empty review requires a reason or structured review receipt')
         if not (job.get('material_sessions') or job.get('material_ref')):
             raise ValueError('read induction-material for this job before submitting its review')
+        support=validate_submission(self,job,review,relations)
+        if kwargs.get('dry_run'):
+            self._active_induction_job=job
+            try:
+                result=self._induce_impl(**kwargs)
+            finally:
+                self._active_induction_job=None
+            rows=result.get('relations') or []
+            valid=not relations or any(r.get('would_create') or r.get('would_update') for r in rows)
+            return {**result,'dry_run':True,'induction_id':job['induction_id'],
+                'would_complete':bool(valid),'would_create':sum(bool(r.get('would_create')) for r in rows),
+                'would_update':list(dict.fromkeys(r['would_update'] for r in rows if r.get('would_update'))),
+                'validation':{'valid':bool(valid),'comparison_support':support,
+                              'relation_errors':[{'field':f'relations[{i}]','reason':r['skipped']}
+                                                 for i,r in enumerate(rows) if r.get('skipped')]}}
         reserve_action(self, job)
         try:
             with self.store.transaction():

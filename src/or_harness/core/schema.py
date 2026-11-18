@@ -61,6 +61,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 COST_DIMENSIONS: Tuple[str, ...] = (
     "llm_tokens",
+    "output_tokens",
     "tool_calls",
     "solver_runtime_s",
     "retries",
@@ -100,12 +101,15 @@ DEFAULT_COST_WEIGHTS: Dict[str, float] = {
 
 @dataclass
 class CostVector:
-    """Five-dimensional execution cost.
+    """Raw resource dimensions with an explicit measurement mask.
 
     Stored raw, never folded into a scalar at rest. ``retries`` counts only
     *extra* attempts beyond the first (a first failure is not a retry).
     ``llm_tokens`` is unknown at execution time (the harness owns the LLM)
     and is backfilled later via ``orx record --override llm_tokens=...``.
+    It keeps the input-plus-output accounting total. ``output_tokens`` is
+    the execution model's generated tokens; strategy C predicts this over
+    the decision-to-task-end window, separately from raw token budgets.
 
     Unknown vs measured-zero is carried by ``measured`` (the set of
     dimensions actually measured). A placeholder zero for an unmeasured
@@ -126,6 +130,8 @@ class CostVector:
     remaining_latency_s: float = 0.0
     #: Measured-dimension mask. ``None`` = legacy/unmarked data.
     measured: Optional[Set[str]] = None
+    # Append after existing constructor fields for positional compatibility.
+    output_tokens: float = 0.0
 
     def measured_dims(self) -> Set[str]:
         """Dimensions confirmed measured.

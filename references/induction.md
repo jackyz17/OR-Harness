@@ -48,6 +48,65 @@ orx induction-status --task T --episode EP
 orx induction-material --induction-id J
 ```
 
+## Minimal submissions
+
+Compare cases, form a supported conclusion, then submit it with the same J.
+J comes from `close-episode` under `result.induction_schedule.pending_ids`.
+Replace EX below with an actual `execution_id` from the material you read;
+evidence references must resolve in this memory. Use the short rule only when
+the execution and your derivation support its stated conditions.
+
+```bash
+orx induce --induction-id J \
+  --relation '{
+    "when":"Y is finitely enumerable; at fixed Y, feasible integer X forms a finite interval and the objective is monotone in X.",
+    "do":"Skip empty intervals. Choose the lower or upper X endpoint according to objective direction and coefficient sign, then compare all Y. Enumerate X fully when the objective is not monotone.",
+    "expect":"Preserve the optimum under these conditions while reducing X enumeration.",
+    "evidence":["EX"],
+    "publication":{"state":"published","reason":"The recorded enumeration and the endpoint derivation support this monotone finite-interval scope."}
+  }' \
+  --review '{
+    "outcome":"new_rule",
+    "conclusion":"Endpoint choice by objective direction is reusable within the stated monotonicity boundary.",
+    "comparison":{
+      "sufficient":true,"substantive":true,"basis":"derivation",
+      "source":"The recorded task inputs, executed enumeration and endpoint derivation.",
+      "assessment":"For each feasible fixed Y, monotonicity puts the best X at the selected endpoint; comparing all Y preserves the optimum.",
+      "evidence_refs":["EX"]
+    }
+  }'
+```
+
+One rule can use one `review.comparison`; there is no need to repeat it as a
+`mechanism_comparison` inside the relation. A relation may supply its own
+`mechanism_comparison` when its learning assessment differs. Choose `basis`
+from the evidence actually used: `derivation` for an argument tied to real
+execution inputs, `recorded_checks` for sourced checker results, or
+`artifact_inspection` for inspected captured artifacts. Publication is the
+agent's scoped usage decision; the learning label depends on the substantive
+increment and its supported comparison.
+
+When material is insufficient, settle J with only a short review:
+
+```bash
+orx induce --induction-id J \
+  --review '{"outcome":"insufficient_material","conclusion":"The captured run does not establish the proposed boundary; a comparable checked case is missing."}'
+```
+
+This writes a receipt without a rule; its learning label remains unknown.
+It requires neither `comparison` nor `--note`.
+
+Optionally add `--dry-run` to either submission command when unsure about its
+input. It checks the review fields, evidence references, optional per-rule
+comparison, and publication choice without writing rules, receipts, events or
+index entries. Fix a reported field or use a real reference from the material,
+then remove `--dry-run` to submit with the same J. A passing preview leaves J
+pending. `would_create`, `would_update` and `would_complete` describe expected
+work; `saved` and `published` count actual writes and remain zero in a preview.
+Insufficient learning support is reported separately from invalid input and
+does not prevent a factual review from completing. After submission, read
+`result.induction_receipt` and use `induction-status` to confirm completion.
+
 ## Read material and choose comparisons
 
 Read the default pack, then follow the question raised by the evidence. `--purpose` sets the search focus for that read. You can change the focus, request known execution IDs, or page through attempts while keeping the same trigger and J.

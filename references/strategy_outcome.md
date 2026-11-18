@@ -62,6 +62,16 @@ reliable independent scale, then performs common component deduplication.
 `solver_runtime_s`, attempt `latency_s` and `remaining_latency_s` retain their own
 scopes. Explicit zero is a value; unknown is never imputed as zero or peak cost.
 
+The token term in U is `output_tokens`: tokens the execution model is expected
+to generate from this decision until task termination. The known task text and
+its length inform that forecast but are not generated-token cost. Later
+modelling, code, self-checks and expected repairs/retries are included. Raw
+`llm_tokens` remains input plus output for usage and budgets; old predictions
+keep that meaning and cannot supply the new token term. The existing token
+weight applies to `output_tokens` unless an explicit `output_tokens` weight is
+configured. Its scale must come from output-token history or an explicit
+`cost_scales.output_tokens`, never a total-token scale.
+
 Each retained dimension uses `clip(log1p(predicted_d)/log1p(peak_d),0,1)`.
 Positive `peak_d` comes from explicit `limits.cost_scales` / CLI `--cost-scales`,
 or the maximum trustworthy actual in pre-decision published conditional-cost
@@ -101,13 +111,28 @@ Predictor discrimination still requires comparable attributable real executions.
 
 **A declared budget caps SOLVING, and the stop is the HOST's.** `orx budget --task T [--episode E] --declare 'dim=value,...'` declares (and replaces) a task/episode budget. It is a cap over real consumption, not a promise: the framework REFUSES to START new solving work once a budget is spent, but it does not itself kill a running process.
 
-**Dimensions and scope.** Supported dimensions are `llm_tokens`, `tool_calls`, `solver_runtime_s`, `retries`, `latency_s`, `remaining_latency_s`. The first four accumulate over the EPISODE (recorded + staged executions, own-cost actions, unparented prediction calls, deduplicated by execution id). The two WALL-CLOCK dimensions are NEVER summed — attempts may overlap, and overlapping prediction ranges would double-count the same span — so they are reported per item.
+**Dimensions and scope.** Supported dimensions are `llm_tokens`, `output_tokens`, `tool_calls`, `solver_runtime_s`, `retries`, `latency_s`, `remaining_latency_s`. Raw attempt usage accumulates over the EPISODE (recorded + staged executions, own-cost actions, unparented prediction calls, deduplicated by execution id). `llm_tokens` retains the input-plus-output budget total. The two WALL-CLOCK dimensions are NEVER summed — attempts may overlap, and overlapping prediction ranges would double-count the same span — so they are reported per item. Full decision-window reports are observations, not extra attempt charges.
+
+**Generated-token observations.** C predicts `cost.output_tokens`; saved
+forecasts expose it under `cost.expected.output_tokens` and declare it in
+`expected_measured`. Omit an unknown value (or use JSON `null` with a reason in
+`unsupported_fields`); an explicit zero remains valid. For example, a trusted
+complete same-window host report with 10,000 `prompt_tokens` and 400
+`completion_tokens` gives C an actual `output_tokens=400`, while raw usage and
+the `llm_tokens` budget still count 10,400. Reasoning tokens already included
+in completion are counted once. The first decision includes later retries;
+a retry starts a new window at its own decision anchor. Complete timestamped
+call ledgers are sliced at those anchors and deduplicated by call ID; same-window
+counter deltas can also establish output. Missing completion counts, partial
+attempt totals or unclear boundaries leave output unknown. A raw total alone
+does not establish output. Older trustworthy same-window reports can reuse
+their recorded completion sub-fact without rewriting historical data.
 
 **The PRIMARY latency is `remaining_latency_s` (r12).** It measures the wall-clock from the DECISION's anchor to the END of the task, covering the later modelling, coding, tool calls, solving, checking, repair and retries. Every candidate of one decision shares ONE anchor (the decision point) and ONE end (the end of the task) — stated in the request's `cost_scope` block. `solver_runtime_s` is a COMPONENT of that span (the solver's own inner solve time): it is kept for diagnosis but is NOT added on top of `remaining_latency_s` (the part and the whole are never billed together — see `chargeable_dimensions`). The old attempt-level `latency_s` keeps its own meaning (one attempt's sandbox wall-clock) and is NEVER renamed into the remaining span. When no real start/end boundary is available the framework leaves `remaining_latency_s` UNKNOWN and says so — it never downgrades to the script-execution cost.
 
 **C evidence (`wm-c-window/1`).** `prediction_context.cost_evidence` contains the execution host/model actually recorded before the decision, known modelling phase, reusable artifacts, up to four applicable P50/P75 ranges and three executed cases with raw costs, work facts and source references. Select history before request-size trimming. Host/model, cost window, known phase, family, structure and solving restrictions constrain applicability; unknown conditions are stated. Actual receipt configurations remain separate groups even when candidates omitted limits. Prediction-token consumption is not a grouping key. The full population stays in the published audit summary under `conditional_cost`.
 
-First compare the candidate steps against the reference workflow: what model can be reused, what must be rebuilt, and what additional subproblem solves, merges, acceptance checks or evidenced repairs occur. Estimate effects in raw resource units; do not add steps already included in a historical total. Close estimates are valid when supported. Cite range/case references in `evidence_basis`; use `unsupported_fields` for unavailable dimensions. `cost` still contains only existing numeric dimensions, and `cost.expected`/`expected_measured` retain their declaration semantics. Host rounds explain costs but are not a new cost dimension. Neither global nor single-case C residuals generate directional instructions; old cached C reminders are filtered at both provider boundaries.
+First compare the candidate steps against the reference workflow: what model can be reused, what must be rebuilt, and what additional subproblem solves, merges, acceptance checks or evidenced repairs occur. Estimate effects in raw resource units, using generated-token evidence for `output_tokens`; do not add steps already included in a historical total. Close estimates are valid when supported. Cite range/case references in `evidence_basis`; use `unsupported_fields` for unavailable dimensions. `cost` contains resource fields only, and `cost.expected`/`expected_measured` retain their declaration semantics. Host rounds explain costs but are not a new cost dimension. Neither global nor single-case C residuals generate directional instructions; old cached C reminders are filtered at both provider boundaries.
 
 **Four honest states** (`orx budget` prints `result.status`):
 

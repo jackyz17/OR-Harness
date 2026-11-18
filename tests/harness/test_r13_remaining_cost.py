@@ -475,5 +475,163 @@ class TestConditionalCostRequest(CCase):
         self.assertIn("decision phase unavailable", evidence["missing"])
 
 
+class TestOutputTokenCost(CCase):
+    """Generated-token C through real decisions, execution and close-out."""
+
+    def finish_output(self, prediction, **usage):
+        import time
+        end = time.time()
+        report = {"schema": "or-host-usage/1", "host": "test-host",
+            "model": "executor-model/v1", "scope": "remaining_to_task_end",
+            "measured": ["llm_tokens"], "window": {
+                "started_at": prediction_anchor(self.h, prediction), "ended_at": end,
+                "anchor_action_id": prediction.trace.model_info["decision_action_id"],
+                "complete": True, "end_event": "finish_task"}, **usage}
+        finish = self.h.report_action("finish_task", self.task, prediction.candidate.episode_id,
+            started_at=end, ended_at=end, host_usage=report)
+        return self.h.close_episode(self.task["task_id"], prediction.candidate.episode_id,
+            finish_action_id=finish["action_id"], min_calibration_samples=1)
+
+    def test_completion_cost_is_separate_from_raw_usage_and_next_decision_scale(self):
+        prediction = self.predict_c(cost={"output_tokens": 500})
+        self.assertEqual(prediction.cost.measured, ["output_tokens"])
+        self.assertEqual(self.provider.requests[-1]["cost_scope"]["token_dimension"], "output_tokens")
+        record = self.run_g(prediction, record=False)
+        self.check_g(record)
+        self.h.record(record, host_usage={"schema": "or-host-usage/1", "host": "test-host",
+            "model": "executor-model/v1", "scope": "attempt", "measured": ["llm_tokens"],
+            "tokens": {"prompt_tokens": 10000, "completion_tokens": 400, "reasoning_tokens": 100}})
+        raw = self.h.bank.get(record.execution_id).cost
+        self.assertEqual(raw.llm_tokens, 10400)
+        self.assertEqual(raw.output_tokens, 400)
+        self.assertEqual(self.h.budget_view(self.task["task_id"], "ep1")["consumption"]["total_cost"]["llm_tokens"], 10400)
+        result = self.finish_output(prediction, tokens={"prompt_tokens": 10000, "completion_tokens": 400})
+        cost = result["evaluations"][0]["cost"]
+        self.assertEqual(cost["per_dim"]["output_tokens"]["actual"], 400)
+        self.assertEqual(cost["observed_fact"]["values"]["llm_tokens"], 10400)
+        self.assertEqual(cost["per_dim"]["output_tokens"]["signed_error"], -100)
+
+        later = self.predict_c("next", cost={"output_tokens": 300})
+        decision = self.h.actions.get(later.trace.model_info["decision_action_id"])
+        basis = decision.outcome["selected_score"]["scoring_basis"]
+        self.assertEqual(basis["cost_dimensions"], ["output_tokens"])
+        self.assertEqual(basis["cost_scales"]["output_tokens"], 400)
+        self.assertEqual(basis["cost_scale_sources"]["output_tokens"]["source"], "pre_decision_measured_history")
+        evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
+        self.assertEqual(evidence["reference_ranges"][0]["dimensions"]["output_tokens"]["p50"], 400)
+
+    def test_initial_and_retry_anchors_slice_one_complete_host_ledger(self):
+        import time
+        first = self.predict_c(cost={"output_tokens": 700})
+        self.run_g(first, crash=True)
+        first_end = time.time()
+        retry = self.predict_c(cost={"output_tokens": 300})
+        record = self.run_g(retry)
+        self.check_g(record)
+        second_end = time.time()
+        before = {"id": "first-generation", "kind": "model",
+            "started_at": prediction_anchor(self.h, first), "ended_at": first_end,
+            "prompt_tokens": 10000, "completion_tokens": 400}
+        after = {"id": "retry-generation", "kind": "model",
+            "started_at": prediction_anchor(self.h, retry), "ended_at": second_end,
+            "prompt_tokens": 20000, "completion_tokens": 300}
+        result = self.finish_output(first, call_details=[before, after, dict(before)],
+            call_details_complete=["llm_tokens"])
+        costs = {e["prediction_id"]: e["cost"] for e in result["evaluations"]}
+        self.assertEqual(costs[first.prediction_id]["per_dim"]["output_tokens"]["actual"], 700)
+        self.assertEqual(costs[retry.prediction_id]["per_dim"]["output_tokens"]["actual"], 300)
+        self.assertEqual(costs[first.prediction_id]["observed_fact"]["work_facts"]["host_rounds"], 2)
+        self.assertEqual(costs[retry.prediction_id]["observed_fact"]["work_facts"]["host_rounds"], 1)
+
+    def test_total_only_is_not_output_and_legacy_prediction_keeps_its_units(self):
+        prediction = self.predict_c(cost={"llm_tokens": 10400, "output_tokens": None})
+        self.assertEqual(prediction.status, "valid")
+        self.assertEqual(prediction.cost.expected.llm_tokens, 10400)
+        self.assertEqual(prediction.cost.measured, ["llm_tokens"])
+        self.assertIn("cost.output_tokens", prediction.trace.unsupported_fields)
+        record = self.run_g(prediction)
+        self.check_g(record)
+        result = self.finish_output(prediction, tokens={"total_tokens": 10400})
+        cost = result["evaluations"][0]["cost"]
+        self.assertEqual(cost["per_dim"]["llm_tokens"]["actual"], 10400)
+        self.assertNotIn("output_tokens", cost["observed_fact"]["values"])
+        coverage = self.h.calibration_summary()["conditional_cost"]["coverage"]["output_tokens"]
+        self.assertEqual(coverage["n_actual"], 0)
+        self.assertEqual(coverage["n_predicted"], 0)
+
+    def test_missing_prediction_still_provides_output_baseline(self):
+        prediction = self.predict_c(cost=None)
+        record = self.run_g(prediction)
+        self.check_g(record)
+        self.finish_output(prediction, tokens={"completion_tokens": 400})
+        coverage = self.h.calibration_summary()["conditional_cost"]["coverage"]["output_tokens"]
+        self.assertEqual((coverage["n_actual"], coverage["n_predicted"], coverage["n_error"]), (1, 0, 0))
+
+    def test_counter_increments_preserve_zero_and_reject_completion_conflicts(self):
+        cases = [(400, None, 400), (0, None, 0), (400, 500, None)]
+        for index, (increment, aggregate, expected) in enumerate(cases):
+            with self.subTest(increment=increment, aggregate=aggregate):
+                prediction = self.predict_c("counter" + str(index), cost={"output_tokens": 400})
+                record = self.run_g(prediction)
+                self.check_g(record)
+                report = {"counters": {"start": {"prompt_tokens": 20000, "completion_tokens": 800},
+                    "end": {"prompt_tokens": 30000, "completion_tokens": 800 + increment}}}
+                if aggregate is not None:
+                    report["tokens"] = {"prompt_tokens": 10000, "completion_tokens": aggregate}
+                result = self.finish_output(prediction, **report)
+                cost = result["evaluations"][0]["cost"]
+                self.assertEqual(cost["observed_fact"]["values"].get("output_tokens"), expected)
+                if expected is None:
+                    self.assertNotIn("output_tokens", cost.get("per_dim") or {})
+                    self.assertTrue(any("output_tokens" in r for r in cost["observed_fact"]["boundary_exclusions"]))
+
+    def test_incomplete_completion_ledger_and_attempt_only_cost_stay_unknown(self):
+        import time
+        prediction = self.predict_c(cost={"output_tokens": 400})
+        record = self.run_g(prediction)
+        self.check_g(record)
+        self.h.bank.update_cost(record.execution_id, source="provider_usage", output_tokens=400)
+        result = self.finish_output(prediction, call_details=[{
+            "id": "missing-output", "kind": "model", "started_at": prediction_anchor(self.h, prediction),
+            "ended_at": time.time(), "prompt_tokens": 10000}], call_details_complete=["output_tokens"])
+        self.assertNotIn("output_tokens", result["evaluations"][0]["cost"].get("per_dim") or {})
+        self.assertNotIn("output_tokens", result["evaluations"][0]["cost"]["observed_fact"]["values"])
+
+    def test_legacy_normalized_window_can_reuse_recorded_completion_subfact(self):
+        import time
+        prediction = self.predict_c(cost={"output_tokens": 400})
+        record = self.run_g(prediction)
+        self.check_g(record)
+        end = time.time()
+        self.h.report_action("finish_task", self.task, "ep1", started_at=end, ended_at=end,
+            outcome={"host_usage": {"schema": "or-host-usage/1", "host": "test-host",
+                "model": "executor-model/v1", "scope": "remaining_to_task_end",
+                "measured": ["llm_tokens"], "provenance": {"llm_tokens": "provider_usage"},
+                "basis": "provider_total", "prompt_tokens": 10000, "completion_tokens": 400,
+                "dimensions": {"llm_tokens": 10400}, "window": {
+                    "started_at": prediction_anchor(self.h, prediction), "ended_at": end, "complete": True}}})
+        result = self.close_g()
+        self.assertEqual(result["evaluations"][0]["cost"]["per_dim"]["output_tokens"]["actual"], 400)
+
+    def test_plan_prices_output_with_own_scale_and_preserves_missing_and_zero(self):
+        for index, (cost, scales, expected) in enumerate([
+                ({"output_tokens": 400}, {"output_tokens": 1000}, ["output_tokens"]),
+                ({"output_tokens": 0}, {"output_tokens": 1000}, ["output_tokens"]),
+                ({"output_tokens": 400}, {"llm_tokens": 10400}, []),
+                ({"llm_tokens": 10400}, {"llm_tokens": 20000}, [])]):
+            with self.subTest(cost=cost, scales=scales):
+                self.provider.payload["cost"] = cost
+                result = self.h.plan_next(self.task, "scoring" + str(index), candidates=[{
+                    "strategy_id": "S04", "solver": "highs", "method": REUSE}], limits={
+                        "cost_weights": {"llm_tokens": 1}, "cost_scales": scales})
+                score = result["selected_score"]
+                self.assertEqual(score["scoring_basis"]["cost_dimensions"], expected)
+                if cost.get("output_tokens") == 0:
+                    self.assertEqual(score["cost_normalized"], 0)
+                if "llm_tokens" in cost:
+                    self.assertEqual(score["cost_reported"]["values"]["llm_tokens"], 10400)
+                    self.assertIn("token C uses output_tokens", score["scoring_basis"]["omitted_cost_dimensions"]["llm_tokens"]["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()

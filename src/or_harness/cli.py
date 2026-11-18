@@ -1068,21 +1068,45 @@ def cmd_induce(args) -> int:
                 if not isinstance(parsed, dict):
                     return _fail("--attribute-effect must be a JSON object", 2)
                 attributions.append(parsed)
-        result = h.induce(dry_run=args.dry_run, force=args.force,
-                          notes=notes, verify=verify,
-                          strategy_id=getattr(args, "strategy", None),
-                          relations=relations,
-                          effect_attributions=attributions,
-                          induction_id=getattr(args,'induction_id',None),
-                          review=(_load_json_arg(args.review) if getattr(args,'review',None) else None))
+        try:
+            result = h.induce(dry_run=args.dry_run, force=args.force,
+                              notes=notes, verify=verify,
+                              strategy_id=getattr(args, "strategy", None),
+                              relations=relations,
+                              effect_attributions=attributions,
+                              induction_id=getattr(args,'induction_id',None),
+                              review=(_load_json_arg(args.review) if getattr(args,'review',None) else None))
+        except ValueError as exc:
+            if not args.dry_run:
+                raise
+            error=f"ValueError: {exc}"
+            _emit({'error':error},'Dry run rejected: '+error+
+                  '. Correct the named field or use evidence IDs from induction-material; retry with the same induction ID.')
+            return 2
         receipt=result.get('induction_receipt')
         summary=(f"Induction {receipt['induction_id']} completed: {receipt['outcome']}." if receipt else _summarize_induce(result,args))
-        return _emit(result,summary)
+        _emit(result,summary)
+        rows=result.get('relations') or []
+        refused=(result.get('validation') or {}).get('valid') is False or bool(rows) and all(row.get('skipped') for row in rows)
+        return 2 if args.dry_run and refused else 0
     finally:
         h.close()
 
 
 def _summarize_induce(result: Dict[str, Any], args) -> str:
+    if getattr(args,'dry_run',False):
+        if result.get('already_completed'):
+            return f"Dry run: induction {result['induction_id']} is already completed; its receipt remains {result['receipt_ref']}."
+        rows=result.get('relations') or []
+        created=sum(bool(row.get('would_create')) for row in rows)
+        updated=sum(bool(row.get('would_update')) for row in rows)
+        errors=[row['skipped'] for row in rows if row.get('skipped')]
+        if (result.get('validation') or {}).get('valid') is False or errors and not (created or updated):
+            return 'Dry run rejected: '+'; '.join(errors)+'. Correct the submission and retry with the same induction ID.'
+        return (f"Dry run passed: would create {created} rule(s), update {updated} existing rule(s)"+
+                (' and complete the review' if result.get('would_complete') else '')+
+                '. Submit the same command without --dry-run. No rules or receipts were saved.'+
+                (' Omitted relation(s): '+'; '.join(errors) if errors else ''))
     if getattr(args, "relation", None):
         return _summarize_relations(result)
     # No relations submitted: the framework did NOT run a statistical
@@ -2473,7 +2497,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "(optional: a relation may carry its own free-form "
                         "`subject` instead)")
     p.add_argument("--dry-run", action="store_true",
-                   help="report what would be written without writing it")
+                   help="validate the same submission and evidence references; preview creation/update without saving rules or receipts")
     p.add_argument("--force", action="store_true",
                    help="lift the cold-archive veto: the card blocking this "
                         "pattern is REMOVED, then induction proceeds "

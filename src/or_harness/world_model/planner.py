@@ -614,7 +614,7 @@ def score_strategy_outcome_predictions(
             return None
         if dim == "latency_s":
             return "attempt_sandbox"
-        if dim == "remaining_latency_s" and scope != "remaining_to_task_end":
+        if dim in ("remaining_latency_s", "output_tokens") and scope != "remaining_to_task_end":
             return None
         return scope
 
@@ -631,10 +631,18 @@ def score_strategy_outcome_predictions(
         elif None in keys or len(keys) != 1:
             common.discard(dim)
             omitted_dims[dim] = {"reason": "different or unknown measurement scopes"}
+    # Keep old declarations inspectable/calibratable in their own units.
+    # Strategy U prices generation, never the raw input-plus-output total.
+    if "llm_tokens" in all_dims:
+        common.discard("llm_tokens")
+        omitted_dims["llm_tokens"] = {"reason": "raw input-plus-output total; token C uses output_tokens"}
     scales=cost_scales if cost_scales is not None else limits.cost_scales or {}
     if not isinstance(scales,dict):scales={}
     norms={};scale_sources={}
-    weights = limits.cost_weights or {}
+    weights = dict(limits.cost_weights or {})
+    # Reuse the existing token weight without changing raw accounting or
+    # applying an old total-token scale to the new output-only dimension.
+    weights.setdefault("output_tokens", weights.get("llm_tokens", 0.0))
     for dim in sorted(common):
         raw=scales.get(dim)
         info=copy.deepcopy(raw) if isinstance(raw,dict) else {'peak':raw,'source':'explicit_plan_limits'}
