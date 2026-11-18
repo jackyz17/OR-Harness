@@ -6,6 +6,35 @@ Compare recorded executions to extract a method, test its scope, and submit the 
 
 `plan-next` freezes `capability_gain.decision` as the JSON number `0` or `1` (`wm-hplus-binary/1`). G, C and R determine U. For H+ = 1, use `claim` to state what could improve or extend the prediction-time library, and `verification_conditions` to name a concrete fact to check. For 0, give the basis.
 
+### Predict H+ at cold start
+
+Compare the proposed increment with published strategy rules that apply to the candidate in the frozen prediction input. Similar executions, matching structural cells and structural recommendations help find material and checks; they do not establish rule coverage by themselves. When a recommendation contains a published rule, inspect that rule's actual method and premises. For an already-covered 0, cite its visible ID, version and applicable conditions in `basis`.
+
+An empty library or missing historical reviews does not prevent a hypothesis grounded in the task, candidate steps and evidence obtainable during this run. Even a known method can add a reusable step or boundary to this library. For example, take a small finite task whose full enumeration fits this run's budget. With no published applicable rule, the candidate enumerates Y and selects the lower endpoint of each finite integer X interval because the minimization objective increases with X. Its `capability_gain` can be:
+
+```json
+{
+  "decision": 1,
+  "claim": "For fixed Y and a minimization objective increasing in X, selecting the lower feasible integer endpoint can replace full X enumeration.",
+  "basis": ["The original task has finite integer bounds; the candidate uses lower-endpoint enumeration and the strategy-rule view is empty."],
+  "verification_conditions": [{
+    "condition": "Compare endpoint enumeration with full enumeration on this task's finite domain using the same constraints and objective.",
+    "check_basis": "The original task inputs, candidate implementation and a captured full-enumeration check from this run."
+  }]
+}
+```
+
+For a covered control, suppose the frozen input actually shows published rule `12@3`, including its finite-interval premises, endpoint choice by objective direction and fallback for nonmonotone objectives. If the candidate repeats that method under those conditions, return 0 and omit `claim`:
+
+```json
+{
+  "decision": 0,
+  "basis": ["Published rule 12@3 already covers finite integer X intervals at fixed Y, lower-endpoint selection for this increasing minimization objective and full-enumeration fallback when monotonicity fails; this candidate adds no step or boundary."]
+}
+```
+
+Use only rule IDs and versions actually present in the input; the control ID above is illustrative. If no concrete reusable increment with a check feasible during this run can be identified, return 0 with that specific reason and omit `claim`. Missing review history alone is not that reason. A 1 schedules a factual review; the review decides whether anything was learned and whether a rule can be published.
+
 When a condition is checked, add an item to the `hplus_verification` list in the `check-task --check` JSON. Supply the original `prediction_id`, the zero-based `condition_index`, `state:"checked"`, a `source`, and locatable `evidence_refs` such as `artifacts.submitted_script` and `task_check.checks`. Use `finding` to record what the check showed. An omitted state or missing support leaves the condition unknown.
 
 During H+ building, close-out schedules one required review per bound executed positive prediction, including failed attempts and incomplete verification. Missing or invalid decisions schedule as 0 with their own diagnostics. Executed H+ = 0 attempts remain available as comparisons.
