@@ -201,7 +201,8 @@ def method_summary(record) -> Dict[str, Any]:
         basis = "planned_only"
     else:
         basis = "none"
-    return {"planned": p_side, "actual": a_side, "basis": basis}
+    from or_harness.strategy.evidence_views import dedupe_methods
+    return dedupe_methods(p_side,a_side)
 
 
 def _failure_summary(record) -> List[Dict[str, Any]]:
@@ -391,6 +392,20 @@ def _knowledge_entry(harness, item: Dict[str, Any], score: float,
         "structural_match": structural,
         "reusable": reusable,
     }
+    if entry.rule:
+        from or_harness.strategy.evidence_views import short_rule
+        out.pop('claim_text',None)
+        out['knowledge']={'rule':short_rule(entry)}
+        if not entry.support_n:
+            for key in ('expected_quality_hat','expected_cost_hat','cost_measured','failure_prob'):
+                out.pop(key,None)
+            if entry.quality_estimated:out['expected_quality_hat']=entry.expected_quality_hat
+            dims=entry.expected_cost_hat.measured_dims()
+            if dims:
+                out['expected_cost_hat']={d:getattr(entry.expected_cost_hat,d) for d in sorted(dims)}
+                out['cost_measured']=(sorted(entry.expected_cost_hat.measured)
+                                      if entry.expected_cost_hat.measured is not None else None)
+            if entry.failure_prob!=0.5:out['failure_prob']=entry.failure_prob
     if reason:
         out["reason"] = reason
     return out

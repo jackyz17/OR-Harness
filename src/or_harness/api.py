@@ -1747,7 +1747,7 @@ class ORHarness:
         for row in rows:
             try:
                 evaluation = StrategyPredictionEvaluation.from_dict(
-                    self.store.loads(row["value"]))
+                    self.store.loads(row["value"]),self.store)
             except Exception:
                 continue
             if task_id is not None and evaluation.task_id != task_id:
@@ -4534,6 +4534,33 @@ class ORHarness:
         except Exception:  # noqa: BLE001 - never mask the caller's error
             return
 
+    def _observe_retry_increment(self, record, action, *, task_id, episode_id):
+        """Measure this attempt's 0/1 retry increment across methods/solvers."""
+        from or_harness.world_model.contracts import RETRIES_INCREMENT_VERSION
+        from or_harness.world_model.cost_signal import execution_attempts
+        from or_harness.world_model.episode_closeout import _episode_executions
+        record.cost.measured=record.cost.measured_dims()-{'retries'}
+        record.execution_features.get('cost_provenance',{}).pop('retries',None)
+        if record.execution_features.get('executed') is False:
+            return
+        actions=self.actions.query(task_id=str(task_id))
+        records=_episode_executions(self,str(task_id),episode_id)
+        earlier=[a for a in actions if a.action_id!=action.action_id and
+                 (a.started_at is None or a.started_at<=action.started_at)]
+        prior,gaps=execution_attempts(earlier,records,task_id=str(task_id),episode_id=episode_id)
+        if gaps:
+            record.execution_features['retries_proof']='retry increment unknown: '+gaps[0]['reason']
+            return
+        record.cost.retries=1.0 if prior else 0.0
+        record.cost.mark_measured('retries')
+        record.execution_features['retries_proof']=(
+            'an earlier execute_strategy attempt of this (task, episode) exists: retries=1 is observed'
+            if prior else 'no earlier execute_strategy attempt of this (task, episode) exists: retries=0 is observed')
+        record.execution_features.setdefault('cost_provenance',{})['retries']={
+            'source':'agent_observed','basis':'per_attempt_retry_increment',
+            'observation_rule_version':RETRIES_INCREMENT_VERSION,'action_id':action.action_id,
+            'prior_execution_ids':[a.linked_execution_id for a in prior]}
+
     def _stage_interrupted_attempt(self, action, exc: BaseException,
                                    *, profile, strategy_id: str,
                                    solver: Optional[str],
@@ -4605,22 +4632,7 @@ class ORHarness:
             if task_text_ver is not None:
                 record.task_text_digest = task_text_ver
             record.action_id = action.action_id
-            # A first attempt of this (task, episode, strategy) is a PROVEN
-            # zero retries; a later one stays unknown, exactly as the normal
-            # path decides.
-            prior = [
-                act for act in self.actions.query(
-                    task_id=str(task_id), episode_id=episode_id,
-                    action_type="execute_strategy")
-                if act.action_id != action.action_id
-                and act.linked_execution_id is not None
-                and (act.params or {}).get("strategy_id") == strategy_id]
-            if not prior:
-                record.cost.retries = 0.0
-                record.cost.mark_measured("retries")
-                record.execution_features["retries_proof"] = (
-                    "no earlier execute_strategy attempt of this "
-                    "(task, episode, strategy) exists: retries=0 is observed")
+            self._observe_retry_increment(record,action,task_id=task_id,episode_id=episode_id)
             self.bank.stage_pending(record)
             self.actions.end_action(
                 action.action_id, status="failed",
@@ -4872,26 +4884,7 @@ class ORHarness:
                 record.cir_snapshot = cir.to_dict()
         if record.task_text_digest is None:
             record.task_text_digest = task_text_ver
-        # Provable retries=0. The executor cannot know whether an attempt is
-        # itself a retry, but THIS call can: if no earlier execute_strategy
-        # action of the same (task, episode, strategy) ever produced an
-        # execution, there was nothing to retry — retries=0 is a fact, not a
-        # placeholder. With an earlier attempt on record, the count stays
-        # unknown (the harness declares it via `record --override retries=`):
-        # the framework must not guess a retry relationship it cannot see.
-        prior_attempts = [
-            act for act in self.actions.query(
-                task_id=str(task["task_id"]), episode_id=episode_id,
-                action_type="execute_strategy")
-            if act.action_id != action.action_id
-            and act.linked_execution_id is not None
-            and (act.params or {}).get("strategy_id") == strategy_id]
-        if not prior_attempts:
-            record.cost.retries = 0.0
-            record.cost.mark_measured("retries")
-            record.execution_features["retries_proof"] = (
-                "no earlier execute_strategy attempt of this "
-                "(task, episode, strategy) exists: retries=0 is observed")
+        self._observe_retry_increment(record,action,task_id=str(task['task_id']),episode_id=episode_id)
         # REUSE TRACE (lightweight, opt-in). When the agent states that this
         # attempt was ADAPTED FROM specific past executions (the recall hits
         # it actually read), the citation is recorded on the fact. It is a
@@ -5097,8 +5090,10 @@ class ORHarness:
         (from :meth:`predict_cost`); it is frozen onto the record as the
         snapshot that feedback is computed against — feedback never re-reads
         a post-hoc current estimate. ``override`` backfills harness-owned
-        dimensions (llm_tokens, retries the harness declares, extra tool
-        calls) with explicit accounting: replace (default, idempotent —
+        host-owned dimensions (llm_tokens and extra tool calls) or sourced
+        legacy measurements with explicit accounting. Current executions
+        automatically measure their retry increment. Backfill uses replace
+        (default, idempotent —
         re-applying the same measurement never double-counts) or increment.
 
         ``override_mode`` / ``prediction`` are keyword-only so the historical
@@ -6783,8 +6778,8 @@ class ORHarness:
         - Cumulative dimensions (llm_tokens, tool_calls, solver_runtime_s)
           SUM over measured attempts.
         - retries sums too, because a record's retries expresses the NEW
-          retries this attempt adds (a harness declaration, not a running
-          total) — three attempts declared 0/1/1 total two retries.
+          retries this attempt adds (observed from the task/episode's real
+          execution chain, not a running total) — 0/1/1 totals two retries.
         - Per-attempt latencies are reported as facts; end-to-end latency is
           NEVER inferred by taking max or summing them. It is only reported
           when the harness provides explicit task timing
@@ -6869,7 +6864,7 @@ class ORHarness:
                          "commands, file reads/writes, sandbox runs, solver "
                          "calls>")
         if "retries" in missing:
-            fixes.append("retries=<extra attempts beyond the first>")
+            fixes.append("retries=<observed 0/1 retry increment for this attempt>")
         note = ("unmeasured dimensions are recorded as UNKNOWN, never as zero. "
                 "They will not support a strategic-entry cost claim or a cost "
                 "prediction until every supporting record measures them.")
@@ -6990,13 +6985,13 @@ class ORHarness:
         if record.execution_features.get('task_check'):
             from or_harness.world_model.conditions import put_value
             with self.store.transaction() as conn:
-                report['previous_check_ref']=put_value(conn,self.store,'task_check',record.execution_features['task_check'])
-        # Optional sourced method/acceptance assessment stays on the existing
-        # check record. It never changes the checker's pass/fail verdict.
-        # Merely matching method prose is not evidence of faithful execution.
-        # The annotation travels with the verdict so a LATE correction is
-        # scoped: an evaluation of episode A is not invalidated by a failure
-        # in episode B of the same task.
+                previous = copy.deepcopy(record.execution_features['task_check'])
+                if 'g_attribution' in previous:
+                    from or_harness.world_model.g_signal import save_g_assessment
+                    save_g_assessment(self.store, record, previous, previous.pop('g_attribution'))
+                report['previous_check_ref']=put_value(conn,self.store,'task_check',previous)
+        # The report is a generic acceptance fact. Optional G-only evidence
+        # belongs to the world-model log and is bound to this check revision.
         report["task_id"] = task_id
         report["episode_id"] = resolved_episode
         report["staged"] = staged
@@ -7013,21 +7008,29 @@ class ORHarness:
             params={"execution_id": execution_id,
                     "basis": list(report["scope"]["basis"]),
                     "intent": report.get("intent")})
-        self.actions.end_action(
-            action.action_id, status="completed",
-            outcome={"state": report["state"],
-                     "execution_id": execution_id,
-                     "checks_run": [c.get("check") for c in report["checks"]],
-                     "n_diffs": len(report["diffs"]),
-                     "unchecked": list(report["scope"]["unchecked"])},
-            linked_execution_id=execution_id, rollup="own")
         report["action_id"] = action.action_id
-        # (2) The fact annotation.
-        if not retained:
-            self.bank.set_task_check(execution_id,report)
-        record.execution_features['task_check']=copy.deepcopy(report)
-        from or_harness.strategy.evidence_access import refresh_retained
-        refresh_retained(self,record)
+        g_assessment_ref = None
+        g_issues = []
+        with self.store.transaction():
+            if isinstance(check, dict) and 'g_attribution' in check:
+                from or_harness.world_model.g_signal import checked_attribution, save_g_assessment
+                attribution = checked_attribution(record, check['g_attribution'])
+                g_issues = list(attribution.get('issues') or [])
+                g_assessment_ref = save_g_assessment(self.store, record, report, attribution)
+            self.actions.end_action(
+                action.action_id, status="completed",
+                outcome={"state": report["state"],
+                         "execution_id": execution_id,
+                         "checks_run": [c.get("check") for c in report["checks"]],
+                         "n_diffs": len(report["diffs"]),
+                         "unchecked": list(report["scope"]["unchecked"])},
+                linked_execution_id=execution_id, rollup="own")
+            # (2) The fact annotation contains no G evaluation payload.
+            if not retained:
+                self.bank.set_task_check(execution_id,report)
+            record.execution_features['task_check']=copy.deepcopy(report)
+            from or_harness.strategy.evidence_access import refresh_retained
+            refresh_retained(self,record)
         dependencies={'affected_versions':[],'authority':'agent'}
         rule_validation = None
         if self.episode_closeout_record(task_id, resolved_episode) is not None:
@@ -7053,6 +7056,10 @@ class ORHarness:
             "staged": staged,
         }
         result['dependent_rule_validation']=dependencies
+        if g_assessment_ref:
+            result['g_assessment_ref'] = g_assessment_ref
+        if g_issues:
+            result['g_assessment_issues'] = g_issues
         if rule_validation is not None:
             result["rule_validation"] = rule_validation
         if republished is not None:

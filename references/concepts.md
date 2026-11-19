@@ -67,7 +67,12 @@ The solver status describes the model it solved. The original-task check examine
 
 Record the raw cost dimensions.
 
-**`llm_tokens, tool_calls, solver_runtime_s, retries, latency_s, remaining_latency_s`**
+**`llm_tokens, output_tokens, tool_calls, solver_runtime_s, retries, latency_s, remaining_latency_s`**
+
+An execution's `retries` is its own 0/1 increment in the task/episode chain;
+three attempts record 0/1/1 and total 2. A remaining-cost forecast predicts
+additional attempts after its bound baseline, whose actuals for those three
+decisions are 2/1/0. Strategy and solver changes do not reset the chain.
 
 Compare costs over matching scopes. Include failed attempts, checks, repairs, and prediction calls in the task measurement where they fall within its declared scope. Record missing dimensions as unknown and retain the source of measured values and proxies. Assess quality-preserving cost reductions with both original-task checks and comparable measurements.
 

@@ -148,9 +148,7 @@ def compact_execution(harness, record, *, field_limit=2400):
         "problem": {"profile": {"family": profile.family, "problem_class": profile.problem_class},
                     "cir": atomic(record.cir_snapshot, ref + " #cir_snapshot", field_limit)},
         "task_text": atomic(task_text, ref + " #task_text", field_limit) if task_text else {"unknown": "task text not retained"},
-        "method": {"basis": "performed" if actual else "planned_only" if planned else "none",
-                   "actual": atomic(actual, ref + " #method_actual", field_limit),
-                   "planned": atomic(planned, ref + " #method_planned", field_limit)},
+        "method": method_view(record),
         "method_source": (actual or {}).get("source") if actual else "unknown",
         "outcome": {k: (record.quality or {}).get(k) for k in ("status", "feasible", "objective", "gap")},
         "status": (record.quality or {}).get("status"),
@@ -164,6 +162,57 @@ def compact_execution(harness, record, *, field_limit=2400):
                       "error": atomic(x.error, ref + " #failures", field_limit)} for x in (record.failures or [])[:2]],
         "adoption": adoption, "inspect_hint": ref,
     }
+
+
+def dedupe_methods(planned,actual):
+    """One full performed method; exact repeated plan steps use a local link.
+
+    This is content sharing only, never evidence of fidelity or correctness.
+    Distinct steps, settings, sources, explanations and fallback stay visible.
+    """
+    planned,actual=copy.deepcopy(planned),copy.deepcopy(actual)
+    if planned and actual and planned.get('steps')==actual.get('steps') and planned.get('steps'):
+        planned.pop('steps')
+        planned['steps_ref']='method.actual.steps'
+    return {'planned':planned,'actual':actual,
+            'basis':'performed' if actual else 'planned_only' if planned else 'none'}
+
+
+def method_view(record):
+    from or_harness.core.evidence_encoding import _method_extras
+    raw=_method_extras({'method_actual':record.method_actual,'method_planned':record.method_planned,
+        'execution_features':{'solution_variables':record.execution_features.get('solution_variables') or {}}})
+    return dedupe_methods(raw['method_planned'],raw['method_actual'])
+
+
+def compact_feedback_pair(value):
+    """Project current or cached pairs without changing labels or coverage."""
+    row=copy.deepcopy(value)
+    for key in ('benefit','g_observed_fact'):
+        rule=(row.get(key) or {}).get('acceptance_rule')
+        if isinstance(rule,dict) and rule.get('fingerprint') and row.get('evaluation_id'):
+            row[key]['acceptance_rule']={k:rule[k] for k in ('checker','fingerprint') if k in rule}
+            row[key]['acceptance_rule']['report_ref']=(
+                f"orx inspect --bank evaluations --evaluation {row['evaluation_id']} #benefit.acceptance_rule")
+    observation=row.get('implementation_observation') or {}
+    audit=observation.get('semantic_attribution')
+    if isinstance(audit,dict):
+        observation['semantic_attribution']={k:copy.deepcopy(audit[k]) for k in
+            ('method_fidelity','failure_source','evidence_refs','check_action_id') if k in audit}
+    actual=(row.get('cost_observed_fact') or {}).get('method_actual')
+    if isinstance(actual,dict):
+        for key in ('method_actual','method_planned'):
+            steps=(row.get(key) or {}).get('steps')
+            if isinstance(steps,list) and actual.get('steps')==steps:
+                actual.pop('steps');actual['steps_ref']=key+'.steps'
+                break
+    return row
+
+
+def paired_feedback_view(block):
+    out=copy.deepcopy(block or {})
+    if 'pairs' in out:out['pairs']=[compact_feedback_pair(row) for row in out['pairs']]
+    return out
 
 
 def short_rule(entry, *, field_limit=2400):
@@ -182,7 +231,10 @@ def short_rule(entry, *, field_limit=2400):
             "status": rule.get("state", entry.status), "verification_state": entry.verification_state,
             "verification_scope":atomic((entry.verification or {}).get('scope'),ref+' #verification.scope',field_limit),
             "published": entry.is_published, "support_n": entry.support_n,
-            "body": {k: atomic(v, ref + " #" + k, field_limit) for k, v in body.items()},
+            "body": (copy.deepcopy(body) if rule else {
+                k:copy.deepcopy(v) if k=='do' else atomic(v,ref+' #'+k,field_limit)
+                for k,v in body.items()}),
+            "evidence": copy.deepcopy(rule.get('evidence') or claim.get('evidence') or []),
             "predicates": copy.deepcopy(entry.predicates), "detail_ref": ref,
             "body_ref": rule.get("body_ref"), "historical_state": not bool(rule) or bool(rule.get("legacy_version")),
             "merged_into":rule.get('merged_into'), "current_task_premises":"requires_assessment" if rule else "historical_scope",

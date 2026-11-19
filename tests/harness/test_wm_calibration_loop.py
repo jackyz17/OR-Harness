@@ -720,7 +720,8 @@ class TestFaithfulGObservations(GCase):
         p2 = self.predict_g(episode="ep2")
         r2 = self.run_g(p2)
         result = self.check_g(r2)
-        audit = result["report"]["g_attribution"]
+        from or_harness.world_model.conditions import get_value
+        audit = get_value(self.h.store,result['g_assessment_ref'])['attribution']
         self.h.check_task_result(r2.execution_id, {"integer": {"variables": ["missing"]},
             "g_attribution": audit})
         self.assertNotIn("observed", self.close_g("ep2")["evaluations"][0]["benefit"])

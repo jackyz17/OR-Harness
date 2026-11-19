@@ -12,10 +12,109 @@ import math
 from collections import defaultdict
 
 from or_harness.core.schema import COST_DIMENSIONS
+from or_harness.world_model.contracts import RETRIES_FUTURE_VERSION, RETRIES_LEGACY_VERSION
 from or_harness.world_model.usage import with_output_token_dimension
 
 COST_OBSERVATION_VERSION = "wm-c-window/1"
 TRUSTED = {"agent_observed", "provider_usage"}
+
+
+def execution_attempts(actions, records, *, task_id, episode_id, through=None,
+                       exclude_action_id=None):
+    """Real attempts in one episode, deduplicated by execution/action identity.
+
+    Missing receipts or chronology are gaps, never invented attempts. A
+    refused association and a script explicitly reported as not executed
+    are not solve attempts. Interrupted receipts remain real attempts.
+    """
+    by_id={r.execution_id:r for r in records if r.source=='executed' and
+           str(r.task_id)==str(task_id) and r.measurement_scope=='attempt'}
+    action_ids={a.action_id for a in actions if a.action_type=='execute_strategy' and
+                a.source!='hypothetical' and str(a.task_id)==str(task_id) and
+                str(a.episode_id or '')==str(episode_id or '')}
+    attempts={};gaps=[];linked=set()
+    for action in actions:
+        if (action.action_id==exclude_action_id or action.action_type!='execute_strategy' or
+                action.source=='hypothetical' or str(action.task_id)!=str(task_id) or
+                str(action.episode_id or '')!=str(episode_id or '')):
+            continue
+        start=number(action.started_at);stop=number(action.ended_at)
+        if through is not None and start is not None and start>through+1e-6:
+            continue
+        if (action.outcome or {}).get('phase')=='association':
+            continue
+        record=by_id.get(action.linked_execution_id)
+        if record and record.action_id in action_ids and record.action_id!=action.action_id:
+            linked.add(record.execution_id)
+            continue
+        if record and record.execution_features.get('executed') is False:
+            linked.add(record.execution_id)
+            continue
+        reason=None
+        if record is None:
+            reason='execution action has no recoverable real attempt receipt'
+        else:
+            linked.add(record.execution_id)
+            if start is None or stop is None or stop<start or action.status=='running':
+                reason='attempt chronology is incomplete'
+            elif through is not None and stop>through+1e-6:
+                reason='attempt crosses the task termination boundary'
+        if reason:
+            gaps.append({'action_id':action.action_id,'started_at':start,'reason':reason})
+            continue
+        previous=attempts.get(record.execution_id)
+        if previous is None or record.action_id==action.action_id:
+            attempts[record.execution_id]=action
+    for execution_id,record in by_id.items():
+        if execution_id not in linked and (through is None or record.created_at<=through):
+            gaps.append({'execution_id':execution_id,'started_at':None,
+                         'reason':'attempt receipt has no matching execution action'})
+    return sorted(attempts.values(),key=lambda a:(a.started_at,a.action_id)),gaps
+
+
+def retries_convention(prediction):
+    if getattr(getattr(prediction,'cost',None),'scope','remaining_to_task_end')!='remaining_to_task_end':
+        return RETRIES_LEGACY_VERSION
+    return ((getattr(prediction.trace,'model_info',None) or {}).get('cost_observation_rule_versions') or {}).get(
+        'retries',RETRIES_LEGACY_VERSION)
+
+
+def observe_remaining_retries(summary, prediction, actions, records, *, bound_action, terminated_at):
+    """Count additional attempts AFTER the bound attempt, not its own increment."""
+    version=retries_convention(prediction)
+    existing=summary.cost.setdefault('retries',{})
+    existing['observation_rule_version']=version
+    if version!=RETRIES_FUTURE_VERSION or summary.cost.get('scope')!='remaining_to_task_end':
+        return
+    reason=None
+    base=number(getattr(bound_action,'started_at',None))
+    attempts,gaps=execution_attempts(actions,records,task_id=prediction.candidate.task_id,
+        episode_id=prediction.candidate.episode_id,through=terminated_at)
+    bound_id=getattr(bound_action,'linked_execution_id',None)
+    bound=next((a for a in attempts if a.linked_execution_id==bound_id),None)
+    if terminated_at is None:
+        reason='task termination is not confirmed; future additional attempts are unknown'
+    elif bound is None or base is None:
+        reason='no recoverable bound real attempt establishes the retry baseline'
+    elif any(g.get('started_at') is None or g['started_at']>=base for g in gaps):
+        reason='execution chain is incomplete: '+next(g['reason'] for g in gaps
+            if g.get('started_at') is None or g['started_at']>=base)
+    elif any(a.linked_execution_id!=bound_id and a.started_at==base for a in attempts):
+        reason='relative order of attempts at the bound timestamp is unknown'
+    following=[a for a in attempts if base is not None and a.started_at>base]
+    value=None if reason else float(len(following))
+    summary.cost['retries']={
+        'total':value,'comparable':{'value':value,'is_sum':False,
+            'basis':reason or 'distinct real solve attempts after the bound baseline attempt'},
+        'n_measured':0 if reason else 1,'n_items':1,'complete':reason is None,
+        'observation_scope':'remaining_to_task_end','observation_rule_version':version,
+        'source_refs':[a.action_id for a in ([bound] if bound else [])+following],
+        'observed_from':{'source':'execution_chain','baseline_execution_id':bound_id,
+            'additional_execution_ids':[a.linked_execution_id for a in following]},
+        'boundary_note':reason,
+    }
+    if reason:
+        summary.cost.setdefault('boundary_exclusions',[]).append('retries: '+reason)
 
 
 def number(value):
@@ -318,7 +417,7 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
 
 
 def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor_id,
-                        end, end_basis, cutoff):
+                        end, end_basis, cutoff, bound_action=None, terminated_at=None):
     """Add full-window host facts without charging them to attempt budgets."""
     scope = summary.cost.get("scope")
     summary.cost["observation_rule_version"] = COST_OBSERVATION_VERSION
@@ -375,6 +474,8 @@ def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor
     summary.cost["execution_host"] = host
     summary.cost["work_facts"] = facts
     summary.cost["boundary_exclusions"] = rejected
+    observe_remaining_retries(summary,prediction,actions,records,
+        bound_action=bound_action,terminated_at=terminated_at)
 
 
 def cost_observed_fact(summary, prediction):
@@ -388,8 +489,11 @@ def cost_observed_fact(summary, prediction):
     conditions = copy.deepcopy(info.get("cost_conditions") or {})
     conditions["execution_host"] = copy.deepcopy(summary.cost.get("execution_host") or {})
     conditions["scope"] = summary.cost.get("scope")
+    conditions['retry_observation_rule_version']=retries_convention(prediction)
     conditions["window_coverage"] = ("complete" if
-        (summary.cost.get("remaining_latency_s") or {}).get("complete") else "partial")
+        (summary.cost.get("remaining_latency_s") or {}).get("complete") or
+        ((summary.cost.get('retries') or {}).get('complete') and retries_convention(prediction)==RETRIES_FUTURE_VERSION)
+        else "partial")
     conditions["actual_solving_conditions"] = [json.loads(raw) for raw in
         sorted({json.dumps(c["comparison_key"], sort_keys=True)
                 for c in summary.cost.get("actual_solving_conditions") or []})]
@@ -406,6 +510,8 @@ def cost_observed_fact(summary, prediction):
                 "recorded_solver_receipts" if d == "solver_runtime_s" else conditions["scope"])
                 for d in values},
             "observation_rule_version": COST_OBSERVATION_VERSION,
+            'dimension_observation_rule_versions':{'retries':retries_convention(prediction)},
+            'retries_observed_from':copy.deepcopy((summary.cost.get('retries') or {}).get('observed_from')),
             "window": copy.deepcopy(summary.cost.get("window") or {}),
             "execution_ids": list(summary.cost_records),
             "work_facts": copy.deepcopy(summary.cost.get("work_facts") or {}),
@@ -441,13 +547,16 @@ def conditional_cost_statistics(samples, min_samples=5):
         window = fact.get("window") or {}
         identity = json.dumps([evaluation.task_id, evaluation.episode_id,
             conditions.get("scope"), fact.get("execution_ids"),
-            window.get("anchor_action_id") or window.get("anchor"), window.get("end")], sort_keys=True)
+            window.get("anchor_action_id") or window.get("anchor"), window.get("end"),
+            conditions.get('retry_observation_rule_version',RETRIES_LEGACY_VERSION)], sort_keys=True)
         if not values or identity in seen:
             continue
         seen.add(identity)
         # Reusable artifact CONTENT is explanatory, not a grouping key.
         grouping = {k: conditions.get(k) for k in (
-            "execution_host", "scope", "window_coverage", "phase", "family", "structure", "solver_conditions", "actual_solving_conditions")}
+            "execution_host", "scope", "window_coverage", "phase", "family", "structure", "solver_conditions", "actual_solving_conditions",
+            'retry_observation_rule_version')}
+        grouping['retry_observation_rule_version']=conditions.get('retry_observation_rule_version',RETRIES_LEGACY_VERSION)
         requested = conditions.get("solver_conditions") or {}
         actual_configs = [c.get("config") or {} for c in conditions.get("actual_solving_conditions") or []]
         grouping["solver_conditions"] = {
@@ -515,6 +624,8 @@ def select_cost_evidence(summary, context, candidate, *, max_groups=4):
     groups.sort(key=lambda g: (len((g["conditions"].get("structure") or {}).keys() & current["structure"].keys()),
                                g.get("n_distinct_episodes") or 0), reverse=True)
     for group in groups:
+        if group['conditions'].get('retry_observation_rule_version')!=RETRIES_FUTURE_VERSION:
+            group['dimensions'].pop('retries',None)
         group["source_refs"] = group["source_refs"][:6]
         other = group["conditions"].get("structure") or {}
         group["unknown_structure_dimensions"] = sorted(other.keys() ^ current["structure"].keys())
@@ -530,6 +641,8 @@ def select_cost_evidence(summary, context, candidate, *, max_groups=4):
     from or_harness.world_model.episode_closeout import _compact_method_steps
     cases = cases[:3]
     for case in cases:
+        if (case.get('conditions') or {}).get('retry_observation_rule_version')!=RETRIES_FUTURE_VERSION:
+            (case.get('values') or {}).pop('retries',None)
         case["source_refs"] = (case.get("source_refs") or [])[:6]
         methods = [case.get("method_actual") or {}] + [m.get("method") or {} for m in
             (case.get("work_facts") or {}).get("method_change_receipts") or []]

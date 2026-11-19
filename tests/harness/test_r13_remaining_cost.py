@@ -633,5 +633,146 @@ class TestOutputTokenCost(CCase):
                     self.assertIn("token C uses output_tokens", score["scoring_basis"]["omitted_cost_dimensions"]["llm_tokens"]["reason"])
 
 
+class TestFutureRetryObservation(CCase):
+    def plan_attempt(self, name, *, predicted=0, solver='python', episode='ep1'):
+        self.seed_host(episode)
+        self.provider.payload['cost']={'retries':predicted}
+        return planned_prediction(self.h,self.task,{'strategy_id':name,'solver':solver,'method':REUSE},episode)
+
+    def execute_attempt(self,prediction,*,crash=False,record=True):
+        import json
+        from pathlib import Path
+        work=Path(self.home)/prediction.prediction_id;work.mkdir()
+        code=work/'solve.py'
+        result={'status':'optimal','objective_value':100,'objective_bound':100,
+                'runtime_seconds':0.01,'variables':{'BE':1,'CFC':1},
+                'method_performed':prediction.candidate.method,'config':{'time_limit':60}}
+        code.write_text("raise RuntimeError('failed solve attempt')\n" if crash else
+            'import json,os\nr='+repr(result)+"\nr['method_performed']['action_id']=os.environ['OR_ACTION_ID']\n"
+            "r['config']['action_id']=os.environ['OR_ACTION_ID']\njson.dump(r,open('result.json','w'))\n")
+        execution=self.h.execute(self.task,None,str(code),str(work),prediction_id=prediction.prediction_id)
+        if record:
+            self.h.record(execution,host_usage={'schema':'or-host-usage/1','host':'test-host',
+                'model':'executor-model/v1','measured':[]})
+        return execution
+
+    def test_three_decisions_measure_increments_and_future_attempts_independently(self):
+        from or_harness.world_model.contracts import RETRIES_FUTURE_VERSION,RETRIES_INCREMENT_VERSION
+        predictions=[];records=[]
+        for index,solver in enumerate(('python','highs','python')):
+            p=self.plan_attempt('ABC'[index],predicted=2.5 if index==0 else 0,solver=solver)
+            predictions.append(p);records.append(self.execute_attempt(p,crash=index==0))
+            if index==0:
+                self.plan_attempt('unused-replan')  # prediction alone is not an attempt
+        self.check_g(records[-1]);self.check_g(records[-1])
+        self.assertEqual([r.cost.retries for r in records],[0,1,1])
+        for r in records:
+            self.assertIn('retries',r.cost.measured_dims())
+            self.assertEqual(r.execution_features['cost_provenance']['retries']['observation_rule_version'],RETRIES_INCREMENT_VERSION)
+        self.assertEqual(self.h.budget_view(self.task['task_id'],'ep1')['consumption']['total_cost']['retries'],2)
+        closed=self.close_g()
+        observed={e['prediction_id']:e['cost']['per_dim']['retries'] for e in closed['evaluations']}
+        self.assertEqual([observed[p.prediction_id]['actual'] for p in predictions],[2,1,0])
+        self.assertEqual(observed[predictions[0].prediction_id]['predicted'],2.5)
+        self.assertEqual(observed[predictions[1].prediction_id]['abs_error'],1)
+        self.assertEqual(observed[predictions[1].prediction_id]['signed_error'],1)
+        self.assertEqual(observed[predictions[2].prediction_id]['abs_error'],0)
+        self.assertTrue(all(observed[p.prediction_id]['log_ratio'] is None for p in predictions[1:]))
+        self.assertTrue(all(observed[p.prediction_id]['observation_rule_version']==RETRIES_FUTURE_VERSION for p in predictions))
+        facts={e['prediction_id']:e['cost']['observed_fact']['retries_observed_from'] for e in closed['evaluations']}
+        self.assertEqual([facts[p.prediction_id]['baseline_execution_id'] for p in predictions],[r.execution_id for r in records])
+        self.assertEqual([len(facts[p.prediction_id]['additional_execution_ids']) for p in predictions],[2,1,0])
+        before=self.h.calibration_summary()['conditional_cost']['coverage']['retries']
+        self.assertEqual((before['n_actual'],before['n_predicted'],before['n_error']),(3,3,3))
+        from or_harness.core.storage import StorageError
+        for r in records:
+            with self.assertRaises(StorageError):self.h.record(r)
+        self.assertTrue(self.close_g()['already_closed'])
+        self.assertEqual(self.h.calibration_summary()['conditional_cost']['coverage']['retries'],before)
+        self.assertEqual(self.h.budget_view(self.task['task_id'],'ep1')['consumption']['total_cost']['retries'],2)
+
+    def test_executor_exception_is_a_real_retry_and_staged_receipt_is_counted_once(self):
+        from unittest.mock import patch
+        first=self.plan_attempt('A');a=self.execute_attempt(first)
+        failed=self.plan_attempt('B')
+        with patch.object(self.h,'_run_executor',side_effect=OSError('executor interrupted')):
+            with self.assertRaises(OSError):self.execute_attempt(failed)
+        staged=self.h.bank.pending(task_id=self.task['task_id'])
+        self.assertEqual(len(staged),1)
+        b=staged[0];self.assertEqual(b.cost.retries,1)
+        final=self.plan_attempt('C');c=self.execute_attempt(final)
+        self.assertEqual([a.cost.retries,b.cost.retries,c.cost.retries],[0,1,1])
+        closed=self.close_g()
+        costs={e['prediction_id']:e['cost']['per_dim']['retries']['actual'] for e in closed['evaluations']}
+        self.assertEqual([costs[p.prediction_id] for p in (first,failed,final)],[2,1,0])
+        self.h.record(b)
+        from or_harness.core.storage import StorageError
+        with self.assertRaises(StorageError):self.h.record(b)
+        self.assertEqual(self.h.budget_view(self.task['task_id'],'ep1')['consumption']['total_cost']['retries'],2)
+
+    def test_unclosed_or_incomplete_execution_chain_is_unknown(self):
+        from or_harness.world_model.episode_closeout import summarize_real_outcome
+        p=self.plan_attempt('A');self.execute_attempt(p)
+        prediction=self.h.strategy_predictions.get(p.prediction_id)
+        summary=summarize_real_outcome(self.h,prediction)
+        self.assertFalse(summary.cost['retries']['complete'])
+        self.assertIn('termination',summary.cost['retries']['comparable']['basis'])
+        broken=self.h.actions.begin_action('execute_strategy',self.task['task_id'],'ep1')
+        self.h.actions.end_action(broken.action_id,status='failed',outcome={'phase':'executor'})
+        closed=self.close_g()
+        cost=closed['evaluations'][0]['cost']
+        self.assertNotIn('retries',cost.get('per_dim') or {})
+        self.assertIn('execution chain is incomplete',cost['excluded']['retries'])
+
+    def test_duplicate_execution_link_and_refused_association_do_not_add_attempts(self):
+        p=self.plan_attempt('A');record=self.execute_attempt(p)
+        alias=self.h.actions.begin_action('execute_strategy',self.task['task_id'],'ep1')
+        self.h.actions.end_action(alias.action_id,status='completed',linked_execution_id=record.execution_id,rollup='reference')
+        refused=self.h.actions.begin_action('execute_strategy',self.task['task_id'],'ep1')
+        self.h.actions.end_action(refused.action_id,status='failed',outcome={'phase':'association'})
+        later=self.plan_attempt('B');retry=self.execute_attempt(later)
+        self.assertEqual(retry.cost.retries,1)
+        closed=self.close_g()
+        actual={e['prediction_id']:e['cost']['per_dim']['retries']['actual'] for e in closed['evaluations']}
+        self.assertEqual((actual[p.prediction_id],actual[later.prediction_id]),(1,0))
+
+    def test_old_predictions_keep_increment_sum_and_do_not_supply_new_retry_ranges(self):
+        from or_harness.world_model.contracts import RETRIES_LEGACY_VERSION,RETRIES_FUTURE_VERSION
+        predictions=[]
+        for name in 'ABC':
+            p=self.plan_attempt(name)
+            if name=='B':
+                p.trace.model_info.pop('cost_observation_rule_versions')
+                self.h.strategy_predictions._save(p)
+            predictions.append(p);self.execute_attempt(p)
+        closed=self.close_g()
+        observed={e['prediction_id']:e['cost']['per_dim']['retries'] for e in closed['evaluations']}
+        self.assertEqual([observed[p.prediction_id]['actual'] for p in predictions],[2,2,0])
+        self.assertEqual(observed[predictions[1].prediction_id]['observation_rule_version'],RETRIES_LEGACY_VERSION)
+        self.plan_attempt('next-task',episode='next')
+        evidence=self.provider.requests[-1]['prediction_context']['cost_evidence']
+        self.assertTrue(evidence['reference_ranges'])
+        for group in evidence['reference_ranges']:
+            if 'retries' in group['dimensions']:
+                self.assertEqual(group['conditions']['retry_observation_rule_version'],RETRIES_FUTURE_VERSION)
+        for case in evidence['cases']:
+            if 'retries' in case['values']:
+                self.assertEqual(case['conditions']['retry_observation_rule_version'],RETRIES_FUTURE_VERSION)
+
+    def test_new_and_legacy_retry_forecasts_do_not_share_a_utility_term(self):
+        from or_harness.world_model.planner import PlanLimits,score_strategy_outcome_predictions
+        a=self.plan_attempt('A',predicted=.25);b=self.plan_attempt('B',predicted=0)
+        limits=PlanLimits(cost_weights={'retries':1},cost_scales={'retries':3})
+        same=score_strategy_outcome_predictions([a,b],limits)
+        self.assertTrue(all(s.scoring_basis['cost_dimensions']==['retries'] for s in same))
+        self.assertGreater(same[0].cost_normalized,0)
+        self.assertEqual(same[1].cost_normalized,0)
+        b.trace.model_info.pop('cost_observation_rule_versions')
+        mixed=score_strategy_outcome_predictions([a,b],limits)
+        self.assertTrue(all(s.cost_normalized is None for s in mixed))
+        self.assertTrue(all(s.scoring_basis['omitted_cost_dimensions']['retries']['reason']==
+                            'different retry observation conventions' for s in mixed))
+
+
 if __name__ == "__main__":
     unittest.main()

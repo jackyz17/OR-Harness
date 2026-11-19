@@ -13,6 +13,7 @@ import time
 import math
 
 from or_harness.core.schema import StrategicEntry, CostVector, normalize_claim, task_check_state
+from or_harness.core.storage import StorageError
 from or_harness.strategy.evidence_views import compact_execution, task_identity,instance_relation
 from or_harness.world_model.conditions import digest, get_value, put_value
 from or_harness.world_model.induction_gate import meta_read, meta_write, start_decision
@@ -74,7 +75,7 @@ def frozen_entry(entry):
         value["rule"] = {k: copy.deepcopy(entry.rule.get(k)) for k in
                          ("schema_version", "view_version", "body_ref", "active_version", "state", "version_state", "legacy_version")}
         value["verification"] = {"state": entry.verification_state, "source": "rule_version"}
-        value["expected"].pop("effect_attribution", None)
+        value.get("expected",{}).pop("effect_attribution", None)
     return value
 
 
@@ -120,13 +121,10 @@ def hydrate_entry(store, entry, version=None):
     entry.pattern = {"predicates": copy.deepcopy(body.get("predicates") or {})}
     legacy = (get_value(store,metadata['legacy_input_ref']) if metadata.get('legacy_input_ref') else
               copy.deepcopy(body.get('legacy_claim')) or copy.deepcopy((metadata.get('legacy_snapshot') or {}).get('claim')))
-    entry.claim = normalize_claim(legacy or {
-        "text": "When: " + body["when"] + "\nDo: " + body["do"] + "\nExpect: " + body["expect"],
-        "kind": "transfer_rule", "subject": entry.strategy_id,
-        "conditions": {"predicates": entry.predicates, "note": body["when"]},
-        "method": {"name": entry.strategy_id, "steps": [body["do"]]},
-        "evidence": metadata.get("seed_evidence") or [],
-    })
+    # Modern rules have one authoritative when/do/expect body. Only actual
+    # legacy input is rendered as a claim; never synthesize duplicate prose.
+    entry.claim = normalize_claim(legacy) if legacy else None
+    rule['evidence']=copy.deepcopy(metadata.get('seed_evidence') or [])
     if metadata.get('legacy_version') and (metadata.get('legacy_snapshot') or {}).get('claim') is None:
         entry.claim=None
     if legacy and entry.claim is not None:
@@ -169,8 +167,8 @@ def storage_payload(entry):
         raw.pop("claim", None)
         raw.pop("verification", None)
         raw["rule"] = {k: copy.deepcopy(v) for k, v in entry.rule.items()
-                       if k not in ("body", "body_ref", "view_version", "version_state", "legacy_version")}
-        raw["expected"].pop("effect_attribution", None)
+                       if k not in ("body", "body_ref", "view_version", "version_state", "legacy_version", "evidence")}
+        raw.get("expected",{}).pop("effect_attribution", None)
     return raw
 
 
@@ -276,9 +274,31 @@ def _resolve(engine, evidence):
 
 def _facts_ref(harness, conn, record):
     # Preserve decisive facts after the evidence window evicts the execution.
-    fact = compact_execution(harness, record, field_limit=1000000)
-    fact["checker"] = copy.deepcopy((record.execution_features or {}).get("task_check") or {})
-    fact["artifacts"] = copy.deepcopy((record.execution_features or {}).get("artifacts") or {})
+    from or_harness.core.evidence_encoding import compact_payload
+    encoded=compact_payload(record.to_dict(),harness.store)
+    f=encoded.get('execution_features') or {}
+    fact={k:encoded[k] for k in ('execution_id','task_id','strategy_id','created_at','source',
+        'cost','cost_measured','measurement_scope','solver','task_text_digest','profile_snapshot','cir_snapshot',
+        'prediction_snapshot','trajectory','failures','explanation_codes') if k in encoded}
+    fact['outcome']=copy.deepcopy(record.quality)
+    fact['identity']=task_identity(harness,record)
+    fact['method']={side:encoded['method_'+side] for side in ('actual','planned') if 'method_'+side in encoded}
+    fact['checker']=copy.deepcopy(f.get('task_check') or {})
+    fact['artifacts']=copy.deepcopy(f.get('artifacts') or {})
+    fact['execution_features']={k:copy.deepcopy(v) for k,v in f.items() if k not in
+        ('artifacts','task_check','task_identity','execution_config',
+         'used_entries','cost_provenance','retained_task_payload','retained_task_text','retained_task_input_ref','audit_fact_only')}
+    # Omit result fields only when the existing immutable artifact contains
+    # exactly those fields. Hand-recorded/legacy unique facts must survive.
+    result=fact['artifacts'].get('workspace_result')
+    if result and 'solution_variables' in f:
+        from or_harness.core.artifacts import read
+        try:
+            payload=harness.store.loads(read(harness.home,result).decode('utf-8'))
+            if digest(payload.get('variables'))==digest(f['solution_variables']):
+                fact['execution_features'].pop('solution_variables',None)
+        except (OSError,ValueError,KeyError,StorageError):
+            pass
     action=harness.actions.by_execution(record.execution_id)
     if action and action.pre_snapshot_id:
         fact['task_snapshot_id']=action.pre_snapshot_id
@@ -289,8 +309,12 @@ def _facts_ref(harness, conn, record):
             if snapshot:fact['task_input_ref']=put_value(conn,harness.store,'problem',snapshot.problem_state)
     elif record.execution_features.get('retained_task_input_ref'):
         fact['task_input_ref']=record.execution_features['retained_task_input_ref']
-    fact.update(source=record.source,solver=copy.deepcopy(record.solver),
-        execution_config=copy.deepcopy(record.execution_features.get('execution_config') or {}),
+    if not fact.get('task_input_ref'):
+        text=(harness.store.get_task_text(record.task_id,record.task_text_digest) if record.task_text_digest else None
+              ) or record.execution_features.get('retained_task_text')
+        if text:fact['task_input_ref']=put_value(conn,harness.store,'problem',{'task_input':{
+            'task_id':record.task_id,'family':record.profile_snapshot.family,'text':text}})
+    fact.update(execution_config=copy.deepcopy(f.get('execution_config') or {}),
         used_entries=copy.deepcopy(record.execution_features.get('used_entries') or {}),
         cost_provenance=copy.deepcopy(record.execution_features.get('cost_provenance') or {}))
     ref=put_value(conn,harness.store,'rule_fact',fact)
@@ -506,16 +530,7 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
             entry.applicability = annotated
             changed = True
         if existing is None:
-            shown = list(dict.fromkeys(session.get("shown_execution_ids", []) + [r.execution_id for r in records]))
-            identities = dict(session.get("identities") or {})
-            identities.update({r.execution_id: task_identity(harness, r) for r in records})
-            regressions=[];cases=[]  # historical cases are review material, never compulsory work
-            metadata = {"seed_evidence": resolved["evidence"], "derivation_execution_ids": shown,
-                "seed_families": sorted({r.profile_snapshot.family for r in records}),
-                "derivation_base_ids": sorted({x["base_id"] for x in identities.values()}),
-                "derivation_content_digests": sorted({x["content_digest"] for x in identities.values() if x.get("content_digest")}),
-                "identities": identities, "material_ref": session_ref, "material_read_refs":session.get("read_refs") or [], "required_regressions": regressions,
-                'regression_cases':cases,
+            metadata = {"seed_evidence": resolved["evidence"],"material_ref": session_ref,
                 "seed_fact_refs": {r.execution_id: _facts_ref(harness, conn, r) for r in records}}
             if legacy_input is not None:
                 metadata['legacy_input_ref']=put_value(conn,harness.store,'legacy_rule_input',legacy_input)
@@ -527,7 +542,7 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
             submitted_role=next((x['role'] for x in resolved['evidence'] if x['execution_id']==record.execution_id),'derivation')
             _event, added = append_event(harness.store, entry.entry_id, version, "evidence", execution_id=record.execution_id,
                 data={"role":submitted_role if submitted_role!='derivation' else
-                      'derivation' if record.execution_id in metadata.get('derivation_execution_ids',[]) else 'additional_evidence',
+                      'derivation' if record.execution_id in metadata.get('seed_fact_refs',{}) else 'additional_evidence',
                       "fact_ref": _facts_ref(harness, conn, record)})
             changed |= added
         # Preserve every actually declared legacy assertion as an audit,
@@ -638,8 +653,14 @@ def validate_case(harness,entry_id,version,check,*,optional_cost_comparison=Fals
     observed=report.get('state')
     identity=task_identity(harness,record)
     metadata=get_value(harness.store,row['metadata_ref'])
+    source_identities=copy.deepcopy(metadata.get('identities') or {})
+    if not source_identities and metadata.get('material_ref'):
+        source_identities.update(get_value(harness.store,metadata['material_ref']).get('identities') or {})
+    for source_id,ref in (metadata.get('seed_fact_refs') or {}).items():
+        if source_id not in source_identities:
+            source_identities[source_id]=get_value(harness.store,ref).get('identity') or {}
     known_sources=[{'execution_id':old,'relationship':instance_relation(identity,value)}
-                   for old,value in (metadata.get('identities') or {}).items()]
+                   for old,value in source_identities.items()]
     actual_version=adopted_version(harness,record,entry_id)
     is_use=actual_version==version and not check.get('assessment')
     sourced=bool(assessment.get('source') and assessment.get('assessment') and assessment.get('evidence_refs'))

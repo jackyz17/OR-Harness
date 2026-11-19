@@ -459,7 +459,7 @@ class ActionLog:
                      payload.episode_id, payload.parent_action_id,
                      payload.source, payload.status, payload.started_at,
                      payload.ended_at,
-                     self.store.dumps(payload.to_dict())))
+                     self.store.dumps(self._storage_payload(payload))))
             except Exception as exc:
                 if "UNIQUE" in str(exc).upper():
                     raise StorageError(
@@ -473,15 +473,19 @@ class ActionLog:
                 "UPDATE action_records SET status=?, ended_at=?, payload=? "
                 "WHERE action_id=?",
                 (record.status, record.ended_at,
-                 self.store.dumps(record.to_dict()),
+                 self.store.dumps(self._storage_payload(record)),
                  record.action_id))
             if cur.rowcount == 0:
                 raise StorageError(f"unknown action_id {record.action_id!r}")
 
-    @staticmethod
-    def _decode(row: Any) -> ActionRecord:
+    def _storage_payload(self,record):
+        from or_harness.core.evidence_encoding import share_values
+        return share_values(self.store,record.to_dict())
+
+    def _decode(self,row: Any) -> ActionRecord:
         try:
-            return ActionRecord.from_dict(Store.loads(row["payload"]))
+            from or_harness.core.evidence_encoding import resolve_values
+            return ActionRecord.from_dict(resolve_values(self.store,Store.loads(row["payload"])))
         except (StorageError, ValueError, KeyError) as exc:
             raise StorageError(f"corrupt action record: {exc}") from exc
 

@@ -72,6 +72,15 @@ R uses the one-attempt technical-failure convention `wm-r-technical/1`. A finite
 
 The candidate can cover an `attempt` or a `strategy_window` spanning the declared modelling, execution, repair and verification activities. Window scoring requires a matching task, episode and strategy, ended linked attempts, and `trace.comparable=True`. Read coverage and auxiliary cost when inspecting a window total.
 
+For C, `cost.retries` under `remaining_to_task_end` predicts the expected
+additional solve attempts AFTER this prediction's bound execution. It may be
+a non-negative fraction or zero. The frozen convention is
+`cost_scope.retries_convention.observation_rule_version` =
+`wm-retry-additional-attempts/1`. Execution records separately store 0/1
+increments within the same task/episode: A/B/C gives 0/1/1, an episode total
+of 2, and per-decision future actuals of 2/1/0. See [retry observations](episode_closeout.md#4-the-per-field-evaluation)
+for unknown evidence and historical conventions.
+
 ### H+ and induction
 
 Read the assigned switch in `trace.model_info.hplus`. During library building, close-out schedules a review for an executed, bound positive signal. The review keeps the prediction, actual evidence and supported learning result in an induction receipt that can inform later forecasts. Read the [induction handoff](induction.md#when-to-start-induction) for what to do with its ID.

@@ -27,17 +27,11 @@ def retain_record(harness,conn,record,*,make_latest=True):
 
 
 def hold_execution(harness,owner,execution_id,*,record=None):
-    """Retain full working evidence only while its owning review is pending."""
+    """Pin the shared audit fact for a pending review without copying a row."""
     record=record or resolve_execution(harness,execution_id)
     if record is None:return None
-    action=harness.actions.by_execution(record.execution_id)
-    snapshot=harness.get_snapshot(action.pre_snapshot_id) if action and action.pre_snapshot_id else None
-    problem=snapshot.problem_state if snapshot else {}
-    payload=problem.get('task_input') or problem.get('task_payload') or record.execution_features.get('retained_task_payload')
-    text=harness.store.get_task_text(record.task_id,record.task_text_digest) if record.task_text_digest else None
     with harness.store.transaction() as conn:
-        ref=put_value(conn,harness.store,'induction_execution',{'record':record.to_dict(),
-            'task_payload':copy.deepcopy(payload),'task_text':text or record.execution_features.get('retained_task_text')})
+        ref=retain_record(harness,conn,record)
         held=meta_read(harness.store,'induction_hold:'+str(owner)) or {}
         held[record.execution_id]=ref
         meta_write(harness.store,'induction_hold:'+str(owner),held)
@@ -73,19 +67,21 @@ def release_hold(harness,owner):
 
 
 def _from_fact(harness,fact):
-    record=ExecutionRecord.from_dict({'execution_id':fact['execution_id'],'task_id':fact['task_id'],
+    raw={'execution_id':fact['execution_id'],'task_id':fact['task_id'],
         'strategy_id':fact['strategy_id'],'source':fact.get('source','executed'),'created_at':fact.get('created_at'),
-        'profile_snapshot':{'problem_id':fact['task_id'],'family':fact.get('family','unknown')},
+        'profile_snapshot':fact.get('profile_snapshot') or {'problem_id':fact['task_id'],'family':fact.get('family','unknown')},
         'quality':fact.get('outcome') or {},'cost':fact.get('cost') or {},
         'cost_measured':fact.get('cost_measured') or [],'measurement_scope':fact.get('measurement_scope','attempt'),
-        'solver':fact.get('solver') or {},'execution_features':{
+        'solver':fact.get('solver') or {},'trajectory':fact.get('trajectory') or [],'failures':fact.get('failures') or [],
+        'cir_snapshot':fact.get('cir_snapshot'),'prediction_snapshot':fact.get('prediction_snapshot'),
+        'execution_features':{**(fact.get('execution_features') or {}),
             'task_check':fact.get('checker') or {},'artifacts':fact.get('artifacts') or {},
             'task_identity':fact.get('identity'),'retained_task_text':fact.get('task_text'),
             'used_entries':fact.get('used_entries') or {},'execution_config':fact.get('execution_config') or {},
             'cost_provenance':fact.get('cost_provenance') or {d:{'source':'unknown_retained_provenance'} for d in fact.get('cost_measured') or []},
-            'audit_fact_only':True}})
-    record.method_actual=(fact.get('method') or {}).get('actual')
-    record.task_text_digest=fact.get('task_text_digest')
+            'audit_fact_only':True},'method_actual':(fact.get('method') or {}).get('actual'),
+            'method_planned':(fact.get('method') or {}).get('planned'),
+            'task_text_digest':fact.get('task_text_digest'),'explanation_codes':fact.get('explanation_codes') or []}
     # The immutable result is the existing source of solution fields. Do not
     # retain another full result in every audit fact just to permit rechecks.
     result=(fact.get('artifacts') or {}).get('workspace_result')
@@ -93,19 +89,22 @@ def _from_fact(harness,fact):
         from or_harness.core.artifacts import read
         try:
             payload=harness.store.loads(read(harness.home,result).decode('utf-8'))
-            if isinstance(payload.get('variables'),dict):record.execution_features['solution_variables']=payload['variables']
+            if isinstance(payload.get('variables'),dict):raw['execution_features'].setdefault('solution_variables',payload['variables'])
         except (OSError,ValueError,KeyError,StorageError):
             pass  # The checker reports missing values; never invent them.
     if fact.get('task_input_ref'):
         problem=get_value(harness.store,fact['task_input_ref'])
-        record.execution_features['retained_task_payload']=copy.deepcopy(problem.get('task_input') or problem.get('task_payload'))
-        record.execution_features['retained_task_input_ref']=fact['task_input_ref']
-    return record
+        payload=copy.deepcopy(problem.get('task_input') or problem.get('task_payload'))
+        raw['execution_features']['retained_task_payload']=payload
+        raw['execution_features']['retained_task_input_ref']=fact['task_input_ref']
+        if payload:raw['execution_features']['retained_task_text']=payload.get('text') or payload.get('description')
+    return ExecutionRecord.from_dict(raw,harness.store)
 
 
 def _decode(harness,reference):
     raw=get_value(harness.store,reference)
-    record=ExecutionRecord.from_dict(raw.get('record') or raw)
+    if reference.startswith('rule_fact:'):return _from_fact(harness,raw)
+    record=ExecutionRecord.from_dict(raw.get('record') or raw,harness.store)
     if raw.get('task_payload'):record.execution_features['retained_task_payload']=copy.deepcopy(raw['task_payload'])
     if raw.get('task_text'):record.execution_features['retained_task_text']=raw['task_text']
     return record
@@ -137,6 +136,8 @@ def resolve_execution(harness,execution_id,*,include_excluded=False):
             fact=get_value(harness.store,job['source_fact_ref'])
             if fact.get('execution_ref'):
                 record=_decode(harness,fact['execution_ref'])
+            elif job['source_fact_ref'].startswith('rule_fact:'):
+                record=_from_fact(harness,fact)
             elif fact.get('execution_id')==execution_id:
                 record=ExecutionRecord.from_dict({'execution_id':execution_id,'task_id':fact['task_id'],
                     'strategy_id':fact['strategy_id'],'source':'executed','created_at':fact.get('created_at'),

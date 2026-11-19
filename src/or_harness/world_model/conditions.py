@@ -30,6 +30,9 @@ def digest(value: Any) -> str:
 
 
 def put_value(conn, store, kind: str, value: Any) -> str:
+    from or_harness.core.evidence_encoding import share_values,compact_check
+    if kind=='task_check':value=compact_check(value,store)
+    if kind!='method':value=share_values(store,value)
     key = kind + ":" + digest(value)
     conn.execute("INSERT OR IGNORE INTO condition_values VALUES (?,?,?)",
                  (key, kind, store.dumps(value)))
@@ -45,6 +48,17 @@ def get_value(store, key: str) -> Dict[str, Any]:
     value = store.loads(row["payload"])
     if digest(value) != key.split(":", 1)[-1]:
         raise StorageError(f"immutable condition value integrity failure: {key!r}")
+    from or_harness.core.evidence_encoding import resolve_values,expand_check
+    value=resolve_values(store,value)
+    if row is not None and key.startswith('task_check:'):value=expand_check(value,store)
+    if key.startswith('rule_fact:'):
+        if (value.get('checker') or {}).get('report_ref'):
+            value['checker']=get_value(store,value['checker']['report_ref'])
+        if value.get('task_input_ref') and not value.get('task_text'):
+            problem=get_value(store,value['task_input_ref'])
+            task=problem.get('task_input') or problem.get('task_payload') or {}
+            text=task.get('text') or task.get('description')
+            if text:value['task_text']=text
     return value
 
 
@@ -361,6 +375,15 @@ def persist_context(store, context):
             for name, value in (("calibration", context.strategy_calibration),
                                 ("paired", context.paired_feedback),
                                 ("hplus", context.hplus_feedback)) if value}
+        # These exact values already have immutable references in the audit
+        # manifest. The live input resolves them instead of persisting them
+        # again; release/expiry semantics still use the same runtime row.
+        from or_harness.core.evidence_encoding import share_values
+        for field,name in (('strategy_calibration','calibration'),('paired_feedback','paired'),('hplus_feedback','hplus')):
+            if name in header['feedback_versions']:
+                raw[field]={'$shared':header['feedback_versions'][name]}
+        raw['retrieval']['hits']=[{'$shared':row['value_ref']} for row in header['evidence_versions']]
+        raw=share_values(store,raw)
         header["target_versions"] = [put_value(conn, store, "knowledge_target", target)
                                      for target in context.knowledge_targets]
         conn.execute("INSERT OR IGNORE INTO prediction_contexts VALUES (?,?,?,?,?)",
@@ -408,7 +431,8 @@ def read_context(store, context_id):
         if row is None or row["expires_at"] <= time.time():
             raise ContextExpired(f"context {context_id!r} expired or consumed; "
                                  "create a new decision (audit manifest remains readable)")
-        data = store.loads(row["payload"])
+        from or_harness.core.evidence_encoding import resolve_values
+        data = resolve_values(store,store.loads(row["payload"]))
         if isinstance(data.get("joint"), dict) and data["joint"].get("value_ref"):
             data["joint"] = get_value(store, data["joint"]["value_ref"])
     return PredictionContext.from_dict(data)

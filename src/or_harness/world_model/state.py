@@ -227,9 +227,10 @@ class KnowledgeRef:
     #: ``verification_state`` (the entry's ONE verification block).
     claim: Optional[Dict[str, Any]] = None
     rule: Optional[Dict[str, Any]] = None
+    quality_estimated: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        raw = {
             "entry_id": self.entry_id,
             "strategy_id": self.strategy_id,
             "predicates": copy.deepcopy(self.predicates),
@@ -248,6 +249,18 @@ class KnowledgeRef:
             "snapshot_at": self.snapshot_at,
             **({"rule": copy.deepcopy(self.rule)} if self.rule else {}),
         }
+        if self.rule and self.quality_estimated is not None:
+            raw['quality_estimated']=self.quality_estimated
+            if not self.quality_estimated and not self.support_n:
+                for key in ('expected_quality_hat','quality_interval','quality_estimated'):
+                    raw.pop(key,None)
+            if not self.expected_cost_hat:
+                raw.pop('expected_cost_hat',None);raw.pop('cost_interval',None)
+            if not self.support_n:
+                raw.pop('support_n',None)
+                if self.failure_prob==0.5:raw.pop('failure_prob',None)
+            if self.claim is None:raw.pop('claim',None)
+        return raw
 
     @classmethod
     def from_entry(cls, entry) -> "KnowledgeRef":
@@ -258,13 +271,16 @@ class KnowledgeRef:
             expected_quality_hat=entry.expected_quality_hat,
             quality_interval=(entry.quality_interval[0],
                              entry.quality_interval[1]),
-            expected_cost_hat=entry.expected_cost_hat.to_dict(),
+            expected_cost_hat=({d:getattr(entry.expected_cost_hat,d) for d in entry.expected_cost_hat.measured}
+                               if entry.rule and entry.expected_cost_hat.measured is not None
+                               else entry.expected_cost_hat.to_dict()),
             cost_interval={d: (lo, hi) for d, (lo, hi)
                            in entry.cost_interval.items()},
             failure_prob=entry.failure_prob,
             support_n=entry.support_n,
             status=entry.status,
             verification_state=entry.verification_state,
+            quality_estimated=bool(entry.quality_estimated),
             claim=(copy.deepcopy(entry.claim)
                    if entry.claim is not None else None),
             snapshot_at=time.time(),
@@ -293,6 +309,8 @@ class KnowledgeRef:
                    if isinstance(data.get("claim"), dict) else None),
             snapshot_at=float(data.get("snapshot_at", time.time())),
             rule=copy.deepcopy(data.get("rule")),
+            quality_estimated=(data.get('quality_estimated') if 'quality_estimated' in data else
+                               False if data.get('rule') and 'expected_quality_hat' not in data else None),
         )
 
 

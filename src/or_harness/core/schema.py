@@ -103,8 +103,13 @@ DEFAULT_COST_WEIGHTS: Dict[str, float] = {
 class CostVector:
     """Raw resource dimensions with an explicit measurement mask.
 
-    Stored raw, never folded into a scalar at rest. ``retries`` counts only
-    *extra* attempts beyond the first (a first failure is not a retry).
+    Stored raw, never folded into a scalar at rest. Execution ``retries``
+    is THIS attempt's increment: 0 for the first real attempt of a task and
+    episode, 1 for each subsequent attempt, even after a method/solver
+    change. Three attempts store 0/1/1 and sum to 2. A failed first attempt
+    is still the baseline. A world-model remaining-cost prediction instead
+    estimates additional attempts AFTER its bound attempt (2/1/0 actuals
+    for decisions before those three attempts); it may be fractional.
     ``llm_tokens`` is unknown at execution time (the harness owns the LLM)
     and is backfilled later via ``orx record --override llm_tokens=...``.
     It keeps the input-plus-output accounting total. ``output_tokens`` is
@@ -922,6 +927,8 @@ def validate_claim(raw: Any) -> Dict[str, Any]:
 
 def claim_text(entry: "StrategicEntry") -> str:
     """The entry's stated claim text (empty when it states none)."""
+    if entry.rule and entry.rule.get('body'):
+        return "\n".join(str(entry.rule['body'][k]) for k in ('when','do','expect'))
     return str(((entry.claim or {}).get("text")) or "")
 
 
@@ -935,12 +942,14 @@ def claim_scope_tasks(entry: "StrategicEntry") -> Set[str]:
     tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)}
     if tasks:
         return tasks
+    if entry.rule and 'evidence' in entry.rule:
+        return {str(e['task_id']) for e in entry.rule['evidence'] if e.get('task_id')}
     return {str(t) for t in ((entry.claim or {}).get("tasks") or []) if str(t)}
 
 
 def claim_evidence_refs(entry: "StrategicEntry") -> List[Dict[str, Any]]:
     """The ``{execution_id, role}`` references grounding the claim."""
-    evidence = (entry.claim or {}).get("evidence")
+    evidence = (entry.rule or {}).get('evidence', (entry.claim or {}).get("evidence"))
     return list(evidence) if isinstance(evidence, list) else []
 
 
@@ -1398,16 +1407,16 @@ class ExecutionRecord:
                               if self.method_actual is not None else None),
         }
 
-    def to_storage_dict(self) -> Dict[str, Any]:
+    def to_storage_dict(self,store=None) -> Dict[str, Any]:
         from or_harness.core.evidence_encoding import compact_payload
-        return compact_payload(self.to_dict())
+        return compact_payload(self.to_dict(),store)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ExecutionRecord":
+    def from_dict(cls, data: Dict[str, Any],store=None) -> "ExecutionRecord":
         if not isinstance(data, dict):
             raise ValueError("ExecutionRecord must be a JSON object")
         from or_harness.core.evidence_encoding import expand_payload
-        data = expand_payload(data)
+        data = expand_payload(data,store)
         for key in ("execution_id", "task_id", "strategy_id", "profile_snapshot"):
             if key not in data:
                 raise ValueError(f"ExecutionRecord.{key} is required")
@@ -1661,7 +1670,7 @@ class StrategicEntry:
         ``strategy_id`` is a free-form subject rather than a strategy id.
         Such an entry makes no quality/cost/failure claim, and its
         publication follows its version state, or historical semantics."""
-        return self.claim is not None and self.support_n == 0
+        return (self.claim is not None or self.rule is not None) and self.support_n == 0
 
     @property
     def is_published(self) -> bool:
@@ -1718,7 +1727,7 @@ class StrategicEntry:
         return profile_matches(profile, self.predicates)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        raw = {
             "entry_id": self.entry_id,
             "strategy_id": self.strategy_id,
             "pattern": {"predicates": self.predicates},
@@ -1764,6 +1773,28 @@ class StrategicEntry:
             "created_at": self.created_at,
             **({"rule": copy.deepcopy(self.rule)} if self.rule else {}),
         }
+        if self.rule and not self.rule.get('legacy_version'):
+            if (raw.get('verification') or {}).get('claim')==(self.rule.get('body') or {}).get('expect') and (raw.get('verification') or {}).get('claim') is not None:
+                raw['verification'].pop('claim')
+                raw['verification']['claim_ref']={'value_ref':self.rule.get('body_ref'),'field':'expect'}
+            expected=raw['expected']
+            if not self.quality_estimated and not self.support_n:
+                for key in ('quality_estimated','quality_hat','quality_interval'):
+                    expected.pop(key,None)
+            if not self.effect_attribution:expected.pop('effect_attribution',None)
+            if self.expected_cost_hat.measured is not None:
+                expected['cost_hat']={d:expected['cost_hat'][d] for d in self.expected_cost_hat.measured}
+            if not expected['cost_hat']:
+                for key in ('cost_hat','cost_measured','cost_interval'):expected.pop(key,None)
+            if not self.support_n and self.failure_prob==0.5:expected.pop('failure_prob',None)
+            if not expected:raw.pop('expected')
+            for key in ('claim','last_consulted_at','fallback_strategy_id','strategy_type','verification'):
+                if raw.get(key) is None:raw.pop(key,None)
+            for key in ('applicability','risk_conditions','actions','cost_support_n','provenance'):
+                if not raw[key]:raw.pop(key,None)
+            if self.prediction_track==PredictionTrack():raw.pop('prediction_track',None)
+            if not self.support_n:raw.pop('support_n',None)
+        return raw
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "StrategicEntry":
@@ -1795,6 +1826,8 @@ class StrategicEntry:
         if isinstance(raw_measured, list):
             cost_hat.measured = {str(d) for d in raw_measured
                                  if d in COST_DIMENSIONS}
+        elif data.get('rule') and 'cost_hat' not in expected:
+            cost_hat.measured=set()  # omitted means unestimated, not a zero vector
         return cls(
             entry_id=str(data["entry_id"]),
             strategy_id=str(data["strategy_id"]),

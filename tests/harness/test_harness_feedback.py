@@ -433,7 +433,7 @@ class TestCostCompletenessSignal(HarnessTestCase):
             out = h.record(rec)
             block = out["cost_completeness"]
             self.assertEqual(set(block["missing"]),
-                             {"llm_tokens", "tool_calls", "retries",
+                             {"llm_tokens", "output_tokens", "tool_calls", "retries",
                               "remaining_latency_s"})
             self.assertIn("UNKNOWN", block["note"])
             self.assertIn("--override", block["note"])
@@ -494,8 +494,7 @@ class TestCostCompletenessSignal(HarnessTestCase):
 
 
 class TestProvableRetries(HarnessTestCase):
-    """retries=0 is claimed only when the framework can PROVE there was
-    nothing to retry — otherwise the count stays unknown."""
+    """The real task/episode chain proves each attempt's retry increment."""
 
     def _script(self, name="solve_ret.py"):
         from pathlib import Path
@@ -522,10 +521,7 @@ class TestProvableRetries(HarnessTestCase):
         finally:
             h.close()
 
-    def test_second_attempt_of_the_same_strategy_is_unknown(self):
-        """A second attempt of the same (task, episode, strategy) may or may
-        not be a retry — the framework must not guess, so the count stays
-        unmeasured until the harness declares it."""
+    def test_second_attempt_of_the_same_strategy_adds_one_retry(self):
         h = ORHarness(home=self.home)
         try:
             first = execute_scored(h,self._task("tr2"), "S01", self._script("a.py"),
@@ -533,17 +529,17 @@ class TestProvableRetries(HarnessTestCase):
             h.record(first)
             second = execute_scored(h,self._task("tr2"), "S01", self._script("b.py"),
                                self.home, solver="highs", episode_id="ep2")
-            self.assertNotIn("retries", second.cost.measured_dims())
-            self.assertNotIn("retries_proof", second.execution_features)
-            # The harness declares the relationship explicitly.
-            h.record(second, override={"retries": 1.0})
+            self.assertEqual(second.cost.retries,1)
+            self.assertIn("retries", second.cost.measured_dims())
+            self.assertEqual(second.execution_features['cost_provenance']['retries']['source'],'agent_observed')
+            h.record(second)
             self.assertEqual(h.bank.get(second.execution_id).cost.retries, 1.0)
             self.assertIn("retries",
                           h.bank.get(second.execution_id).cost.measured_dims())
         finally:
             h.close()
 
-    def test_a_different_strategy_is_not_a_prior_attempt(self):
+    def test_a_different_strategy_is_still_a_retry(self):
         h = ORHarness(home=self.home)
         try:
             first = execute_scored(h,self._task("tr3"), "S01", self._script("c.py"),
@@ -551,7 +547,7 @@ class TestProvableRetries(HarnessTestCase):
             h.record(first)
             other = execute_scored(h,self._task("tr3"), "S02", self._script("d.py"),
                               self.home, solver="highs", episode_id="ep3")
-            self.assertEqual(other.cost.retries, 0.0)
+            self.assertEqual(other.cost.retries, 1.0)
             self.assertIn("retries", other.cost.measured_dims())
         finally:
             h.close()

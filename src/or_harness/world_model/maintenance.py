@@ -280,6 +280,7 @@ def _material_entry(harness, record: Any,
     ONLY to compute the ``changes`` block — the framework reports the code
     hash and method differences as FACTS and never explains their meaning.
     """
+    from or_harness.strategy.evidence_views import dedupe_methods
     features = record.execution_features or {}
     task_check = features.get("task_check")
     planned = record.method_planned
@@ -326,11 +327,8 @@ def _material_entry(harness, record: Any,
         },
         # Method evidence: the PLAN the agent declared and the method the run
         # reports it ACTUALLY performed (a plan is never promoted to a fact).
-        "method": {
-            "planned": _compact_method(planned),
-            "actual": _compact_method(actual),
-            "basis": method_basis,
-        },
+        "method": dedupe_methods(
+            _compact_method(planned),_compact_method(actual)),
         "outcome": {
             "status": (record.quality or {}).get("status"),
             "feasible": (record.quality or {}).get("feasible"),

@@ -399,7 +399,7 @@ class Store:
 
     @staticmethod
     def dumps(obj: Any) -> str:
-        return json.dumps(obj, sort_keys=True, separators=(",", ":"))
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"),ensure_ascii=False)
 
     @staticmethod
     def loads(raw: str) -> Dict[str, Any]:

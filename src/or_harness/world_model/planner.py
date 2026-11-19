@@ -631,6 +631,11 @@ def score_strategy_outcome_predictions(
         elif None in keys or len(keys) != 1:
             common.discard(dim)
             omitted_dims[dim] = {"reason": "different or unknown measurement scopes"}
+        elif dim=='retries':
+            from or_harness.world_model.cost_signal import retries_convention
+            if len({retries_convention(p) for p in participants})!=1:
+                common.discard(dim)
+                omitted_dims[dim]={'reason':'different retry observation conventions'}
     # Keep old declarations inspectable/calibratable in their own units.
     # Strategy U prices generation, never the raw input-plus-output total.
     if "llm_tokens" in all_dims:

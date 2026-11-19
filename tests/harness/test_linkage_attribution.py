@@ -636,8 +636,9 @@ class TestInterruptedAttemptIsPreserved(Base):
         retry = execute_scored(self.h,TASK, "S01", str(self.script), str(self.work),
                                solver="highs", episode_id="ep1",
                                prediction_id=fresh.prediction_id)
-        self.assertNotIn("retries", retry.cost.measured_dims())
-        self.assertNotIn("retries_proof", retry.execution_features)
+        self.assertIn("retries", retry.cost.measured_dims())
+        self.assertEqual(retry.cost.retries,1)
+        self.assertIn("retries_proof", retry.execution_features)
         self.h.record(retry)
         result = self.h.close_episode("t1", "ep1")
         # The EPISODE occurrence counts BOTH attempts: the failed one really

@@ -260,6 +260,12 @@ Record an action performed outside `execute`. Choose `model|select_strategy|veri
 
 Read episode usage or save limits with `--declare`. Tokens, tool calls, solver runtime and retries accumulate over the episode. Latency limits apply per attempt. Read `status`, `exceeded_dims`, `episode_exhausted` and `attempt_limited`. Unknown usage for a declared dimension leaves the budget `unconfirmed`. An exhausted episode or confirmed host stop blocks new planning and execution.
 
+`execute` automatically observes each real attempt's retry increment within
+the task/episode, including failures and changes of strategy or solver.
+Three attempts record 0/1/1 and consume 2 retries. The corresponding
+world-model remaining-cost predictions are for future additional attempts,
+with actuals 2/1/0; see [retry cost semantics](strategy_outcome.md#4-budgets-stops-and-archiving-an-interrupted-run).
+
 ## 7. Close out and inspect calibration
 
 ### `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`

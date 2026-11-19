@@ -56,8 +56,11 @@ class BudgetLedger:
         episode of it).
 
         Aggregation rules mirror ``task_cost_summary``: cumulative
-        dimensions sum over measured attempts; retries sum (per-attempt NEW
-        retries); per-attempt latencies are reported as facts and never
+        dimensions sum over measured attempts; retries sum the framework's
+        per-attempt increments within one task/episode (0/1/1 totals 2,
+        including failures and method/solver changes). This is distinct
+        from a prediction's future-additional-attempt actuals of 2/1/0.
+        Per-attempt latencies are reported as facts and never
         summed or maxed into an end-to-end figure. Staged executions count
         the same way, deduplicated by execution_id against recorded ones.
         Non-execution actions add their own measured costs (rollup="own"

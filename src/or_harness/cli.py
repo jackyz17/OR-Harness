@@ -233,11 +233,12 @@ def _summarize_recall(result: Dict[str, Any]) -> str:
                      + str(basis.get("reason") or ""))
     else:
         top = recs[0]
-        parts.append(f"Recalled strategy (relevance order, NOT a utility "
-                     f"ranking): {top['strategy_id']}, "
-                     f"evidence={top['evidence']}, "
-                     f"E[Q]={top['expected']['quality']}, "
-                     f"P(fail)={top['expected']['failure_prob']}.")
+        text=(f"Recalled strategy (relevance order, NOT a utility "
+              f"ranking): {top['strategy_id']}, evidence={top['evidence']}.")
+        expected=top.get('expected') or {}
+        if expected.get('quality') is not None:text+=f" E[Q]={expected['quality']}."
+        if expected.get('failure_prob') is not None:text+=f" P(fail)={expected['failure_prob']}."
+        parts.append(text)
         budget = result.get("recall_budget") or {}
         if budget.get("omitted"):
             parts.append(f"{budget['omitted']} more recalled row(s) beyond "
@@ -1180,6 +1181,8 @@ def cmd_induction_material(args) -> int:
             view=getattr(args, "view", "compact"), purpose=getattr(args, "purpose", "modelling"),
             related_top_k=getattr(args, "related_top_k", 5)
             if getattr(args, "related_top_k", 5) is not None else 5)
+        if result.get('state')=='completed' and not result.get('material_assembled',True):
+            return _emit(result, 'Induction already completed. Read the existing receipt and material references; no new review was scheduled.')
         if result.get("version") == "induction-material/2":
             if not result.get("material_assembled", True):
                 return _emit(result, "Induction " + result["induction_gate"]["state"] + ": " + result["reason"])
@@ -2300,8 +2303,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="explicitly discard a staged execution")
     p.add_argument("--override", default=None,
                    help="cost backfill, e.g. 'llm_tokens=1840,tool_calls=9' "
-                        "(or 'retries=1' to declare this attempt is itself "
-                        "a retry)")
+                        "(execute already observes retries=0/1 from the "
+                        "task/episode's real attempt chain)")
     p.add_argument("--override-mode", default="replace",
                    choices=["replace", "increment"],
                    help="backfill accounting: 'replace' (default, idempotent — "

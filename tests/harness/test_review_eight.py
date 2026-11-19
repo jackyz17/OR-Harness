@@ -304,7 +304,7 @@ class TestAgentPublicationAndVersions(AgentCase):
         self.assertFalse(review['actual_version_use'])
         self.assertEqual(review['scope']['acceptance']['basis'],['reference_objective'])
         meta=get_value(self.h.store,version_row(self.h.store,entry,2)['metadata_ref'])
-        self.assertEqual(meta['required_regressions'],[])
+        self.assertNotIn('required_regressions',meta)
         self.assertFalse(any(c['state']=='pending' for c in check_records(self.h.store,entry,2)))
         self.assertEqual(self.h.sbank.get(entry).rule['active_version'],1)
         _,trial,_=self.run_task(task('v2-trial',812,200),entry_id=entry,version=2)

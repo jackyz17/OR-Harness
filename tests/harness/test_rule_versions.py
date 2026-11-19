@@ -376,11 +376,11 @@ class TestRuleLifecycle(RuleCase):
         entry_id,training,_=self.seed()
         transfer,boundary=self.activate(entry_id)
         raw=self.h.store.loads(self.h.store.conn.execute('SELECT payload FROM executions WHERE execution_id=?',(transfer.execution_id,)).fetchone()[0])
-        self.assertEqual(raw['evidence_encoding'],'execution-evidence/2')
+        self.assertEqual(raw['evidence_encoding'],'execution-evidence/3')
         self.assertNotIn('note',raw['execution_features']['execution_config'])
         self.assertEqual(raw['execution_features']['method_receipt']['method_ref'],'method_actual')
         from or_harness.core.schema import ExecutionRecord
-        decoded=ExecutionRecord.from_dict(raw)
+        decoded=ExecutionRecord.from_dict(raw,self.h.store)
         self.assertEqual(decoded.cost.measured,transfer.cost.measured)
         self.assertEqual(decoded.method_actual,transfer.method_actual)
         self.assertIsNone(decoded.prediction_snapshot)

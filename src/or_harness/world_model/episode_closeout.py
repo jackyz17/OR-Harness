@@ -66,6 +66,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.storage import StorageError
 from or_harness.core.schema import NON_CUMULATIVE_DIMENSIONS
 from or_harness.core.schema import is_finite_number as _finite
 from or_harness.core.schema import (
@@ -1006,6 +1007,8 @@ def _cost_scope_records(harness, prediction, action, bound_records,
     remaining task (failed attempts and repairs included), not the first
     attempt. Overlap is avoided by keying on the execution itself: each
     in-episode execution contributes ONCE, whoever else also covers it.
+    The bound attempt remains in this resource list. The new retries adapter
+    separately counts only attempts after that baseline, not these increments.
 
     Returns ``(records, note)``. When the declared span cannot be observed
     the note says so and the records are the best available; the comparison
@@ -1081,10 +1084,9 @@ def _action_for_execution(harness, record) -> Optional[Any]:
         actions = harness.actions.query(task_id=record.task_id)
     except Exception:  # noqa: BLE001 - a read failure must not crash close-out
         return None
-    for action in actions:
-        if action.linked_execution_id == record.execution_id:
-            return action
-    return None
+    linked=[a for a in actions if a.linked_execution_id==record.execution_id and
+            a.action_type=='execute_strategy' and a.source!='hypothetical']
+    return next((a for a in linked if a.action_id==record.action_id),linked[0] if linked else None)
 
 
 def _closeout_created_at(harness, task_id: str,
@@ -1375,7 +1377,7 @@ def _annotate_budget_comparability(harness, prediction, summary) -> None:
         }
 
 
-def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
+def summarize_real_outcome(harness, prediction, *, closed_through=None) -> RealOutcomeSummary:
     """Build the real-outcome summary of ONE bound prediction.
 
     ``prediction`` is a :class:`~or_harness.world_model.contracts
@@ -1559,7 +1561,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     # though both land in [0,1].
     benefit = prediction.benefit
     if g_observation_convention(prediction) is not None:
-        observe_faithful_g(summary, records, prediction)
+        observe_faithful_g(summary, records, prediction, store=harness.store)
     elif benefit is not None and benefit.kind == "solution_quality":
         observable = _observable_benefit_metric(benefit.metric)
         if observable is None:
@@ -1690,7 +1692,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     elif benefit is not None and benefit.kind == "effective_completion":
         observable = _observable_benefit_metric(benefit.metric)
         if benefit.metric == FAITHFUL_G_METRIC:
-            observe_faithful_g(summary, records, prediction)
+            observe_faithful_g(summary, records, prediction, store=harness.store)
         elif observable == OBSERVABLE_COMPLETION_METRIC or observable is None \
                 and str(benefit.metric or "") in (
                     "task_result_check_passed", "task_check_passed"):
@@ -1781,7 +1783,8 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                     if str(a.episode_id or "") == str(candidate.episode_id or "")]
     observe_cost_window(summary, prediction, cost_actions, cost_records,
         anchor=anchor, anchor_id=(prediction.trace.model_info or {}).get("decision_action_id"),
-        end=end, end_basis=end_basis, cutoff=closeout_created_at)
+        end=end, end_basis=end_basis, cutoff=closeout_created_at,
+        bound_action=action, terminated_at=(end if end_basis=='finish_task' else closeout_created_at or closed_through))
     # Auxiliary overhead: the OTHER actions of the same episode (model /
     # verify / select_strategy / other executions) — real spend, reported,
     # never folded into the predicted scope's comparison.
@@ -2522,9 +2525,33 @@ class StrategyPredictionEvaluation:
     def _derive_calibratable(self) -> bool:
         return self.state == "evaluated"
 
+    def to_storage_dict(self,store):
+        from or_harness.core.evidence_encoding import share_values
+        raw=self.to_dict()
+        reference=raw['benefit'].get('attribution_ref')
+        if reference:
+            from or_harness.world_model.conditions import get_value
+            try:stored_attribution=get_value(store,reference).get('attribution')
+            except StorageError:stored_attribution=None
+            if stored_attribution is not None and raw['benefit'].get('attribution')==stored_attribution:
+                raw['benefit'].pop('attribution')
+        # The per-field index is deterministically reconstructed on read.
+        if raw['eligibility']==self._derive_eligibility():raw.pop('eligibility')
+        return share_values(store,raw)
+
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StrategyPredictionEvaluation":
+    def from_dict(cls, data: Dict[str, Any], store=None) -> "StrategyPredictionEvaluation":
         data = data or {}
+        if store is not None:
+            from or_harness.core.evidence_encoding import resolve_values
+            data=resolve_values(store,data)
+            benefit=data.get('benefit') or {}
+            if benefit.get('attribution_ref') and 'attribution' not in benefit:
+                from or_harness.world_model.conditions import get_value
+                try:
+                    benefit['attribution']=copy.deepcopy(get_value(store,benefit['attribution_ref'])['attribution'])
+                except (StorageError,KeyError,TypeError):
+                    benefit['attribution']={'issues':['G assessment evidence is unavailable']}
         return cls(
             evaluation_id=str(data.get("evaluation_id")
                               or _new_id("ev")),
@@ -2546,6 +2573,9 @@ class StrategyPredictionEvaluation:
             attribution=copy.deepcopy(dict(data.get("attribution") or {})),
             method_deviation=(copy.deepcopy(data.get("method_deviation"))
                               if data.get("method_deviation") else None),
+            method_actual=copy.deepcopy(data.get('method_actual')),
+            failure_classes=list(data.get('failure_classes') or []),
+            execution_status=data.get('execution_status'),
             calibratable=bool(data.get("calibratable", False)),
             exclusion_reasons=[str(r) for r in
                                (data.get("exclusion_reasons") or [])],
@@ -2739,6 +2769,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "execution_ids": list(summary.execution_ids),
             "task_check": copy.deepcopy(fact.get("task_check")),
             "attribution": copy.deepcopy(fact.get("attribution")),
+            "attribution_ref": fact.get("attribution_ref"),
             "execution_conditions": copy.deepcopy(fact.get("execution_conditions")),
             "acceptance_rule": copy.deepcopy(fact.get("acceptance_rule")),
             "acceptance_support": copy.deepcopy(fact.get("acceptance_support")),
@@ -2818,6 +2849,8 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 "abs_error": round(abs(p - a), 6),
                 "signed_error": round(a - p, 6),
             }
+            if real.get('observation_rule_version'):
+                entry['observation_rule_version']=real['observation_rule_version']
             if p > 0 and a > 0:
                 ratio = math.log(a / p)
                 # DIRECTED error: positive = the real cost was HIGHER than
@@ -3314,7 +3347,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
             task_id=task_id, episode_id=episode_id,exact_episode=True):
         if not prediction.trace.model_info.get("bound_action_id"):
             continue
-        summary = summarize_real_outcome(harness, prediction)
+        summary = summarize_real_outcome(harness, prediction, closed_through=closeout.created_at)
         evaluation = evaluate_strategy_prediction(prediction, summary)
         evaluations.append(evaluation)
 
@@ -3332,7 +3365,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
                 (f"strategy_evaluation|{evaluation.evaluation_id}",
-                 store.dumps(evaluation.to_dict())))
+                 store.dumps(evaluation.to_storage_dict(store))))
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
             (key, store.dumps(closeout.to_dict())))
@@ -3516,7 +3549,7 @@ def _put_evaluation(store, evaluation: StrategyPredictionEvaluation
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
             (f"strategy_evaluation|{evaluation.evaluation_id}",
-             store.dumps(evaluation.to_dict())))
+             store.dumps(evaluation.to_storage_dict(store))))
 
 
 def get_evaluation(store, evaluation_id: str
@@ -3526,7 +3559,7 @@ def get_evaluation(store, evaluation_id: str
         (f"strategy_evaluation|{evaluation_id}",)).fetchone()
     if row is None:
         return None
-    return StrategyPredictionEvaluation.from_dict(store.loads(row["value"]))
+    return StrategyPredictionEvaluation.from_dict(store.loads(row["value"]),store)
 
 
 def episode_closeout_record(harness, task_id: str,
@@ -3662,7 +3695,7 @@ def _evaluations_for_window(harness, window: Sequence[Dict[str, Any]]
         for row in rows:
             try:
                 out.append(StrategyPredictionEvaluation.from_dict(
-                    harness.store.loads(row["value"])))
+                    harness.store.loads(row["value"]),harness.store))
             except Exception:
                 continue
     return out
@@ -3880,9 +3913,9 @@ def _window_executions(harness, window: Sequence[Dict[str, Any]]
             actions_by_task[task_id] = harness.actions.query(task_id=task_id)
         actions = actions_by_task[task_id]
         for record in by_task[task_id]:
-            action = next(
-                (a for a in actions
-                 if a.linked_execution_id == record.execution_id), None)
+            linked=[a for a in actions if a.linked_execution_id==record.execution_id and
+                    a.action_type=='execute_strategy' and a.source!='hypothetical']
+            action=next((a for a in linked if a.action_id==record.action_id),linked[0] if linked else None)
             if action is None:
                 if episode_id == "":
                     facts[(task_id, episode_id)].append(record)
@@ -5123,7 +5156,7 @@ def build_paired_feedback(
                     trace=SimpleNamespace(model_info={"benefit_convention": {
                         "metric": FAITHFUL_G_METRIC,
                         "observation_rule_version": FAITHFUL_G_OBSERVATION_VERSION}}))
-                observe_faithful_g(case, records, declared)
+                observe_faithful_g(case, records, declared, store=harness.store)
                 if "observed" in case.benefit:
                     row["g_observed_fact"] = {k: copy.deepcopy(v) for k, v in case.benefit.items()
                         if k in ("metric", "observation_rule_version", "observed", "acceptance_id", "acceptance_rule", "evidence_refs", "verified_objective")}
@@ -5809,27 +5842,8 @@ def _single_case_reminders(out_groups: Dict[str, Any],
 def _compact_method_steps(steps: Sequence[Any], *,
                           max_steps: int = 12,
                           per_step_chars: int = 220) -> List[str]:
-    """Compact a method's steps WITHOUT dropping the key constraints.
-
-    The old rule kept the first THREE steps and clipped them, which silently
-    deleted later steps that carry the binding constraints (an upper bound, a
-    boundary condition, a final solve step) — the material then looked
-    complete while the decisive relation was gone. r12 keeps EVERY step up to
-    ``max_steps`` and only clips the individual text, so a normal six-step
-    method travels whole. When a method really has more steps than the cap,
-    the cap is spent on the FIRST and LAST steps (the setup and the final
-    solve/bound usually live at the ends) and the middle is elided with an
-    explicit marker rather than silently truncated.
-    """
-    cleaned = [(" ".join(str(s).split()))[:per_step_chars]
-               for s in steps if str(s).strip()]
-    if len(cleaned) <= max_steps:
-        return cleaned
-    head = max_steps // 2
-    tail = max_steps - head - 1
-    return (cleaned[:head]
-            + [f"...[{len(cleaned) - head - tail} step(s) elided]..."]
-            + (cleaned[-tail:] if tail else []))
+    """Keep complete method steps; remove duplicate content by reference."""
+    return [str(s) for s in steps if str(s).strip()]
 
 
 def _risk_label_basis_code(basis: Any) -> Optional[str]:
@@ -5950,13 +5964,8 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     row["problem_identity_digest"] = info.get("problem_identity_digest")
     row["execution_conditions"] = copy.deepcopy(benefit.get("execution_conditions"))
     row["task_check"] = copy.deepcopy(benefit.get("task_check"))
-    # The method that was planned, one line: its name, the number of steps
-    # and the steps THEMSELVES. r12 keeps EVERY step (up to a cap that a
-    # normal method never reaches) and clips only the per-step text, so a
-    # method that carries a binding constraint in a later step travels
-    # whole. The old "first three steps" rule silently deleted exactly the
-    # constraints (an upper bound, a boundary, the final solve) a later
-    # prediction needed. Never a paraphrase.
+    # Keep every planned step. Exact repetitions in actual/deviation facts
+    # refer back to this body; unique changes remain readable in full.
     method = getattr(getattr(prediction, "candidate", None), "method", None)
     if isinstance(method, dict) and method:
         steps = [str(s) for s in (method.get("steps") or [])]
@@ -6102,6 +6111,9 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
             cost.get("observed_not_predicted"))
     if cost.get("observed_fact"):
         row["cost_observed_fact"] = copy.deepcopy(cost["observed_fact"])
+        if row['cost_observed_fact'].get('method_actual')==actual_method:
+            row['cost_observed_fact'].pop('method_actual')
+            row['cost_observed_fact']['method_actual_ref']='method_actual'
     if (evaluation.risk or {}).get("implementation_observation"):
         row["implementation_observation"] = copy.deepcopy(evaluation.risk["implementation_observation"])
     # The REAL risk events: which happened, which did not, which are unknown.
@@ -6168,7 +6180,8 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
                        "exclusion reasons above/below are the fact")
         if evaluation.exclusion_reasons:
             row["exclusion_reasons"] = list(evaluation.exclusion_reasons)
-    return row
+    from or_harness.strategy.evidence_views import compact_feedback_pair
+    return compact_feedback_pair(row)
 
 
 def _filter_calibration_by_model(summary: Dict[str, Any],

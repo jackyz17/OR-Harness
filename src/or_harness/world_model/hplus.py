@@ -342,10 +342,10 @@ def material_for_job(harness,job,builder,**kwargs):
     """Query current evidence every time; retain only delivered references."""
     job=get_job(harness,job['induction_id'])
     if job['state']=='completed':
-        if job.get('material_ref') and not job.get('material_policy'):
-            return {**copy.deepcopy(get_value(harness.store,job['material_ref'])),'historical':True}
         return {'material_assembled':False,'induction_id':job['induction_id'],'state':'completed',
-                'receipt_ref':job['receipt_ref'],'evidence_ids':job.get('selected_execution_ids') or []}
+                'receipt_ref':job['receipt_ref'],'receipt':get_value(harness.store,job['receipt_ref']),
+                'material_ref':job.get('material_ref'),'material_read_refs':job.get('material_read_refs') or [],
+                'evidence_ids':job.get('selected_execution_ids') or []}
     from or_harness.strategy.evidence_views import atomic
     gate={'state':'allow','source':'frozen_hplus','induction_id':job['induction_id'],
         'prediction_id':job['prediction_id'],'decision':job['signal']['decision'],

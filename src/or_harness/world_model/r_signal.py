@@ -137,9 +137,6 @@ def technical_attempt_fact(record):
     script = artifacts.get("submitted_script")
     if fact["label"] == 0 and isinstance(script, dict) and script.get("sha256"):
         fact["reusable_script"] = copy.deepcopy(script)
-    check = features.get("task_check") or {}
-    if check.get("g_attribution"):
-        fact["semantic_attribution"] = copy.deepcopy(check["g_attribution"])
     return fact
 
 

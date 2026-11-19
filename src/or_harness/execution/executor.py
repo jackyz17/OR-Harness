@@ -20,8 +20,8 @@ Cost semantics — only TWO dimensions are genuinely measured here:
   never silently zero, never pretending to be a precise solver runtime. A
   script that never ran (rejected by the sandbox policy) measures NOTHING.
 
-Three dimensions are NOT measurable by the executor and stay UNKNOWN until
-the harness declares them via ``orx record --override``:
+Some dimensions are not observable inside the sandbox; the execution host
+or framework supplies them:
 
 - ``llm_tokens`` — the LLM is the outer harness's, invisible to the sandbox.
 - ``tool_calls`` — ALL tool invocations within the record's declared scope
@@ -29,10 +29,10 @@ the harness declares them via ``orx record --override``:
   executor sees exactly one of them (its own spawn) and records that as a
   provable LOWER BOUND (``execution_features.tool_calls_lower_bound``);
   it never claims to have measured the total.
-- ``retries`` — whether THIS attempt is itself a retry is a harness
-  declaration. The executor records only what it can prove: that no earlier
-  attempt of the same (task, episode, strategy) exists, making retries=0 a
-  fact rather than an assumption (see :meth:`api.ORHarness.execute`).
+- ``retries`` — the framework counts THIS attempt's 0/1 increment from
+  the real execution chain of the same task and episode. Strategy, solver
+  and candidate changes do not reset it. Three attempts yield 0/1/1;
+  the executor itself leaves the dimension unmeasured.
 
 Consequently the measured-dimension mask produced here is exactly
 ``{latency_s, solver_runtime_s}``. A constant is never put in the mask: the
@@ -581,15 +581,15 @@ class SafePythonExecutor:
         Cost semantics: this record covers ONE attempt. Only what the
         executor can OBSERVE enters the measured mask (``latency_s`` and, when
         the script really ran, ``solver_runtime_s``). ``tool_calls``,
-        ``retries`` and ``llm_tokens`` are harness declarations — the
-        executor records what it can prove about them instead of fabricating
+        ``retries`` and ``llm_tokens`` are supplied outside the executor — it
+        records what it can prove about them instead of fabricating
         a measured constant:
 
         - ``tool_calls`` stays unmeasured and its provable lower bound (one
           sandbox invocation) goes to ``tool_calls_lower_bound``;
         - ``retries`` stays unmeasured (whether this attempt is itself a
-          retry is not observable here — see ``api.ORHarness.execute`` for
-          the provable-zero case);
+          retry is not observable here — ``api.ORHarness.execute`` measures
+          0/1 across the task/episode's real attempt chain);
         - ``llm_tokens`` stays unmeasured until ``record --override``.
 
         ``action_id`` (optional) is the unified action record this attempt
@@ -630,7 +630,7 @@ class SafePythonExecutor:
             llm_tokens=0.0,   # harness declares via record --override
             tool_calls=0.0,   # harness declares; executor only proves a floor
             solver_runtime_s=runtime,
-            retries=0.0,      # harness declares (see api.execute for the proof)
+            retries=0.0,      # unmeasured placeholder; api.execute observes 0/1
             latency_s=latency,
             measured=measured,
         )

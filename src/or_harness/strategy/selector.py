@@ -99,7 +99,7 @@ class Recommendation:
     knowledge: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "strategy_id": self.strategy_id,
             "expected": {
                 "quality": round(self.expected_quality, 4),
@@ -118,6 +118,18 @@ class Recommendation:
                       if self.claim is not None else None),
             "knowledge": copy.deepcopy(self.knowledge),
         }
+        if self.knowledge.get('rule'):
+            estimate=self.knowledge.get('estimate') or {}
+            expected={}
+            if estimate.get('quality_hat') is not None:expected['quality']=round(self.expected_quality,4)
+            if self.cost_known_dims:
+                expected['cost']={d:round(getattr(self.expected_cost,d),4) for d in self.cost_known_dims}
+            if estimate.get('failure_prob') is not None or self.failure_prob!=0.5:
+                expected['failure_prob']=round(self.failure_prob,4)
+            if expected:out['expected']=expected
+            else:out.pop('expected',None)
+        if self.claim is None:out.pop('claim',None)
+        return out
 
 
 class Selector:
@@ -411,6 +423,21 @@ class Selector:
         """
         from or_harness.core.schema import claim_evidence_refs, \
             claim_scope_tasks
+        if entry.rule and entry.claim is None:
+            from or_harness.strategy.evidence_views import short_rule
+            # A rule is already a short, structured method. Do not construct
+            # a legacy claim and then emit it alongside the same rule again.
+            refs=claim_evidence_refs(entry)
+            out={'entry_id':entry.entry_id,'rule':short_rule(entry),
+                 'estimate':{'estimated':bool(entry.support_n or entry.quality_estimated or
+                      entry.expected_cost_hat.measured_dims() or entry.failure_prob!=0.5),
+                     'evidence_executions':len(refs),'distinct_tasks':len(claim_scope_tasks(entry))}}
+            if entry.support_n:
+                out['estimate'].update(statistical_support_n=entry.support_n,
+                    quality_hat=entry.expected_quality_hat,failure_prob=entry.failure_prob)
+            elif entry.quality_estimated:
+                out['estimate']['quality_hat']=entry.expected_quality_hat
+            return out
         has_claim = entry.claim is not None
         evidence_refs = claim_evidence_refs(entry) if has_claim else []
         # ESTIMATE HONESTY: a claim-only entry (a claim with no statistical

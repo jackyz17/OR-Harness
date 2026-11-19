@@ -134,6 +134,33 @@ their recorded completion sub-fact without rewriting historical data.
 
 First compare the candidate steps against the reference workflow: what model can be reused, what must be rebuilt, and what additional subproblem solves, merges, acceptance checks or evidenced repairs occur. Estimate effects in raw resource units, using generated-token evidence for `output_tokens`; do not add steps already included in a historical total. Close estimates are valid when supported. Cite range/case references in `evidence_basis`; use `unsupported_fields` for unavailable dimensions. `cost` contains resource fields only, and `cost.expected`/`expected_measured` retain their declaration semantics. Host rounds explain costs but are not a new cost dimension. Neither global nor single-case C residuals generate directional instructions; old cached C reminders are filtered at both provider boundaries.
 
+**Retry counts.** Each real execution records only its own retry increment
+in `cost.retries`: the first attempt of a task/episode adds 0, each later
+attempt adds 1. Switching strategy, solver or candidate does not reset that
+chain. Failed and interrupted attempts count; replanning and rechecking an
+existing execution do not. Recording the same execution again does not add
+another attempt.
+
+In a world-model `remaining_to_task_end` forecast, `cost.retries` is instead
+the expected number of solve attempts needed AFTER the bound attempt. That
+attempt is the baseline. Non-negative fractions and explicit zero are valid.
+
+| Actual attempt, with a decision before each | Execution retry increment | That decision's future additional attempts |
+|---|---|---|
+| A | 0 | 2 |
+| B | 1 | 1 |
+| C | 1 | 0 |
+
+The episode budget totals 2 retries. Close-out counts subsequent distinct
+execution identities rather than summing the baseline's and later attempts'
+increments. The request freezes `wm-retry-additional-attempts/1` under
+`cost_scope.retries_convention`; prediction traces retain it in
+`cost_observation_rule_versions.retries`. Historical predictions without this
+version retain their original increment-sum meaning. Missing execution-chain
+or termination evidence leaves the new observation unknown with a reason.
+Zero predictions and actuals still support absolute and signed error;
+log-ratios require both values to be positive.
+
 **Four honest states** (`orx budget` prints `result.status`):
 
 | State | Meaning |

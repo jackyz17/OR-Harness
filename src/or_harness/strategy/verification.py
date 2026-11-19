@@ -1801,9 +1801,6 @@ def verify_task_result(execution: Any,
         separators=(",", ":")).encode()).hexdigest()
     report = _verify_task_result(execution, check)
     report["acceptance_rule"] = {**rule, "fingerprint": fingerprint}
-    if isinstance(check, dict) and "g_attribution" in check:
-        from or_harness.world_model.g_signal import checked_attribution
-        report["g_attribution"] = checked_attribution(execution, check["g_attribution"])
     declared_basis = (report.get("scope") or {}).get("basis") or []
     if declared_basis:
         # The reference provenance is a FACT about this verdict, attached

@@ -205,14 +205,105 @@ def checked_attribution(record, declaration):
     if not set(refs).intersection(("artifacts.workspace_result", "execution_features.solution_variables")):
         issues.append("acceptance needs a result reference")
     out["resolved_refs"] = {ref: copy.deepcopy(available[ref]) for ref in refs}
-    out["method_planned"] = method_key(record.method_planned)
-    out["method_actual"] = method_key(record.method_actual)
+    from or_harness.core.evidence_encoding import method_fingerprint
+    for key in ('method_planned','method_actual'):
+        out.pop(key,None)
+        out[key+'_fingerprint']=method_fingerprint(getattr(record,key))
     out["execution_id"] = record.execution_id
     out["issues"] = issues
     return out
 
 
-def observe_faithful_g(summary, records, prediction):
+def _check_signature(report):
+    """Bind an assessment to the checks that actually ran, not just a rule ID."""
+    from or_harness.world_model.conditions import digest
+    return digest(canonical_evidence({key: copy.deepcopy(report.get(key)) for key in
+        ('state', 'checks', 'scope', 'diffs', 'intent', 'reference_source',
+         'acceptance_rule', 'checked_at')}))
+
+
+def _assessment_key(execution_id, report):
+    from or_harness.world_model.conditions import digest
+    revision = report.get('action_id') or _check_signature(report)
+    return 'g_assessment|' + digest([str(execution_id), revision])
+
+
+def save_g_assessment(store, record, report, attribution):
+    """Own G-only evidence in the world-model log; the task check stays generic.
+
+    Also used when an old inline assessment is rewritten by a normal bank
+    amendment. This compatibility path never invents fidelity or a label.
+    """
+    from or_harness.core.evidence_encoding import method_fingerprint
+    from or_harness.world_model.conditions import put_value
+    from or_harness.world_model.induction_gate import meta_write
+    raw = record if isinstance(record, dict) else record.to_dict() if record is not None else {}
+    audit = copy.deepcopy(attribution)
+    if not isinstance(audit, dict):
+        audit = {'issues': ['g_attribution must be an object']}
+    execution_id = raw.get('execution_id') or report.get('execution_id') or audit.get('execution_id')
+    if not execution_id:
+        raise ValueError('G assessment must identify its real execution')
+    with store.transaction() as conn:
+        for key in ('method_planned', 'method_actual'):
+            if key not in audit:
+                continue
+            method = audit.pop(key)
+            audit.setdefault(key + '_fingerprint', method_fingerprint(method))
+            if key not in raw or method_fingerprint(method) != method_fingerprint(raw[key]):
+                # A differing historical declaration remains available for
+                # audit, without copying its text into an execution/check.
+                body = {k: v for k, v in method.items() if k != 'source'} if isinstance(method, dict) else {'recorded_method': method}
+                audit[key + '_ref'] = put_value(conn, store, 'method', body)
+        if isinstance(audit.get('resolved_refs'), dict):
+            audit['resolved_refs'] = {key: {'sha256': value.get('sha256')}
+                for key, value in audit['resolved_refs'].items() if isinstance(value, dict)}
+        value = {'evaluation_version': 'wm-g-assessment/1',
+            'observation_rule_version': FAITHFUL_G_OBSERVATION_VERSION,
+            'execution_id': str(execution_id),
+            'task_id': str(raw.get('task_id') or report.get('task_id') or ''),
+            'episode_id': report.get('episode_id'),
+            'check_action_id': report.get('action_id'),
+            'check_signature': _check_signature(report),
+            'created_at': report.get('checked_at') or raw.get('created_at'),
+            'attribution': audit}
+        reference = put_value(conn, store, 'g_assessment', value)
+        meta_write(store, _assessment_key(execution_id, report), {'value_ref': reference})
+    return reference
+
+
+def read_g_assessment(store, record, report=None):
+    """Read only this check revision; old inline data remains read-compatible."""
+    from or_harness.world_model.conditions import get_value
+    from or_harness.world_model.induction_gate import meta_read
+    from or_harness.core.storage import StorageError
+    report = report if report is not None else (record.execution_features or {}).get('task_check') or {}
+    pointer = meta_read(store, _assessment_key(record.execution_id, report)) if store is not None else None
+    if pointer:
+        try:
+            reference = pointer['value_ref']
+            value = get_value(store, reference)
+        except (StorageError, KeyError, TypeError):
+            return {'issues': ['G assessment evidence is unavailable']}, None
+        if (not isinstance(value, dict) or value.get('evaluation_version') != 'wm-g-assessment/1' or
+                value.get('observation_rule_version') != FAITHFUL_G_OBSERVATION_VERSION):
+            return {'issues': ['unsupported G assessment version']}, None
+        if not isinstance(value.get('attribution'), dict):
+            return {'issues': ['invalid G assessment evidence']}, None
+        if (value.get('execution_id') != record.execution_id or
+                value.get('task_id') != record.task_id or
+                value.get('check_action_id') != report.get('action_id') or
+                value.get('episode_id') != report.get('episode_id') or
+                value.get('check_signature') != _check_signature(report)):
+            return {'issues': ['G assessment does not match this execution/check revision']}, reference
+        return copy.deepcopy(value['attribution']), reference
+    # Opening a historical bank never migrates or writes its records.
+    legacy = report.get('g_attribution') or {}
+    return (copy.deepcopy(legacy) if isinstance(legacy, dict) else
+            {'issues': ['invalid historical G assessment']}), None
+
+
+def observe_faithful_g(summary, records, prediction, *, store=None):
     """Observe the terminal in-scope execution, never an earlier known one."""
     convention = g_observation_convention(prediction) or {}
     candidate = prediction.candidate
@@ -233,7 +324,7 @@ def observe_faithful_g(summary, records, prediction):
         record = records[-1]
         features = record.execution_features or {}
         report = features.get("task_check") or {}
-        audit = report.get("g_attribution") or {}
+        audit, audit_ref = read_g_assessment(store, record, report)
         conditions = actual_solving_conditions(record, candidate.config)
         if len(records) > 1:
             in_scope = [actual_solving_conditions(r, candidate.config) for r in records]
@@ -251,6 +342,8 @@ def observe_faithful_g(summary, records, prediction):
                                 "scope": copy.deepcopy(report.get("scope")),
                                 "action_id": report.get("action_id")},
                     attribution=copy.deepcopy(audit))
+        if audit_ref:
+            fact['attribution_ref'] = audit_ref
         if features.get("executed") is False or (record.quality or {}).get("status") in ("error", "timeout"):
             reasons.append("crash/timeout or no executed evaluable result")
         if not audit or audit.get("issues"):
@@ -263,9 +356,11 @@ def observe_faithful_g(summary, records, prediction):
             reasons.append("method_actual was not recorded")
         if audit.get("method_fidelity") != "faithful":
             reasons.append("execution deviated from the candidate or fidelity is unknown")
-        if audit and (audit.get("execution_id") != record.execution_id
-                or audit.get("method_planned") != method_key(record.method_planned)
-                or audit.get("method_actual") != method_key(record.method_actual)):
+        from or_harness.core.evidence_encoding import method_fingerprint
+        bound_methods=all(audit.get(key+'_fingerprint')==method_fingerprint(getattr(record,key))
+            if key+'_fingerprint' in audit else audit.get(key)==method_key(getattr(record,key))
+            for key in ('method_planned','method_actual'))
+        if audit and (audit.get("execution_id") != record.execution_id or not bound_methods):
             reasons.append("attribution does not identify this execution and its methods")
         if audit.get("acceptance_scope") != "original_task" or not audit.get("acceptance_id"):
             reasons.append("checker coverage of original-task acceptance is insufficient")

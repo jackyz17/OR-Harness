@@ -827,6 +827,8 @@ def _version_of(layer: str, row: Dict[str, Any]) -> str:
     if layer == "execution_evidence":
         return str(row.get("task_text_digest") or "unknown")
     if layer == "strategic_knowledge":
+        rule=(row.get('knowledge') or {}).get('rule') or row.get('rule') or {}
+        if rule.get('body_ref'):return str(rule['body_ref'])
         claim = row.get("claim_text")
         return _stable_digest(claim) if claim else "unknown"
     return "unknown"
@@ -930,6 +932,9 @@ def _merge_content(base: Dict[str, Any],
             continue
         if merged[key] == value:
             continue
+        if isinstance(merged[key],dict) and isinstance(value,dict):
+            merged[key]=_merge_content(merged[key],value)
+            continue
         conflicts = merged.setdefault("_field_disagreements", {})
         conflicts[key] = {
             "kept": copy.deepcopy(merged[key]),
@@ -1032,6 +1037,24 @@ def _dedupe_content_text(content: Dict[str, Any]) -> Dict[str, Any]:
     """
     if not isinstance(content, dict):
         return content
+    rule=(content.get('knowledge') or {}).get('rule') or content.get('rule') or {}
+    body=rule.get('body') or {}
+    if all(isinstance(body.get(k),str) for k in ('when','do','expect')):
+        rendered={"\n".join(body[k] for k in ('when','do','expect')),
+                  'When: '+body['when']+'\nDo: '+body['do']+'\nExpect: '+body['expect']}
+        if content.get('claim_text') in rendered:
+            content.pop('claim_text')
+        # Cached views may still carry the old generated claim next to the
+        # authoritative rule. Preserve any genuinely different statement.
+        for holder in (content,content.get('knowledge') or {}):
+            old=holder.get('claim')
+            if isinstance(old,dict) and old.get('text') in rendered:
+                old=copy.deepcopy(old);old.pop('text',None)
+                if (old.get('method') or {}).get('steps')==[body['do']]:old.pop('method',None)
+                conditions=old.get('conditions') or {}
+                if conditions.get('note')==body['when']:
+                    conditions.pop('note');old['conditions']=conditions
+                holder['claim']=old
     claim = content.get("claim")
     claim_text = claim.get("text") if isinstance(claim, dict) else None
     if claim_text and isinstance(content.get("claim_text"), str) \
@@ -1748,6 +1771,7 @@ class PredictionContext:
         from or_harness.world_model.conditions import (
             calibration_projection, filter_prediction_reminders,
         )
+        from or_harness.strategy.evidence_views import paired_feedback_view
         joint = self.joint.to_dict()
         joint, omitted = _dedupe_joint(joint)
         # CIR is INTERNAL. The model reads the task text, the math
@@ -1784,8 +1808,7 @@ class PredictionContext:
             "execution_constraints": copy.deepcopy(self.execution_constraints),
             "strategy_outcome_calibration": calibration_projection(
                 self.strategy_calibration),
-            "prediction_execution_pairs": copy.deepcopy(
-                self.paired_feedback),
+            "prediction_execution_pairs": paired_feedback_view(self.paired_feedback),
             "prediction_reminders": filter_prediction_reminders(
                 self.prediction_reminders),
             "hplus_feedback": copy.deepcopy(self.hplus_feedback),

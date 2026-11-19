@@ -28,7 +28,7 @@ During library building, take the review IDs from `result.induction_schedule.pen
 The action log and execution records supply the observed results for each bound prediction.
 
 - **Benefit** uses the prediction's declared metric, unit, and scope. A strategy window uses the last qualified in-scope attempt for its solution observation. The original-task check is reported under `evaluations[].benefit.task_check` alongside solver quality.
-- **Cost** uses `ExpectedCost.scope`. Add cumulative measurements once per attempt, including failures and retries. Read `n_measured` and `complete` before comparing a total.
+- **Cost** uses `ExpectedCost.scope`. Add cumulative resource measurements once per attempt, including failed attempts. New remaining-scope `retries` counts additional attempts after the bound baseline, rather than summing execution increments. Read `n_measured` and `complete` before comparing a value.
 - **Risk** uses the observation unit for each [risk event](#the-risk-event-vocabulary-wm-events3). Technical R reads the specific bound attempt.
 
 | Cost scope | Measurements |
@@ -40,6 +40,19 @@ The action log and execution records supply the observed results for each bound 
 For `remaining_latency_s`, use a matching explicit span when available, or derive it from the decision anchor and `finish_task.ended_at`. The last in-scope execute or verify action supplies a lower bound (`basis="last_action_not_task_end"`). Without a measured span or usable timestamps, the value is unknown. Compare one explicit wall-clock span or consistent repeats. Keep distinct spans separate.
 
 ## 4. The per-field evaluation
+
+For new `retries` forecasts (`wm-retry-additional-attempts/1`), three executions
+record increments 0/1/1, but predictions before A, B and C observe future
+additional attempts 2/1/0. The episode retry budget totals 2. The real bound
+execution establishes each baseline, even when strategies or solvers change.
+A confirmed episode close-out or task termination seals the discrete attempt
+chain; it does not establish an end-to-end wall-clock duration. Missing
+receipts, unresolved chronology or an unconfirmed ending leave this count
+unknown. Failures and staged interrupted attempts remain in the chain;
+duplicate records and checks do not add attempts. Legacy forecasts keep their
+original convention and are excluded from the new retry reference ranges.
+`predicted=0, actual=1` has absolute and signed error 1; `0` versus `0` has
+error 0. Both are evaluable, with no manufactured log-ratio.
 
 | Field | Evidence for comparison |
 |---|---|

@@ -210,6 +210,10 @@ PREDICTION_SCOPES = ("attempt", "strategy_window")
 #: repair and retries. Comparing a remaining-cost prediction against a
 #: single attempt (or the reverse) is a unit error and is refused.
 COST_SCOPE_KINDS = ("remaining_to_task_end", "attempt", "strategy_window")
+# Raw attempt increments and remaining predicted counts are different facts.
+RETRIES_INCREMENT_VERSION = "or-retry-increment/1"
+RETRIES_FUTURE_VERSION = "wm-retry-additional-attempts/1"
+RETRIES_LEGACY_VERSION = "wm-retry-window-increments/legacy"
 
 #: Legacy ``measurement_scope`` values with NO contract equivalent. Reading
 #: one must report it as UNSUPPORTED: silently shrinking a whole-task
@@ -1420,6 +1424,11 @@ class ExpectedCost:
     execution model, not input tokens or the world-model call's usage.
     Historical ``llm_tokens`` declarations retain their input-plus-output
     meaning and are never converted into output-token predictions.
+
+    For new remaining forecasts, ``retries`` means the expected additional
+    solve attempts AFTER the bound baseline attempt. The framework freezes
+    its observation version on ``trace.model_info``. Old predictions retain
+    their original convention; execution costs remain 0/1 increments.
 
     ``scope`` names WHICH span the predicted values cover, so the close-out
     can observe the SAME span instead of defaulting to a single attempt:
