@@ -7074,10 +7074,14 @@ class ORHarness:
             result["reflection_material"] = self._reflection_material(
                 record, report, resolved_episode)
             result["next"] = (
-                "the answer does not satisfy the task. Diagnose WHY yourself "
-                "(task statement, model, implementation, or the reference "
-                "basis), state the basis for the change, and re-solve in the "
-                "same episode — do NOT alter the task to match the reference. "
+                "the declared checks found a violation. Compare the frozen "
+                "prediction with the actual execution and distinguish a "
+                "confirmed cause from a hypothesis or unknown. Before the "
+                "answer is committed, use task-based evidence to justify any "
+                "repair and obtain a fresh plan-next decision for a new solve. "
+                "After the answer is committed, use reference answers or "
+                "external verdicts only for offline analysis; keep the answer "
+                "locked and do not return to solving to match a reference. "
                 "The failed attempt stays recorded with its real cost and can "
                 "be cited as contrast evidence")
         elif report["state"] == "insufficient":
@@ -7175,10 +7179,20 @@ class ORHarness:
             "check_report": report,
             "prior_attempts": prior,
             "guidance": (
-                "the framework did not classify this failure: read the task "
-                "text against the check report and decide whether the task "
-                "was misread, the model mis-specified, the implementation "
-                "wrong, or the reference basis itself wrong. State the basis "
-                "for whatever you change, and never change the task to match "
-                "a reference value"),
+                "compare the frozen prediction with the captured execution. "
+                "Locate a specific method premise, implementation step or "
+                "execution condition only when supported by the original task, "
+                "script, result, logs or check differences. Separate confirmed "
+                "causes, hypotheses still to check and unknowns; do not force "
+                "an attribution. Optimal status, a self-authored check passing "
+                "or a reference mismatch alone proves neither semantic "
+                "correctness nor a failure cause. For an optional G assessment, "
+                "use the existing g_attribution.assessment in one to three "
+                "sentences with necessary evidence references; keep additional "
+                "independent causes when needed, without repeating complete "
+                "methods, tasks, solution vectors or all checks. Use reference "
+                "answers and external correctness feedback only after the "
+                "answer is committed, for offline analysis rather than a "
+                "return to solving. Never change the task to match a reference "
+                "value"),
         }

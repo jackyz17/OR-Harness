@@ -130,6 +130,10 @@ New prediction contexts carry the selected publication under `strategy_outcome_c
 
 Provide optional `g_attribution` inside `check-task --check` JSON or via `check_task_result` when the execution and checks support the attribution.
 
+Compare the frozen prediction with the actual method, captured script, result, logs, and check differences. Identify the affected premise, step, or execution condition only when those sources support it. Distinguish a confirmed cause from a hypothesis still to check and from an unknown cause; do not force `failure_source`. Solver `optimal`, a self-authored check passing, or disagreement with a reference alone establishes neither semantic correctness nor a failure cause.
+
+Use the existing `g_attribution.assessment` for one to three sentences with necessary evidence references. Do not repeat the complete method, task, solution vector, or all checks; retain multiple independent causes when the facts require them. For example: "The captured script deducts coach capacity only in the start week, while the task excludes coaches from production throughout both training weeks, overstating second-week capacity. See the original training constraint and the captured script's availability calculation." If the script or timing has not been verified, state this as a hypothesis instead. Use reference answers and external correctness feedback only after the answer is committed, for offline analysis; do not return to solving to change that answer.
+
 ```json
 {
   "semantic_probe": [{"path":"execution_features.solution_variables.CFC", "equals":1}],
