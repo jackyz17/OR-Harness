@@ -86,13 +86,13 @@ Calibration uses the newest closed task-episodes (default 50, `OR_CALIBRATION_WI
 
 ### Observation rules
 
-The current summary uses `wm-obs/4`. Each evaluation retains its own rule, including `wm-g-faithful/1` or `wm-r-technical/1` where applicable. Read historical groups by the version they report. An absent rule version is grouped under `(unknown)`. For solver quality under `wm-obs/2` and later, `normalized_objective_gap` uses `1.0` for `optimal` or `1 - gap` when observed. Check verdicts travel separately.
+The current summary uses `wm-obs/4` and the event vocabulary `wm-events/4`. Each evaluation retains its own rule, including `wm-g-faithful/1`, `wm-r-technical/1` (the single-event legacy R rule) or `wm-r-max-event/1` (the multi-event R scoring convention), and timeout samples carry `timeout@wm-events/4`. Read historical groups by the version they report. An absent rule version is grouped under `(unknown)`. For solver quality under `wm-obs/2` and later, `normalized_objective_gap` uses `1.0` for `optimal` or `1 - gap` when observed. Check verdicts travel separately.
 
 ### Technical R observations
 
-R before execution is the probability that one attempt will fail at code construction, execution, or result delivery. The only R input to U is one `implementation_failure` event with a finite numeric `probability` in `[0,1]`. Zero is valid. If any scored candidate lacks a valid R, the decision omits R for all participants. See [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
+R before execution is a maximum single-item technical-risk score for one attempt. Three R events can supply it: `implementation_failure` (the harness's own code/API path fails or the result cannot be delivered), `timeout` (the harness wall-clock limit interrupts the attempt before a usable result; a solver that stops at its own time limit and still returns a usable result is NOT this event) and `environment_failure` (dependencies, licences, permissions, sandbox policy or an unavailable external service block the attempt; ordinary code errors are not this event). Each probability must be a finite JSON number in `[0,1]`; zero is valid. For the ranked candidates the framework takes the COMMON event set: R = `max(p(event))` over the events every participant supplied validly. A missing/unknown event is dropped for everyone, never imputed as 0; when the set is empty, or the predictions were archived under different R conventions, R is omitted for all participants. R is a maximum single-item risk score, NOT a joint failure probability, and no joint/max Brier is computed from it. Other event probabilities remain diagnostics. See [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
 
-For each recorded attempt, `execution_features.technical_outcome` holds the executor's receipt for `wm-r-technical/1`. Close-out reads the one bound execution, including when G covers a strategy window. Read `evaluations[].risk.implementation_observation` for its label and reason. An attempt and its repair get separate labels.
+For each recorded attempt, `execution_features.technical_outcome` holds the executor's receipt for the `implementation_failure` label under `wm-r-technical/1`. Close-out reads the ONE bound execution, including when G covers a strategy window, and labels all three R events on that same attempt: read `evaluations[].risk.implementation_observation` for the implementation label and `evaluations[].risk.r_events_observation.events` for the per-event labels, bases and predicted probabilities of the multi-event convention. Later retries never enter these observations; an attempt and its repair get separate labels.
 
 | Label | Executor evidence |
 |---|---|
@@ -104,9 +104,9 @@ For an attempt that ran and did not time out, the executor checks for successful
 
 For a timed-out execution, a sourced cause assessment in `technical_failure_evidence` can supply label 1. Use `kind="code_caused_timeout"`, nonempty `source` and `assessment`, and `evidence_refs` to this execution's `artifacts.submitted_script` plus `artifacts.stderr_clip` or `artifacts.workspace_result`. Each cited artifact must have a saved hash. The assessment supplies the causal judgment and the framework checks its fields and references.
 
-For earlier execution records, the framework can derive technical facts from captured error, result, or protocol evidence. Historical predictions without the technical R convention still use the `error_class == 'model'` event rule for their own comparisons. Current-rule Brier is grouped under `implementation_failure@wm-r-technical/1`.
+For earlier execution records, the framework can derive technical facts from captured error, result, or protocol evidence. Historical predictions without the technical R convention still use the `error_class == 'model'` event rule for their own comparisons; predictions archived under the multi-event convention are never retro-fitted with the new events. Current implementation Brier is grouped under `implementation_failure@wm-r-technical/1`; the multi-event Brier samples are reported PER EVENT against the bound attempt and are never pooled into a joint or maximum score.
 
-`technical_r` reports `n_actual_attempts`, `n_known_labels`, `n_reported_probabilities`, and `n_scorable`. Attempt counts cover recorded executions in the closed window, including attempts whose R was omitted or never predicted. Each execution is counted once per task-episode. Brier uses the original probability of each comparable prediction with a known same-rule label. Groups use solver interface, family, and problem class. Later predictions can receive up to three applicable groups in `implementation_r_evidence`, with counts, source IDs, and available script references. Label and Brier support count independent episodes separately.
+`technical_r` reports `n_actual_attempts`, `n_known_labels`, `n_reported_probabilities`, and `n_scorable`. Attempt counts cover recorded executions in the closed window, including attempts whose R was omitted or never predicted. Each execution is counted once per task-episode. Brier uses the original probability of each comparable prediction with a known same-rule label. `coverage_by_event` and `events` report, for EACH of `implementation_failure`, `timeout` and `environment_failure`, the attempts with a known label, the reported probabilities, the scorable pairs and the distinct-episode support; the per-event samples come from the same bound attempt and later retries are not mixed in. The `aggregation` block states that R is a maximum over the common valid events and that no joint/max Brier exists. Groups use solver interface, family, and problem class, and each group carries the three events' occurred/not_occurred/unknown counts so the historical material includes timeout and environment facts. Later predictions can receive up to three applicable groups in `implementation_r_evidence`, with counts, source IDs, available script references and the per-event facts. Label and Brier support count independent episodes separately.
 
 ### C observations
 
@@ -158,13 +158,15 @@ Use the existing `g_attribution.assessment` for one to three sentences with nece
 - `groups` evaluates eligible prediction-observation pairs. A probability requires a known label to enter Brier or the paired occurrence rate.
 - `occurrence` counts actual observations from current window facts, once per execution or once per episode for `budget_exhausted`. Read `n_observation_units`, `n_occurred`, `n_not_occurred`, and `n_unknown`. `unit_occurrence_rate` divides by labelled observation units, including labelled executions without predictions. An excluded execution can still contribute an observed event while leaving the prediction-pair sample.
 
-### The risk-event vocabulary (`wm-events/3`)
+### The risk-event vocabulary (`wm-events/4`)
+
+`wm-events/4` changes one rule: `timeout` means the harness wall-clock limit INTERRUPTED the attempt, not a solver-reported time-limit status that still delivered a result. Old evaluations keep their stored version and are grouped under `timeout` (no rule suffix).
 
 | Event | Unit | Evidence |
 |---|---|---|
 | `implementation_failure` | One bound attempt | [Technical receipt](#technical-r-observations) |
-| `environment_failure` | Execution | `error_class == 'environment'` |
-| `timeout` | Execution | `status == 'timeout'` |
+| `environment_failure` | Execution | `error_class == 'environment'` (dependency, licence, permission, external service; an ordinary code error is an implementation failure) |
+| `timeout` | Execution | `status == 'timeout'` AND the attempt was interrupted before a usable result (a solver-returned time-limit result is not this event) |
 | `solver_reported_infeasible` | Execution | `status == 'infeasible'` |
 | `task_check_failed` | Execution | `task_check.state` |
 | `budget_exhausted` | Episode | Ledger from decision anchor to task end |

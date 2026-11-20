@@ -54,9 +54,16 @@ provider errors and truncation retain their existing rules. There is no universa
 H+ never changes this score. When no candidate has comparable G there is no
 executable selection. Eligible partial U is allowed and records its omissions.
 
-R reads only finite numeric `implementation_failure.probability` in [0,1].
-If any participating candidate lacks it, R is omitted for everyone. Other event
-probabilities remain diagnostics. C first intersects finite nonnegative resource
+R is `max(p(event))` over the events `implementation_failure`, `timeout` and
+`environment_failure` that EVERY participating candidate supplies as a finite
+number in [0,1]. It is a maximum single-item risk score, NOT a joint failure
+probability. An unknown event is dropped for the whole comparison: when the common
+event set is empty (or participants were archived under different R conventions),
+R is omitted for everyone. An explicit zero is a supplied value; a duplicate event
+or an illegal probability makes that event unknown. Other event probabilities
+remain diagnostics. `scoring_basis` reports the participating events, the per-
+candidate probabilities, the omitted events with reasons, and the maximum's source.
+C first intersects finite nonnegative resource
 predictions with identical measurement scopes, then removes dimensions without a
 reliable independent scale, then performs common component deduplication.
 `solver_runtime_s`, attempt `latency_s` and `remaining_latency_s` retain their own

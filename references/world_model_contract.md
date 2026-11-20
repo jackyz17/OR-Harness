@@ -28,7 +28,7 @@ A new decision can draw on published calibration and completed reviews available
 |---|---|
 | `strategy_outcome_calibration.conditional_g` | Attributable passes, failures and unknowns on comparable tasks. Match the observation rule, metric, scope and known structure and execution settings |
 | `cost_evidence` | Raw cost ranges and executed cases that match the measurement scope, known phase and solving conditions |
-| `implementation_r_evidence` | Technical outcomes from closed attempts with matching solver interface, with independent episode counts and source references |
+| `implementation_r_evidence` | Per-event technical facts (implementation_failure / timeout / environment_failure) from closed attempts with a matching solver interface, each with independent episode counts, source references and the three events' remembered definition |
 | `prediction_execution_pairs` | Prior predictions paired with performed methods, checks, measured results, failures and comparability notes |
 | `prediction_reminders` | Applicable risk and interval observations. Global G and C residuals remain available in calibration diagnostics |
 | `hplus_feedback` | Relevant settled receipts with the original learning hypothesis, actual facts, supported conclusion and exact rule versions |
@@ -44,7 +44,7 @@ Request selection preserves missing support as unknown and marks background or p
 | `candidate` | The proposed strategy, method, solver, config and scope |
 | `benefit` (G) | Expected benefit under the decision's metric, unit and baseline |
 | `cost` (C) | Raw resource estimates in `expected`. `expected_measured` marks supplied dimensions |
-| `risk` (R) | Predicted event probabilities. U uses `implementation_failure.probability` |
+| `risk` (R) | Predicted event probabilities. U uses the MAXIMUM of the events all ranked candidates supplied validly: `implementation_failure`, `timeout`, `environment_failure` |
 | `capability_gain` (H+) | `decision` (`0` or `1`), learning hypothesis, basis, applicability and checkable conditions |
 | `uncertainty` | Reported uncertainty about the forecast, with any interval kind and coverage supplied by the contract |
 | `trace` | Input and protocol identity, evidence basis, unsupported fields and measured forecast-call cost |
@@ -68,7 +68,7 @@ decision starts its own window. Raw usage, budgets and historical `llm_tokens`
 still mean input plus output. They cannot substitute for output-token evidence
 or its normalization scale. See [generated-token observations](strategy_outcome.md#4-budgets-stops-and-archiving-an-interrupted-run).
 
-R uses the one-attempt technical-failure convention `wm-r-technical/1`. A finite numeric `implementation_failure.probability` in `[0,1]` supplies R. Other event predictions remain useful for diagnosis. U treats an explicit zero as a supplied value and records unavailable terms. See [technical R observations](episode_closeout.md#technical-r-observations) and [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
+R uses the one-attempt technical-failure convention `wm-r-max-event/1` (observations under `wm-r-technical/1`). R is the MAXIMUM single-event probability over the events every ranked candidate supplies validly: `implementation_failure` (the harness's code/API path fails or the result cannot be delivered), `timeout` (the harness wall-clock limit interrupts the attempt before a usable result; a solver returning a usable result at its own time limit is NOT this event) and `environment_failure` (dependencies, licences, permissions, sandbox policy or an unavailable external service block the attempt; ordinary code errors are not this event). Each probability must be a finite JSON number in `[0,1]`; an explicit zero is a supplied value. The set E is COMMON: an event a participant left unknown or gave an unusable probability is omitted for everyone, and when E is empty R is omitted for all participants. A duplicate event or an illegal probability makes that event unknown, never a coerced or averaged number. R is a maximum single-item risk score, NOT a joint failure probability; no joint or maxed Brier is computed from it. Other event predictions remain diagnostics. Predictions archived before the multi-event convention keep their original single-event `wm-r-technical/1` meaning. See [technical R observations](episode_closeout.md#technical-r-observations) and [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
 
 The candidate can cover an `attempt` or a `strategy_window` spanning the declared modelling, execution, repair and verification activities. Window scoring requires a matching task, episode and strategy, ended linked attempts, and `trace.comparable=True`. Read coverage and auxiliary cost when inspecting a window total.
 

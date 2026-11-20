@@ -304,9 +304,14 @@ class StrategyOutcomeScore:
       reports ``None`` and never auto-wins);
     - ``cost_normalized``: cost on shared, same-scope declared dimensions;
       no common dimensions means unknown C, omitted for the comparison;
-    - ``risk_effective``: implementation_failure probability when all
-      ranked candidates supplied it; otherwise R is omitted for everyone;
-      ``risk_probability`` preserves each original valid probability;
+    - ``risk_effective``: the MAXIMUM single-event probability over the R
+      events (implementation_failure / timeout / environment_failure) that
+      ALL ranked candidates supplied validly; when no event is common, or the
+      candidates do not share one R scoring convention, R is omitted for
+      everyone. It is a maximum single-item RISK SCORE, never a joint
+      failure probability; ``risk_probability`` preserves the legacy single
+      ``implementation_failure`` probability and ``risk_reported`` every
+      original prediction;
     - ``utility``: ``alpha*G - beta*C - gamma*R`` with the SAME weights the
       harness scores everything else with. The knowledge term is OFF for
       this protocol (delta=0): an old knowledge-gain score is not an H
@@ -323,6 +328,9 @@ class StrategyOutcomeScore:
     #: DIAGNOSTIC view: ``risk_effective`` is what the utility charged, this
     #: is what was predicted. The two differ when a loss is not double-counted.
     risk_reported: List[Dict[str, Any]] = field(default_factory=list)
+    #: The LEGACY single ``implementation_failure`` probability, retained for
+    #: continuity/diagnostics. The multi-event R actually charged is
+    #: ``risk_effective`` (a maximum over the common valid events).
     risk_probability: Optional[float] = None
     cost_reported: Dict[str, Any] = field(default_factory=dict)
     scoring_basis: Dict[str, Any] = field(default_factory=dict)
@@ -669,8 +677,87 @@ def score_strategy_outcome_predictions(
         omitted_dims[dim] = {"reason": "component deduplicated on common dimensions"}
     norms={d:norms[d] for d in basis};scale_sources={d:scale_sources[d] for d in basis}
     probabilities = {p.prediction_id: implementation_probability(p) for p in predictions}
-    use_r = bool(participants) and all(probabilities[p.prediction_id] is not None for p in participants)
-    missing_r = [p.prediction_id for p in participants if probabilities[p.prediction_id] is None]
+    # -- shared R convention and common event set ---------------------------
+    # R is the MAXIMUM single-event probability over the events every ranked
+    # candidate supplied validly. The set E is COMMON: an event a participant
+    # left unknown (or gave an unusable probability for) is dropped for the
+    # WHOLE comparison — an unknown is never imputed as 0, and one candidate's
+    # extra event never becomes R for candidates that did not supply it.
+    from or_harness.world_model.contracts import (
+        R_AGGREGATION_NOTE, R_EVENTS_BY_SCORING_VERSION,
+    )
+    from or_harness.world_model.r_signal import (
+        r_event_probabilities, r_scoring_version,
+    )
+    participant_ids = [p.prediction_id for p in participants]
+    declared_rules = {r_scoring_version(p) for p in participants}
+    scoring_rule = (next(iter(declared_rules))
+                    if len(declared_rules) == 1 else None)
+    candidate_events = tuple(R_EVENTS_BY_SCORING_VERSION.get(
+        scoring_rule, ())) if scoring_rule else ()
+    risk_usable: Dict[str, Dict[str, float]] = {}
+    risk_unusable: Dict[str, Dict[str, str]] = {}
+    risk_missing: Dict[str, List[str]] = {}
+    for prediction in participants:
+        usable, unusable, missing = r_event_probabilities(
+            prediction, events=candidate_events)
+        risk_usable[prediction.prediction_id] = usable
+        risk_unusable[prediction.prediction_id] = unusable
+        risk_missing[prediction.prediction_id] = missing
+    common_events = [name for name in candidate_events
+                     if all(name in risk_usable[pid] for pid in participant_ids)]
+    omitted_risk_events: Dict[str, Dict[str, Any]] = {}
+    for name in candidate_events:
+        if name in common_events:
+            continue
+        reasons = {}
+        for pid in participant_ids:
+            if name in risk_usable[pid]:
+                continue
+            if risk_unusable[pid].get(name):
+                reasons[pid] = risk_unusable[pid][name]
+            elif name in risk_missing[pid]:
+                reasons[pid] = ("no probability was supplied (unknown, never "
+                                "imputed as 0)")
+            else:
+                reasons[pid] = "missing"
+        omitted_risk_events[name] = {
+            "prediction_ids": sorted(reasons),
+            "reasons": reasons,
+            "reason": "not common to every ranked candidate",
+        }
+    use_r = bool(participants) and bool(common_events)
+    risk_effective: Dict[str, float] = {}
+    risk_max_source: Dict[str, Dict[str, Any]] = {}
+    if use_r:
+        for pid in participant_ids:
+            usable = risk_usable[pid]
+            best_value = max(usable[name] for name in common_events)
+            # Deterministic tie-break: the first declared event wins.
+            best_event = next(name for name in common_events
+                              if usable[name] == best_value)
+            risk_effective[pid] = best_value
+            risk_max_source[pid] = {"event": best_event,
+                                    "probability": best_value}
+    if not participants:
+        omitted_risk_reason = "no rankable candidates"
+    elif scoring_rule is None:
+        omitted_risk_reason = (
+            "ranked candidates declare different or unknown R scoring "
+            "conventions; a shared R convention is required, so R is omitted "
+            "for everyone rather than mixing old and new meanings")
+    elif not common_events:
+        omitted_risk_reason = (
+            "no R event has a valid probability on every ranked candidate; R "
+            "is omitted for everyone (an unknown is never imputed as 0)")
+    else:
+        omitted_risk_reason = None
+    if scoring_rule is None:
+        missing_r = list(participant_ids)
+    else:
+        missing_r = sorted({pid for pid in participant_ids
+                            if any(name not in risk_usable[pid]
+                                   for name in candidate_events)})
     total_weight=sum(weights[d] for d in basis)
     normalized_weights={d:weights[d]/total_weight for d in basis}
     alpha = limits.alpha if limits.alpha is not None else 1.0
@@ -689,7 +776,7 @@ def score_strategy_outcome_predictions(
                        for d in getattr(cost, "measured", []) if d in COST_DIMENSIONS} if cost and cost.expected else {}}
         reason = benefit_reason(prediction)
         score.scoring_basis = {
-            "participant_prediction_ids": [p.prediction_id for p in participants],
+            "participant_prediction_ids": participant_ids,
             "terms": (["G"] + (["C"] if basis else []) + (["R"] if use_r else [])) if reason is None else [],
             "cost_dimensions": basis, "cost_scales": dict(norms),
             "cost_weights": normalized_weights,
@@ -698,9 +785,20 @@ def score_strategy_outcome_predictions(
             "utility_weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
             "cost_measurement_scopes": {d: measurement_key(participants[0], d) for d in basis},
             "omitted_cost_dimensions": copy.deepcopy(omitted_dims),
-            "risk_event": "implementation_failure" if use_r else None,
-            "omitted_risk_reason": None if use_r else (
-                "a ranked candidate has missing/invalid implementation_failure probability" if participants else "no rankable candidates"),
+            "risk_scoring_rule": scoring_rule,
+            "risk_events": list(common_events),
+            "risk_aggregation": "max_common_event",
+            "risk_interpretation": R_AGGREGATION_NOTE,
+            "risk_event_probabilities": {
+                pid: dict(risk_usable[pid]) for pid in participant_ids},
+            "risk_event_problems": {
+                pid: dict(risk_unusable[pid]) for pid in participant_ids
+                if risk_unusable.get(pid)},
+            "risk_max_source": copy.deepcopy(
+                risk_max_source.get(prediction.prediction_id)),
+            "risk_event": (common_events[0] if len(common_events) == 1 else None),
+            "omitted_risk_events": copy.deepcopy(omitted_risk_events),
+            "omitted_risk_reason": omitted_risk_reason,
             "missing_risk_prediction_ids": missing_r,
             "partial": not basis or not use_r or any(v["reason"] != "component deduplicated on common dimensions"
                                                     for v in omitted_dims.values()),
@@ -715,11 +813,14 @@ def score_strategy_outcome_predictions(
         score.cost_normalized = round(cost_value, 6) if basis else None
         if not basis:
             score.incomparable["cost"] = "no common same-scope valid cost dimensions; C omitted for all ranked candidates"
-        score.risk_effective = score.risk_probability if use_r else None
+        score.risk_effective = risk_effective.get(prediction.prediction_id)
         if not use_r:
-            score.incomparable["risk"] = "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+            score.incomparable["risk"] = (omitted_risk_reason
+                or "R omitted for all ranked candidates")
         score.utility = round(alpha * score.benefit_value - beta * cost_value -
-                              gamma * (score.risk_probability if use_r else 0), 6)
+                              gamma * (score.risk_effective
+                                       if score.risk_effective is not None
+                                       else 0), 6)
         if not math.isfinite(score.utility):
             score.utility=None;score.incomparable['utility']='configured utility weights do not produce a finite U'
         if score.scoring_basis["partial"]:

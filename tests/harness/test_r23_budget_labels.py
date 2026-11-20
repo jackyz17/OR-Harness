@@ -397,7 +397,7 @@ class TestComparabilityAndVersions(R23Case):
             EVENT_VOCABULARY_VERSION,
             OBSERVATION_RULE_VERSION,
         )
-        self.assertEqual(EVENT_VOCABULARY_VERSION, "wm-events/3")
+        self.assertEqual(EVENT_VOCABULARY_VERSION, "wm-events/4")
         self.assertEqual(OBSERVATION_RULE_VERSION, "wm-obs/4")
         self.assertEqual(CALIBRATION_SUMMARY_VERSION, "wm-calib/3")
         task = _task("t1")
@@ -407,10 +407,10 @@ class TestComparabilityAndVersions(R23Case):
         bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
-        self.assertEqual(risk["event_vocabulary_version"], "wm-events/3")
+        self.assertEqual(risk["event_vocabulary_version"], "wm-events/4")
         summary = self.h.calibration_summary(min_samples=1)
         self.assertEqual(summary["calibration_version"], "wm-calib/3")
-        self.assertEqual(summary["event_vocabulary_version"], "wm-events/3")
+        self.assertEqual(summary["event_vocabulary_version"], "wm-events/4")
 
 
 class TestStagedReceipt(R23Case):

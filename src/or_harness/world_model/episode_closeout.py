@@ -87,6 +87,7 @@ from or_harness.world_model.cost_eligibility import (
 )
 from or_harness.world_model.contracts import (
     FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
+    R_EVENTS, R_OBSERVATION_VERSION, R_SCORING_VERSION,
 )
 from or_harness.world_model.g_signal import (
     observe_faithful_g, conditional_g_statistics, same_task_comparisons,
@@ -125,7 +126,11 @@ CALIBRATION_SUMMARY_VERSION = "wm-calib/3"
 #: label to the EPISODE-scoped budget dimensions only (a per-attempt
 #: latency overrun is NOT this event). A ``wm-events/2`` label and a
 #: ``wm-events/3`` label mean different things, so they are never pooled.
-EVENT_VOCABULARY_VERSION = "wm-events/3"
+#: wm-events/4 changes ONE rule: ``timeout`` now means the harness
+#: wall-clock limit INTERRUPTED the attempt, not a solver-reported
+#: time-limit status that still delivered a result. Old evaluations keep
+#: their stored ``wm-events/3`` identity and are never re-labelled in place.
+EVENT_VOCABULARY_VERSION = "wm-events/4"
 
 #: Version of the OBSERVATION RULES: how a prediction's declared metric is
 #: turned into a real observation. Bumped whenever a rule changes what an
@@ -251,10 +256,18 @@ OBSERVABLE_RISK_EVENTS: Dict[str, Dict[str, Any]] = {
     },
     "timeout": {
         "unit": "execution",
-        "source": "ExecutionRecord.quality.status == 'timeout'",
+        "source": ("ExecutionRecord.quality.status == 'timeout' AND the "
+                   "attempt was INTERRUPTED before delivering a usable "
+                   "result (wm-events/4). A solver that stops at ITS OWN "
+                   "time limit and still returns a readable result is NOT "
+                   "this event"),
         "applicability": "an in-scope execution of the bound prediction",
-        "measured": "the executor's wall-clock/CPU limit fired",
-        "note": "a timeout is not evidence that the strategy is wrong",
+        "measured": ("the executor's wall-clock limit fired, or the record "
+                     "shows the solver returned a time-limit result"),
+        "note": ("an execution-timeout interruption is distinguished from a "
+                 "solver that normally returns a usable result at its own "
+                 "limit; a legacy record that cannot tell the two apart keeps "
+                 "the label unknown"),
     },
     "solver_reported_infeasible": {
         "unit": "execution",
@@ -1901,17 +1914,21 @@ def _execution_event_observations(records: Sequence[Any], *, implementation_rule
             **({"detail": detail} if detail else {}),
         }
 
+    from or_harness.world_model.r_signal import timeout_event_label
     for record in records:
         quality = record.quality or {}
         status = quality.get("status")
         execution_id = record.execution_id
 
-        if status == "timeout":
-            _unit("timeout", execution_id, "occurred",
-                  "the executor's time limit fired")
-        else:
-            _unit("timeout", execution_id, "not_occurred",
-                  "the execution completed without hitting the time limit")
+        # wm-events/4: an execution-timeout INTERRUPTION is one event; a
+        # solver that stops at its own time limit and still returns a usable
+        # result is a normal return, not this event. A legacy record that
+        # cannot tell the two apart keeps the label UNKNOWN.
+        timeout_label, timeout_basis = timeout_event_label(record)
+        _unit("timeout", execution_id,
+              ("occurred" if timeout_label == 1 else
+               "not_occurred" if timeout_label == 0 else None),
+              timeout_basis)
 
         if status == "infeasible":
             # A REPORTED infeasibility is a fact about the solver's
@@ -2005,6 +2022,11 @@ def _execution_event_observations(records: Sequence[Any], *, implementation_rule
             _unit("task_check_failed", execution_id, None,
                   "no task check is on record for this execution: whether "
                   "the answer satisfies the task is UNKNOWN")
+    # The timeout RULE changed in wm-events/4: its scored pairs carry the
+    # rule version, so old wm-events/3 samples are never pooled with it.
+    events.setdefault("timeout", {
+        "event": "timeout", "unit": "execution", "units": {}})
+    events["timeout"]["observation_rule_version"] = EVENT_VOCABULARY_VERSION
     return events
 
 
@@ -2226,7 +2248,8 @@ def observe_episode_events(harness, records: Sequence[Any], *,
     for name, definition in OBSERVABLE_RISK_EVENTS.items():
         if definition["unit"] != "execution":
             continue
-        units = (per_unit.get(name) or {}).get("units") or {}
+        per_unit_entry = per_unit.get(name) or {}
+        units = per_unit_entry.get("units") or {}
         label, basis = _scope_aggregate(units, execution_ids,
                                         scope_complete)
         events[name] = {
@@ -2241,6 +2264,9 @@ def observe_episode_events(harness, records: Sequence[Any], *,
             # occurred and one not_occurred, not as two occurrences.
             "units": units,
         }
+        if per_unit_entry.get("observation_rule_version"):
+            events[name]["observation_rule_version"] = \
+                per_unit_entry["observation_rule_version"]
     # The budget ledger: unit = episode. The label is decided from the
     # EPISODE-scoped budget dimensions (and an explicit budget-termination
     # receipt), NEVER from a bare ``status`` string: ``exceeded`` can also
@@ -2995,7 +3021,10 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         }
 
     if summary.implementation_observation:
-        from or_harness.world_model.r_signal import implementation_probability
+        from or_harness.world_model.r_signal import (
+            implementation_probability, r_event_probabilities,
+            r_scoring_version,
+        )
         evaluation.risk["implementation_observation"] = {
             **copy.deepcopy(summary.implementation_observation),
             "predicted_probability": implementation_probability(prediction),
@@ -3003,6 +3032,45 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         }
         evaluation.risk["r_event"] = "implementation_failure"
         evaluation.risk["r_observation_rule_version"] = "wm-r-technical/1"
+        if r_scoring_version(prediction) == R_SCORING_VERSION:
+            # The multi-event convention: ONE label per R event, on the SAME
+            # bound attempt the prediction was bound to. Later retries never
+            # enter this block, and the maximum U charges is NOT an event, so
+            # no joint/max Brier is ever attached to it.
+            fact = summary.implementation_observation
+            valid, unusable, missing = r_event_probabilities(prediction)
+            comparable = not bool(_blocked("risk"))
+            event_rows: Dict[str, Any] = {}
+            for name in R_EVENTS:
+                detail = (fact.get("r_events") or {}).get(name) or {}
+                probability = valid.get(name)
+                label = detail.get("label")
+                event_rows[name] = {
+                    "label": label,
+                    "label_basis": detail.get("basis") or "",
+                    "observation_rule_version": (
+                        R_OBSERVATION_VERSION
+                        if name == "implementation_failure"
+                        else EVENT_VOCABULARY_VERSION),
+                    "predicted_probability": probability,
+                    "probability_usable": name in valid,
+                    "probability_problem": (unusable.get(name)
+                        or ("no probability was supplied (unknown, never "
+                            "imputed as 0)" if name in missing else None)),
+                    "brier": (round((probability - label) ** 2, 6)
+                              if probability is not None
+                              and label in (0, 1) else None),
+                    "comparable": comparable,
+                }
+            evaluation.risk["r_events_observation"] = {
+                "execution_id": fact.get("execution_id"),
+                "observation_unit": "execution",
+                "scope": "attempt",
+                "events": event_rows,
+                "note": ("each R event is labeled on ONE bound attempt; "
+                         "later retries do not enter this observation, and "
+                         "the maximum used by U is not a joint event"),
+            }
     # -- interval ------------------------------------------------------------
     # An interval is the SAME observed value read as a range, so it shares
     # the benefit's eligibility: if the benefit may not be scored (an
@@ -6106,6 +6174,16 @@ def _risk_label_basis_code(basis: Any) -> Optional[str]:
         return "error_class_unknown"
     if "no task check" in lowered:
         return "no_task_check"
+    # wm-events/4: the timeout label now says WHICH timeout happened, so the
+    # compact codes keep the direction instead of collapsing both to "fired".
+    if "wall-clock limit interrupted" in lowered:
+        return "harness_time_limit_interrupted"
+    if "solver stopped at its own time limit" in lowered:
+        return "solver_time_limit_returned"
+    if "does not say whether the harness interrupted" in lowered:
+        return "timeout_cause_unknown"
+    if "finished without hitting the harness wall-clock limit" in lowered:
+        return "no_timeout_interruption"
     if "time limit" in lowered:
         return "time_limit"
     if "did not report infeasibility" in lowered:
@@ -6143,6 +6221,20 @@ RISK_REASON_LEGEND: Dict[str, str] = {
         "no task check is on record for this execution: task validity is "
         "UNKNOWN, never a failure"),
     "time_limit": "the executor's time limit fired",
+    "harness_time_limit_interrupted": (
+        "the harness wall-clock limit INTERRUPTED the attempt before a "
+        "usable result (the timeout event occurred)"),
+    "solver_time_limit_returned": (
+        "the solver stopped at its own time limit and returned a usable "
+        "result; the attempt was NOT interrupted (the timeout event did not "
+        "occur)"),
+    "timeout_cause_unknown": (
+        "the record shows a timeout status but cannot say whether the "
+        "harness interrupted the attempt or the solver returned a time-limit "
+        "result: the cause stays UNKNOWN"),
+    "no_timeout_interruption": (
+        "the execution finished without hitting the harness wall-clock "
+        "limit"),
     "no_infeasibility": "the solver did not report infeasibility here",
     "reported_infeasibility": (
         "the solver reported infeasibility (a verdict, not by itself a "

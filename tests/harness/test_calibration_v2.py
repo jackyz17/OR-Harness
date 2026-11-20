@@ -115,12 +115,26 @@ class CalibrationV2Case(HarnessTestCase):
 
     def solve(self, task, strategy="S04", objective=100.0,
               episode_id="ep1", status="optimal", gap=None, tag=None,
-              body=None):
+              body=None, interrupted_timeout=False):
+        """Run a real sandboxed attempt.
+
+        ``interrupted_timeout`` produces a REAL execution-timeout
+        INTERRUPTION (the wall-clock limit kills the script, no usable
+        result), which is the ``timeout`` R event under ``wm-events/4``. A
+        plain ``status='timeout'`` result is the solver's OWN time-limit
+        status WITH a delivered result: it is NOT the interruption event.
+        """
         label = tag or f"{task['task_id']}_{strategy}_{episode_id}"
         work = Path(self.home) / f"ws_{label}"
         work.mkdir(parents=True, exist_ok=True)
         script = work / "solve.py"
-        if body is not None:
+        previous_executor = self.h.executor
+        if interrupted_timeout:
+            from or_harness.execution.executor import SafePythonExecutor
+            self.h.executor = SafePythonExecutor(timeout_seconds=1)
+            script.write_text("import time\ntime.sleep(3)\n",
+                              encoding="utf-8")
+        elif body is not None:
             script.write_text(body, encoding="utf-8")
         else:
             script.write_text(
@@ -132,8 +146,11 @@ class CalibrationV2Case(HarnessTestCase):
                 + (f", 'mip_gap': {gap}" if gap is not None else "")
                 + ", 'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
         from decision_fixtures import import_legacy_execution
-        record = import_legacy_execution(self.h,task, strategy, str(script), str(work),
-                                solver="highs", episode_id=episode_id)
+        try:
+            record = import_legacy_execution(self.h,task, strategy, str(script), str(work),
+                                    solver="highs", episode_id=episode_id)
+        finally:
+            self.h.executor = previous_executor
         self.h.record(record)
         return record
 
@@ -751,11 +768,14 @@ class TestCountingUnits(CalibrationV2Case):
         summary = h.calibration_summary(min_samples=1)
         group = summary["groups"][GROUP]
         # Prediction pairs: three.
-        self.assertEqual(group["n_brier_samples_by_event"]["timeout"], 3)
+        self.assertEqual(group["n_brier_samples_by_event"][
+            "timeout@wm-events/4"], 3)
         # The mean probability is over those three pairs.
-        self.assertEqual(group["mean_predicted_probability"]["timeout"],
-                         0.3)
-        self.assertEqual(group["scored_occurrence_rate"]["timeout"], 0.0)
+        self.assertEqual(
+            group["mean_predicted_probability"]["timeout@wm-events/4"],
+            0.3)
+        self.assertEqual(
+            group["scored_occurrence_rate"]["timeout@wm-events/4"], 0.0)
         # Observation units: ONE real execution.
         occurrence = summary["occurrence"]["timeout"]
         self.assertEqual(occurrence["observation_unit"], "execution")
@@ -776,11 +796,11 @@ class TestCountingUnits(CalibrationV2Case):
         prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        # A SUCCESSFUL execution (so the benefit is observable and a group
-        # exists) that nevertheless TIMED OUT is contradictory; use a
-        # timeout execution and check the occurrence channel alone.
-        record = self.solve(task, strategy="S04", status="timeout",
-                            objective=0.0, tag="to")
+        # A genuinely INTERRUPTED execution (wall-clock limit, no result):
+        # the observation must be counted even though no prediction named
+        # the event.
+        record = self.solve(task, strategy="S04", tag="to",
+                            interrupted_timeout=True)
         bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         h.close_episode("t1", "ep1")
@@ -821,11 +841,16 @@ class TestCountingUnits(CalibrationV2Case):
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary(min_samples=1)
         group = summary["groups"][GROUP]
-        self.assertEqual(group["mean_predicted_probability"]["timeout"], 0.8)
-        self.assertEqual(group["scored_occurrence_rate"]["timeout"], 0.0)
+        self.assertEqual(
+            group["mean_predicted_probability"]["timeout@wm-events/4"],
+            0.8)
+        self.assertEqual(
+            group["scored_occurrence_rate"]["timeout@wm-events/4"],
+            0.0)
         # The Brier mean matches: 0.8**2 = 0.64.
         self.assertAlmostEqual(
-            group["mean_brier_by_event"]["timeout"], 0.64, places=5)
+            group["mean_brier_by_event"]["timeout@wm-events/4"],
+            0.64, places=5)
         # The unit rate has its own, separately-labelled denominator.
         occurrence = summary["occurrence"]["timeout"]
         self.assertIn("labelled observation units", occurrence["rate_basis"])
@@ -996,7 +1021,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         self.assertIn("NOT a claim about the conditional",
                       summary["applicability_note"])
         self.assertEqual(summary["calibration_version"], "wm-calib/3")
-        self.assertEqual(summary["event_vocabulary_version"], "wm-events/3")
+        self.assertEqual(summary["event_vocabulary_version"], "wm-events/4")
 
     def test_legacy_evaluation_without_identity_goes_to_unknown(self):
         """An evaluation stored before the identity existed must not have a
@@ -1101,8 +1126,8 @@ class TestPerExecutionLabels(CalibrationV2Case):
         prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        self.solve(task, strategy="S04", status="timeout", objective=0.0,
-                   tag="t1")
+        self.solve(task, strategy="S04", tag="t1",
+                   interrupted_timeout=True)
         self.solve(task, strategy="S04", tag="t2")
         bind_legacy(self.h,prediction.prediction_id,
                                      self.h.actions.query(
@@ -1124,8 +1149,8 @@ class TestPerExecutionLabels(CalibrationV2Case):
         which is the honest verdict, so the check-failure event comes from a
         run that actually produced an answer."""
         task = _task("t1")
-        timed_out = self.solve(task, strategy="S04", status="timeout",
-                               objective=0.0, tag="nop1")
+        timed_out = self.solve(task, strategy="S04", tag="nop1",
+                               interrupted_timeout=True)
         answered = self.solve(task, strategy="S04", tag="nop2")
         self.h.check_task_result(answered.execution_id,
                                  {"reference_objective": 999.0})
@@ -1228,8 +1253,8 @@ class TestLiveCorrection(CalibrationV2Case):
         """Withdrawing a PREDICTION's comparability must not erase the fact
         that the execution happened."""
         task = _task("t1")
-        record = self.solve(task, strategy="S04", status="timeout",
-                            objective=0.0, tag="obs")
+        record = self.solve(task, strategy="S04", tag="obs",
+                            interrupted_timeout=True)
         self.h.close_episode("t1", "ep1")
         before = self.h.calibration_summary()["occurrence"]["timeout"]
         self.assertEqual(before["n_occurred"], 1)
@@ -1429,11 +1454,14 @@ class TestPerStatisticThreshold(CalibrationV2Case):
         # The GROUP has enough episodes...
         self.assertEqual(group["n_distinct_episodes"], 5)
         # ...but the timeout statistic has exactly one, and says so.
-        self.assertEqual(group["brier_evidence_by_event"]["timeout"][
+        self.assertEqual(
+            group["brier_evidence_by_event"]["timeout@wm-events/4"][
             "evidence"], "insufficient_evidence")
-        self.assertEqual(group["brier_evidence_by_event"]["timeout"][
+        self.assertEqual(
+            group["brier_evidence_by_event"]["timeout@wm-events/4"][
             "n_distinct_episodes"], 1)
-        self.assertIn("brier.timeout", group["under_sampled_statistics"])
+        self.assertIn("brier.timeout@wm-events/4",
+                      group["under_sampled_statistics"])
         self.assertEqual(group["basis"], "partially_measured")
         # A statistic nobody predicted is ABSENT, not under-sampled.
         self.assertNotIn("interval", group.get("under_sampled_statistics")

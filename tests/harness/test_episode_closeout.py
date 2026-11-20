@@ -650,7 +650,7 @@ class TestCalibrationChannel(M4Case):
                          "an interval nobody predicted is ABSENT, not "
                          "under-sampled")
         self.assertEqual(
-            group["brier_evidence_by_event"]["timeout"]["evidence"],
+            group["brier_evidence_by_event"]["timeout@wm-events/4"]["evidence"],
             "measured")
 
     def test_calibration_separate_from_knowledge_reliability(self):
@@ -1139,7 +1139,8 @@ class TestCalibrationGrouping(M4Case):
             GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
             + OBS_RULE]
         # Per-event means, never one pooled Brier.
-        self.assertIn("timeout", group["mean_brier_by_event"])
+        self.assertIn("timeout@wm-events/4",
+                      group["mean_brier_by_event"])
         self.assertIn("solver_reported_infeasible",
                       group["mean_brier_by_event"])
         self.assertNotIn("mean_brier", group)

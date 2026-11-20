@@ -61,7 +61,7 @@ Record missing evidence, forecast uncertainty, and reliability measured from res
 |---|---|
 | **Q · solution quality** | Feasibility, correctness, and objective performance under the original task's acceptance criteria. Record which requirements the task check covers. |
 | **C · execution cost** | Measured reasoning, tool, solver, checking, and repair resources, each with its source and measurement scope. |
-| **R · technical risk** | Code, API, exit, and result-delivery evidence for the bound attempt. Record verified technical failure or valid delivery. External blocks and ordinary deadlines with unverified causes stay unknown. |
+| **R · technical risk** | One-attempt evidence for three technical hazards: code/API path or result delivery (`implementation_failure`), an execution-timeout interruption before a usable result (`timeout`, distinct from a solver that returns a usable result at its own limit), and environment blockage such as dependencies, licences, permissions or external services (`environment_failure`). Record verified failure or valid delivery; the U risk term is the maximum of the events every ranked candidate supplied, not a joint failure probability. Unverified causes stay unknown. |
 
 The solver status describes the model it solved. The original-task check examines the actual requirements, including domain and business constraints. A knowledge review tests the rule's premises or measured effect within the stated scope. Keep failed attempts and their measured costs as evidence for repair and comparison.
 

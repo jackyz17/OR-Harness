@@ -74,14 +74,92 @@ from or_harness.core.schema import (
 )
 
 R_OBSERVATION_VERSION = "wm-r-technical/1"
-R_CONVENTION = {"event": "implementation_failure", "unit": "execution",
-                "scope": "attempt", "observation_rule_version": R_OBSERVATION_VERSION}
+
+#: The RISK EVENTS that may supply the U risk term. Each is a ONE-ATTEMPT
+#: technical hazard: business risks (task-check failure, reported
+#: infeasibility, budget exhaustion) stay diagnostics and NEVER enter U.
+R_EVENTS: Tuple[str, ...] = ("implementation_failure", "timeout",
+                             "environment_failure")
+
+#: What each R event means. ONE definition shared by the prompt, the parser
+#: and the observers, so the words the model is given and the label the
+#: framework records cannot drift apart.
+#:
+#: - ``implementation_failure``: the harness's OWN code/API path fails or the
+#:   result cannot be delivered; a legal infeasible result is NOT a failure.
+#: - ``timeout``: the attempt was INTERRUPTED by the harness's wall-clock
+#:   limit before a usable result. A solver that stops at ITS OWN time limit
+#:   and still returns a readable result is not this event.
+#: - ``environment_failure``: the environment blocks the attempt (missing
+#:   dependency/import, licence, permission, sandbox policy, unavailable
+#:   external service). An ordinary code/API error is an implementation
+#:   failure, not an environment failure.
+R_EVENT_DEFINITIONS: Dict[str, str] = {
+    "implementation_failure": (
+        "the harness's own script/stack fails technically: code or API "
+        "exceptions, abnormal solver/script exits, or a result-delivery "
+        "protocol failure; a legal infeasible result is NOT a failure"),
+    "timeout": (
+        "the attempt is INTERRUPTED by the harness's wall-clock limit before "
+        "it delivers a usable result; a solver that stops at its own time "
+        "limit and still returns a readable result is NOT this event"),
+    "environment_failure": (
+        "the attempt is blocked by its environment: a missing dependency or "
+        "import, a licence, a permission, sandbox policy, or an unavailable "
+        "external service/backend; an ordinary code/API error is "
+        "implementation_failure, not environment_failure"),
+}
+
+#: The R SCORING convention (not an observation rule). R = MAXIMUM
+#: single-event probability over the events that ALL ranked candidates
+#: supplied validly. It is a maximum single-item RISK SCORE, NOT a joint
+#: failure probability: no joint, summed or maxed event is ever scored as a
+#: probability of its own.
+R_SCORING_VERSION = "wm-r-max-event/1"
+
+#: The LEGACY scoring convention: only ``implementation_failure`` supplied
+#: R. A prediction archived under it keeps that ORIGINAL single-event
+#: meaning; it is never retro-fitted with the new events.
+R_LEGACY_SCORING_VERSION = "wm-r-technical/1"
+
+#: Which events may supply R under a declared scoring convention.
+R_EVENTS_BY_SCORING_VERSION: Dict[str, Tuple[str, ...]] = {
+    R_LEGACY_SCORING_VERSION: ("implementation_failure",),
+    R_SCORING_VERSION: R_EVENTS,
+}
+
+#: The compact R convention stamped into every prediction trace and request.
+#: Deliberately small: it is copied into execution receipts too. The
+#: human-readable event definitions travel in the request block only.
+R_CONVENTION = {
+    "events": list(R_EVENTS),
+    "unit": "execution",
+    "scope": "attempt",
+    "aggregation": "max_common_event",
+    "observation_rule_version": R_OBSERVATION_VERSION,
+    "scoring_rule_version": R_SCORING_VERSION,
+}
+
+#: The one-line meaning of the aggregation, shared by request, planner and
+#: documentation so "max" is never read as a joint failure probability.
+R_AGGREGATION_NOTE = ("maximum single-event risk score over the events "
+                      "every ranked candidate supplied; NOT a joint failure "
+                      "probability")
+
+
+def is_risk_event_probability(value: Any) -> bool:
+    """A finite JSON number in [0,1], including explicit zero.
+
+    No strings, no booleans, no NaN/inf, no out-of-range values: an illegal
+    probability is UNUSABLE (unknown), never coerced or clamped.
+    """
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 <= value <= 1 and _prob(value))
 
 
 def is_implementation_probability(value: Any) -> bool:
-    """A finite JSON number, including explicit zero; no strings/bools."""
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and 0 <= value <= 1 and _prob(value))
+    """Backward-compatible name for the same strict R probability rule."""
+    return is_risk_event_probability(value)
 
 
 #: The current contract version. Bumped when the shape changes; a stored

@@ -58,6 +58,11 @@ from or_harness.world_model.contracts import (
     INTERVAL_KINDS,
     PredictionTrace,
     normalize_text_list,
+    R_AGGREGATION_NOTE,
+    R_EVENT_DEFINITIONS,
+    R_EVENTS,
+    R_SCORING_VERSION,
+    is_risk_event_probability,
     RiskEvent,
     RiskStatement,
     StrategyOutcomePrediction,
@@ -165,6 +170,13 @@ def diagnose_provider_failure(
 
 #: Which request key selects the new protocol on the provider call.
 PROTOCOL_REQUEST_KEY = "prediction_protocol"
+
+#: The three R events, rendered from the ONE shared definition table so the
+#: prompt the model reads and the label the framework records cannot drift.
+_R_EVENT_PROMPT_BULLETS = "".join(
+    "    * " + _name + " — " + R_EVENT_DEFINITIONS[_name] + ";\n"
+    for _name in ("timeout", "environment_failure",
+                  "implementation_failure"))
 
 #: The system prompt for the strategy-outcome protocol. The model fills a
 #: FIXED schema: the framework supplies the candidate and the input identity,
@@ -323,14 +335,10 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "  OBSERVABLE EVENT NAMES (use EXACTLY one of these when it applies — "
     "the framework has a channel that can confirm or refute it, and an "
     "event outside this list can never be scored):\n"
-    "    * timeout — the solve would exceed its time limit;\n"
+    + _R_EVENT_PROMPT_BULLETS +
     "    * solver_reported_infeasible — the solver would report the model "
     "infeasible (a VERDICT about the model as given, not by itself a "
     "strategy failure);\n"
-    "    * environment_failure — the script could not run here (sandbox "
-    "policy, missing module);\n"
-    "    * implementation_failure — the harness's own script/stack would "
-    "fail;\n"
     "    * task_check_failed — the answer would FAIL the declared "
     "task-result check (this is the check's outcome, NOT a verdict that "
     "the model was wrong);\n"
@@ -349,24 +357,29 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "never default it to 0, and treat a known consumption with an unmeasured "
     "declared dimension as a LOWER BOUND, not a confirmed remaining "
     "budget.\n"
-    "  SCORING R CONVENTION: ONLY implementation_failure.probability is R: "
-    "the probability that ONE implementation/execution attempt using this "
-    "candidate fails technically under the declared solver "
-    "interface and runtime conditions. Assess writing solver code, calling "
-    "the API, actual execution and delivering a protocol-valid readable "
-    "result. Code/API exceptions, abnormal solver exits and malformed "
-    "result delivery are technical failures. A legal infeasible result can "
-    "be technical success. Ordinary time limits and external blockage are "
-    "unknown for technical R unless a code cause is verified. Other events "
-    "(timeout, environment, budget, infeasibility and task-check outcomes) "
-    "remain diagnostics and NEVER substitute for R. G concerns original-task "
-    "acceptance given faithful execution; C counts solving/rework resources. "
-    "Give a finite JSON number in [0,1], including 0, or omit the probability "
-    "when unsupported. Consider implementation_failure explicitly. Use the "
-    "small implementation_r_evidence block: matching solver-interface "
-    "facts, not a global adjustment. Supported common base rates or similar "
-    "candidate scores are allowed. A reusable tested script is evidence of "
-    "technical execution only, not current business correctness.\n"
+    "  SCORING R CONVENTION: R is the MAXIMUM single-event probability over "
+    "the three R EVENTS (implementation_failure, timeout, "
+    "environment_failure) that EVERY RANKED candidate supplies with a valid "
+    "probability. It is a maximum single-item RISK SCORE, NOT a joint "
+    "failure probability: never combine events (no product, no sum, no "
+    "union) and never report one combined failure probability in place of "
+    "the three per-event numbers. Consider ALL THREE explicitly: give each "
+    "a finite JSON number in [0,1] (an explicit 0 is a real forecast), or "
+    "omit its probability when it has no basis and say why in basis or "
+    "unsupported_fields. A missing event is UNKNOWN, never 0. A duplicate "
+    "event, an out-of-range number or a non-numeric value makes THAT event "
+    "unusable (unknown); it is never clamped, coerced or averaged. The "
+    "harness labels each event on ONE bound attempt, so predict the "
+    "candidate's own attempt, never a later retry. When no event is common "
+    "to every ranked candidate the harness omits R for everyone. Other "
+    "events (solver_reported_infeasible, task_check_failed, "
+    "budget_exhausted) remain diagnostics and NEVER enter R. G concerns "
+    "original-task acceptance given faithful execution; C counts "
+    "solving/rework resources. Use the small implementation_r_evidence "
+    "block: per-event, matching solver-interface facts, not a global "
+    "adjustment. Supported common base rates or similar candidate scores are "
+    "allowed. A reusable tested script is evidence of technical execution "
+    "only, not current business correctness.\n"
     "  If you give a probability, base it on the SPECIFIC candidate's "
     "evidence (the steps, the environment, comparable history), not on the "
     "solver's reputation. NEVER hardcode a penalty for a particular solver "
@@ -648,7 +661,11 @@ def build_strategy_outcome_request(
         "hplus_convention": {"version": "wm-hplus-binary/1", "field": "capability_gain.decision",
                              "values": [0, 1], "missing_or_invalid_schedule": 0,
                              "role": "frozen induction switch; never part of solving utility"},
-        "risk_convention": copy.deepcopy(R_CONVENTION),
+        "risk_convention": {
+            **copy.deepcopy(R_CONVENTION),
+            "event_definitions": dict(R_EVENT_DEFINITIONS),
+            "interpretation": R_AGGREGATION_NOTE,
+        },
         PROTOCOL_REQUEST_KEY: STRATEGY_OUTCOME_PROTOCOL_VERSION,
         "request_kind": "strategy_outcome_prediction",
         "prediction_context": view,
@@ -1067,6 +1084,7 @@ def parse_strategy_outcome_payload(
         problems.append("risk must be a JSON object with an events list")
     else:
         events: List[RiskEvent] = []
+        invalid_r_events: set = set()
         raw_events = raw_risk.get("events")
         if raw_events is None:
             unsupported["risk"] = "no risk event was predicted"
@@ -1084,12 +1102,17 @@ def parse_strategy_outcome_payload(
                                     "required")
                     continue
                 probability = raw.get("probability")
-                from or_harness.world_model.contracts import is_implementation_probability
-                is_r = str(raw["event"]) == "implementation_failure"
-                valid_probability = is_implementation_probability(probability) if is_r else _prob(probability)
+                event_name = str(raw["event"])
+                is_r_event = event_name in R_EVENTS
+                valid_probability = (is_risk_event_probability(probability)
+                                     if is_r_event else _prob(probability))
                 if probability is not None and not valid_probability:
-                    if is_r:
-                        unsupported["risk.implementation_failure"] = "probability must be a finite JSON number in [0,1]"
+                    if is_r_event:
+                        # An R event's illegal probability makes THAT event
+                        # unusable (unknown) for this prediction. It is never
+                        # clamped or converted, and the rest of the
+                        # prediction stands.
+                        invalid_r_events.add(event_name)
                     else:
                         problems.append(f"risk.events[{index}].probability must be in [0, 1]")
                     probability = None
@@ -1106,7 +1129,7 @@ def parse_strategy_outcome_payload(
                     problems.append(str(exc))
                     event_notes = []
                 events.append(RiskEvent(
-                    event=str(raw["event"]),
+                    event=event_name,
                     probability=(float(probability)
                                  if probability is not None else None),
                     severity=(float(severity)
@@ -1114,11 +1137,22 @@ def parse_strategy_outcome_payload(
                     severity_unit=str(raw.get("severity_unit") or ""),
                     basis=(str(raw["basis"]) if raw.get("basis") else None),
                     notes=event_notes))
-            impl = [e for e in events if e.event == "implementation_failure"]
-            if len(impl) > 1:
-                unsupported["risk.implementation_failure"] = "duplicate implementation_failure events are ambiguous"
-                for event in impl:
-                    event.probability = None
+            # ONE event per R name. A duplicate makes EVERY copy unusable
+            # (unknown), never summed or averaged; the rest of the payload
+            # is kept.
+            for name in R_EVENTS:
+                copies = [e for e in events if e.event == name]
+                if len(copies) > 1:
+                    unsupported["risk." + name] = (
+                        "duplicate " + name + " events are ambiguous: their "
+                        "probabilities are unusable (unknown), never summed "
+                        "or averaged")
+                    for event in copies:
+                        event.probability = None
+                elif name in invalid_r_events:
+                    unsupported["risk." + name] = (
+                        "probability must be a finite JSON number in [0,1]; "
+                        "this event is unusable (unknown), never converted")
             if events:
                 try:
                     risk_notes = normalize_text_list(
