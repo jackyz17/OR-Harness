@@ -1579,7 +1579,8 @@ class StrategyOutcomeService:
             "evidence": [{"identity": hit.get("identity"), "version_ref": refs.get(hit.get("identity")),
                           "version": hit.get("version")}
                          for hit in (sent.get("retrieval_evidence") or {}).get("hits", [])],
-            "pair_ids": [pair.get("evaluation_id") for pair in (sent.get("prediction_execution_pairs") or {}).get("pairs", [])],
+            "pair_ids": [str(pair["evaluation_id"]) for pair in (sent.get("prediction_execution_pairs") or {}).get("pairs", [])
+                         if isinstance(pair, dict) and pair.get("evaluation_id")],
             "feedback_versions": header.get("feedback_versions") or {},
             "display_cap": copy.deepcopy((sent.get("prediction_execution_pairs") or {}).get("display_capped")),
             "source": "actually displayed provider input; adoption/effect are separate facts",

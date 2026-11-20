@@ -6,7 +6,7 @@ Use `task.json` to carry the original requirements. Add `coupling` before planni
 
 The minimal task file is `{"task_id":"T","family":"assignment","text":"Actual original requirements and data"}`. Reuse `--task task.json` in both interactive and batch workflows. A structured `spec` is optional. If later commands must see the same CIR, store it in `task.json.coupling`; `profile --cir cir.json` affects that call, not every subsequent command.
 
-Read `result.profile`, `result.derivation`, `result.coupling.modeling_guidance`, and `result.coupling.health` from `profile`. See [the command reference](commands.md#3-understand-and-retrieve) for profile and recall outputs. After execution, follow [the task verification step](../SKILL.md#3b-check-the-original-task-and-decide-whether-to-retry).
+Read `result.profile`, `result.derivation`, `result.coupling.modeling_guidance`, and `result.coupling.health` from `profile`. See [the command reference](commands.md#3-understand-and-retrieve) for profile and recall outputs. After execution, follow [the self-check step](../SKILL.md#3b-self-check-the-answer-then-decide-to-repair-re-solve-or-commit).
 
 ## Syntax (five blocks)
 
@@ -120,3 +120,23 @@ Co-occurrence is structural evidence only. A semantic relation (`shares_resource
 - **Modeling guidance**: each coupling group renders an explicit implication (e.g. "ensure one aggregate capacity constraint covers all relevant decisions").
 
 The `model` field is verified independently (L1/L2 above) and its own structural reading is reported as `derivation.model_coupling` — a DIAGNOSTIC. It is not cross-checked against the CIR: the CIR is the pre-strategy understanding and the model is a post-strategy artifact, so they are reported side by side for you to compare rather than reconciled automatically.
+
+## Self-check inputs and the CIR's limits
+
+The CIR is understanding-level material for modelling; it is NOT an
+independent truth about the task. A relation or attribute derived from it
+(including a scalar coupling value) can guide the model and the retrieval key,
+but it cannot establish that a constraint is covered, that a variable is
+integer, or that an answer is correct. Integer domains come from the TASK text
+and the model's own declaration — never from a field name, a CIR node, or an
+evidence count.
+
+Before committing, use [the self-check flow](../SKILL.md#3b-self-check-the-answer-then-decide-to-repair-re-solve-or-commit):
+read the original input, review the model and code, and choose any applicable
+method (hand calculation, code review, an independent verification script,
+enumeration, a bound or dual). `check.json` carries only the deterministic
+checks the framework can compute (see [check-task](commands.md#5-execute-and-check));
+it replaces neither the agent's judgment about which constraints matter nor an
+optimality argument the task requires. An agent-run verification script and its
+result can be attached to the same execution with `check-task --verification`
+and stay a separate, agent-reported source.

@@ -69,7 +69,7 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
     "check-task": {
         "required": {"state", "report", "staged", "execution_id",
                      "action_id"},
-        "conditional": {"next", "reflection_material"},
+        "conditional": {"next", "reflection_material", "verification"},
     },
     "record": {
         "required": {"recorded", "cost_completeness",
@@ -80,7 +80,9 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "required": {"task_checks", "evaluations", "calibration_summary",
                      "closeout", "evidence_window", "retention",
                      "already_closed"},
-        "conditional": set(),
+        "conditional": {"entry_usage", "effect_attributions", "index_sync",
+                        "rule_validation", "induction_schedule",
+                        "induction_gate"},
     },
     "induce": {
         "required": {"relations"},
@@ -98,7 +100,8 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "required": {"bank"},
         "conditional": {"count", "recommendations", "entries", "evaluation",
                         "evaluations", "prediction", "online_gains",
-                        "n_predictions", "predictions"},
+                        "n_predictions", "predictions", "utility",
+                        "status_view", "forward_calibration", "rule_history"},
     },
 }
 

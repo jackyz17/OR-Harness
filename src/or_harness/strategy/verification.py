@@ -1622,8 +1622,12 @@ def _relation_report(state: str, claim: str, checks: List[Dict[str, Any]],
 # 3. **The framework does not understand natural language constraints.** It
 #    evaluates the check bases that are computable (a reference value, a
 #    status, declared integer domains, an objective recomputation, explicit
-#    value probes). Anything not declared is listed as UNCHECKED in the
-#    report's scope, so "passed" is never read as "fully validated".
+#    value probes). That limit is stated ONCE in ``scope.note``; it is not a
+#    per-task finding. ``scope.unchecked`` names only DECLARED checks that
+#    could not run, so it never implies the task has requirements the
+#    framework discovered on its own. "passed" is never "fully validated",
+#    and an EMPTY ``unchecked`` is not a claim that nothing else needed
+#    checking.
 
 #: Task-result verdicts. Deliberately NOT the admission vocabulary: a task
 #: check answers "is this answer acceptable", not "is this claim true".
@@ -1636,12 +1640,23 @@ INTENT_RELAXATION = "relaxation"
 INTENT_INTERMEDIATE = "intermediate"
 TASK_INTENTS = (INTENT_RELAXATION, INTENT_INTERMEDIATE)
 
-#: What a task check can never establish, whatever passes. Always reported in
-#: ``scope.unchecked`` so a `passed` verdict is not over-read.
-_TASK_CHECK_UNCHECKED_ALWAYS = (
-    "whether the MODEL represents the task (a correct answer to a wrong "
-    "model is still wrong)",
-    "constraint satisfaction not declared as a probe or a recomputation",
+#: The fixed SCOPE of every task-result check. This is a statement about what
+#: the CHECKER is, not a finding about the task being checked, so it is
+#: reported once as ``scope.note`` and never expanded into ``scope.unchecked``
+#: (which is reserved for DECLARED checks that could not run). The old
+#: behaviour put "whether the model represents the task" and "undeclared
+#: constraint satisfaction" into ``unchecked`` for every execution, which read
+#: as if the framework had found unchecked requirements in THIS task. It had
+#: not: it only declared which computable bases the caller supplied.
+TASK_CHECK_SCOPE_NOTE = (
+    "the framework evaluates ONLY the check bases declared in `--check`; it "
+    "does not read natural-language requirements, does not derive which "
+    "constraint or domain (for example integer) the task may need, and does "
+    "not decide that a missing declaration is an uncovered gap. `passed` "
+    "means the declared checks held on the recorded values, not that the "
+    "model matches the task. `unchecked` lists only DECLARED checks that "
+    "could not run and why; an empty list is not a claim that nothing else "
+    "needed checking"
 )
 
 
@@ -1673,7 +1688,16 @@ def _task_check_report(state: str, *, execution_id: str, checks: List[Dict[str, 
                        conclusion: str,
                        reference_source: Optional[Dict[str, Any]] = None
                        ) -> Dict[str, Any]:
-    """The task-result verdict: identity, scope, checks, diffs, unchecked."""
+    """The task-result verdict: identity, scope, checks, diffs, unchecked.
+
+    ``scope`` answers three different questions without mixing them:
+
+    - ``basis`` — what the caller DECLARED and the framework evaluated;
+    - ``unchecked`` — declared bases that could not run, with the reason
+      (the framework does not invent findings for undeclared requirements);
+    - ``note`` — the fixed, task-independent scope statement
+      :data:`TASK_CHECK_SCOPE_NOTE`.
+    """
     report = {
         "state": state,
         "execution_id": execution_id,
@@ -1682,6 +1706,7 @@ def _task_check_report(state: str, *, execution_id: str, checks: List[Dict[str, 
         "scope": {
             "basis": basis,
             "unchecked": unchecked,
+            "note": TASK_CHECK_SCOPE_NOTE,
         },
         "intent": intent,
         "conclusion": conclusion,
@@ -1785,7 +1810,15 @@ def verify_task_result(execution: Any,
     declared, no solution vector, a needed variable missing, a probe PATH that
     does not resolve, or the execution produced no usable result) — which is
     NOT a pass and NOT a failure. A ``passed`` verdict covers only the
-    declared bases: the report always names what it did not check.
+    declared bases; the fixed checker scope is reported once in
+    ``scope.note``. ``scope.unchecked`` is reserved for DECLARED checks that
+    could not run — it is not a list of requirements the framework inferred
+    from the task text.
+
+    The verdict says nothing about WHY a declared check failed: whether the
+    cause is the task reading, the model, the implementation or the check
+    itself is the agent's decision. A failure does not by itself require a
+    new solve, and a pass does not forbid one.
     """
     # Identity comes from the WHOLE declaration, before any failure can
     # return early. Observed values and the caller's attribution are not rules.
@@ -1848,7 +1881,10 @@ def _verify_task_result(execution: Any,
         raise ValueError(
             f"intent must be one of {TASK_INTENTS} or omitted (got {intent!r})")
     intent = str(intent) if intent is not None else None
-    unchecked = list(_TASK_CHECK_UNCHECKED_ALWAYS)
+    # ``unchecked`` holds DECLARED checks that could not run. The fixed scope
+    # statement (what the framework does not parse at all) is ``scope.note``,
+    # never a per-task finding here.
+    unchecked: List[str] = []
     if intent == INTENT_RELAXATION:
         unchecked.append(
             "the harness declared this a deliberate relaxation: its answer is "

@@ -104,6 +104,312 @@ class RuleCase(HarnessTestCase):
         return transfer, boundary
 
 
+class TestEntryUtilitySummary(RuleCase):
+    """Read-time utility aggregation: adoption facts vs agent judgements.
+
+    These assert the DISTINCTIONS that matter, not a frozen prose snapshot:
+    a repeat adoption is one adoption, a corrected judgement replaces the
+    earlier one in the statistic (both stay in history), zero/missing/
+    unevaluated stay apart, and no tool result turns a passed/failed task
+    check into a utility verdict.
+    """
+
+    def _summary(self, entry_id):
+        return self.h.inspect(bank="strategic",
+                              entry_id=entry_id)["utility"]
+
+    def _event_count(self):
+        return self.h.store.conn.execute(
+            "SELECT COUNT(*) FROM rule_events").fetchone()[0]
+
+    def test_adoptions_judged_and_unjudged_are_counted_per_version(self):
+        entry, training, _ = self.seed()
+        # Before any use: an explicit measured zero.
+        empty = self._summary(entry)
+        self.assertEqual(empty["totals"]["adoptions"], 0)
+        self.assertEqual(empty["totals"]["judged"], 0)
+        self.assertEqual(empty["totals"]["unjudged"], 0)
+        self.activate(entry)          # two real adoptions of v1
+        task, used = self.solve("extra-use", use=entry)
+        self.h.close_episode(task["task_id"], task["task_id"])
+        summary = self._summary(entry)
+        totals = summary["totals"]
+        self.assertEqual(totals["adoptions"], 3)
+        self.assertEqual(totals["judged"], 0)
+        self.assertEqual(totals["unjudged"], 3)
+        # 0 helped/refuting here is an EMPTY verdict count, not a claim that
+        # the rule caused no effect and not an "unmeasured" marker.
+        self.assertEqual(totals["helped"], 0)
+        self.assertEqual(totals["refuting"], 0)
+        version = summary["versions"][0]
+        self.assertEqual(version["version"], 1)
+        self.assertEqual(version["adoptions"], 3)
+        self.assertEqual(version["evidence"]["n_adoption_execution_ids"], 3)
+        self.assertIn(used.execution_id,
+                      version["evidence"]["adoption_execution_ids"])
+        # Record ONE judgement on one of the adoptions.
+        self.h.induce(effect_attributions=[{
+            "entry_id": entry, "execution_id": used.execution_id,
+            "verdict": "neutral",
+            "note": "Reviewed the use: no comparative benefit claimed."}])
+        totals = self._summary(entry)["totals"]
+        self.assertEqual(totals["judged"], 1)
+        self.assertEqual(totals["unjudged"], 2)
+        self.assertEqual(totals["neutral"], 1)
+
+    def test_latest_corrected_judgement_wins_but_history_stays(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, used = self.solve("corrected", use=entry)
+        self.h.close_episode(task["task_id"], task["task_id"])
+        self.h.induce(effect_attributions=[{
+            "entry_id": entry, "execution_id": used.execution_id,
+            "verdict": "helped", "note": "First judgement."}])
+        self.h.induce(effect_attributions=[{
+            "entry_id": entry, "execution_id": used.execution_id,
+            "verdict": "refuting", "lifecycle_action": "keep",
+            "note": "Corrected: the rule's premise did not hold."}])
+        totals = self._summary(entry)["totals"]
+        self.assertEqual(totals["helped"], 0)
+        self.assertEqual(totals["refuting"], 1)
+        self.assertEqual(totals["judged"], 1)
+        # The earlier judgement is preserved as history, not deleted.
+        history = inspect_versions(self.h, entry)["events"]
+        effects = [e for e in history if e["kind"] == "effect"
+                   and e.get("execution_id") == used.execution_id]
+        self.assertEqual(len(effects), 2)
+        self.assertEqual([e["verdict"] for e in effects],
+                         ["helped", "refuting"])
+
+    def test_a_failed_task_check_is_not_refuting(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, bad = self.solve("wrong-use", use=entry, lower=False,
+                               failure_source="rule",
+                               performed_method={"name": "upper endpoint",
+                                                 "steps": ["Choose the upper endpoint."]})
+        closed = self.h.close_episode(task["task_id"], task["task_id"])
+        self.assertEqual(closed["rule_validation"]["checks"][-1]["state"],
+                         "refuted")
+        totals = self._summary(entry)["totals"]
+        self.assertEqual(totals["refuting"], 0)
+        self.assertGreater(totals["unjudged"], 0)
+        # The framework does not manufacture a utility judgement from a
+        # failed check: only the agent writes effect events.
+        effects = [e for e in inspect_versions(self.h, entry)["events"]
+                   if e["kind"] == "effect"]
+        self.assertEqual(effects, [])
+
+    def test_excluded_evidence_keeps_the_adoption_but_not_the_conclusion(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, used = self.solve("excluded-use", use=entry)
+        self.h.close_episode(task["task_id"], task["task_id"])
+        self.h.induce(effect_attributions=[{
+            "entry_id": entry, "execution_id": used.execution_id,
+            "verdict": "helped", "note": "Judged helpful before the fact "
+            "was withdrawn."}])
+        self.h.exclude_execution(used.execution_id,
+                                 "fixture withdraws the execution fact")
+        summary = self._summary(entry)
+        self.assertEqual(summary["totals"]["adoptions"], 3)
+        self.assertEqual(summary["totals"]["judged"], 0)
+        self.assertEqual(summary["totals"]["invalidated"], 1)
+        self.assertEqual(summary["totals"]["helped"], 0)
+        invalidation = summary["versions"][0]["evidence"]["invalidated"]
+        self.assertTrue(invalidation)
+        self.assertEqual(invalidation[0]["execution_id"], used.execution_id)
+        # The historical judgement event itself is not rewritten.
+        events = inspect_versions(self.h, entry)["events"]
+        self.assertTrue(any(e["kind"] == "effect"
+                            and e.get("execution_id") == used.execution_id
+                            and e.get("verdict") == "helped" for e in events))
+
+    def test_summary_reads_retained_evidence_and_writes_nothing(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, used = self.solve("retained-use", use=entry)
+        self.h.close_episode(task["task_id"], task["task_id"])
+        self.h.induce(effect_attributions=[{
+            "entry_id": entry, "execution_id": used.execution_id,
+            "verdict": "helped", "note": "Retained for the aggregate."}])
+        before = self._event_count()
+        # Simulate the raw execution row leaving the hot window: the versioned
+        # use/effect events and their evidence refs are what the aggregate
+        # reads, so the historical effect stays readable.
+        with self.h.store.transaction() as conn:
+            conn.execute("DELETE FROM executions WHERE execution_id=?",
+                         (used.execution_id,))
+        self.assertIsNone(self.h.bank.get(used.execution_id))
+        summary = self._summary(entry)
+        self.assertEqual(summary["totals"]["adoptions"], 3)
+        self.assertEqual(summary["totals"]["helped"], 1)
+        self.assertEqual(self._event_count(), before)
+
+    def test_old_version_judgement_does_not_touch_the_active_new_version(self):
+        entry, training, _ = self.seed()
+        transfer, boundary = self.activate(entry)
+        task, old_use = self.solve("v1-use-again", use=entry)
+        self.h.close_episode(task["task_id"], task["task_id"])
+        task, revised_case = self.solve("revision", use=entry)
+        changed = {**SHORT_RULE,
+                   "do": SHORT_RULE["do"] + " Record finite endpoints.",
+                   "entry_id": entry, "operation": "revise",
+                   "evidence": [revised_case.execution_id],
+                   "publication": {"state": "published",
+                                   "reason": "Agent confirms the new body "
+                                             "from the captured endpoint case."}}
+        self.assertEqual(self.h.induce(relations=[changed])
+                         ["relations"][0]["version"], 2)
+        self.h.induce(effect_attributions=[{
+            "entry_id": entry, "execution_id": old_use.execution_id,
+            "verdict": "refuting", "lifecycle_action": "demote",
+            "note": "v1 choice was wrong on this in-domain use."}])
+        summary = self._summary(entry)
+        v1 = next(v for v in summary["versions"] if v["version"] == 1)
+        v2 = next(v for v in summary["versions"] if v["version"] == 2)
+        self.assertEqual(v1["verdicts"]["refuting"], 1)
+        self.assertEqual(v2["verdicts"]["refuting"], 0)
+        self.assertEqual(summary["status"]["active_version"], 2)
+        self.assertTrue(summary["status"]["published"])
+        self.assertEqual(version_row(self.h.store, entry, 1)["state"],
+                         "suspended")
+        self.assertEqual(version_row(self.h.store, entry, 2)["state"],
+                         "active")
+
+    def test_close_episode_records_the_effect_and_returns_entry_usage(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, used = self.solve("close-review", use=entry)
+        before_induce = len(self.h.actions.query(action_type="induce"))
+        closed = self.h.close_episode(
+            task["task_id"], task["task_id"],
+            effect_attributions=[{
+                "entry_id": entry, "execution_id": used.execution_id,
+                "verdict": "helped",
+                "note": "The rule fixed the unit before the objective; the "
+                        "recorded check then matched the reference scale."}])
+        self.assertEqual(closed["induction_schedule"]["pending_ids"], [])
+        self.assertEqual(len(self.h.actions.query(action_type="induce")),
+                         before_induce)
+        self.assertEqual(closed["effect_attributions"][0]["verdict"],
+                         "helped")
+        usage = closed["entry_usage"]
+        self.assertEqual(usage["n_entries"], 1)
+        item = usage["entries"][0]
+        self.assertEqual(item["entry_id"], entry)
+        self.assertEqual(item["versions"][0]["version"], 1)
+        self.assertEqual(item["versions"][0]["judgements"][0]["judged"], True)
+        self.assertEqual(usage["effect_review"]["n_pending"], 0)
+        self.assertEqual(item["totals"]["helped"], 1)
+        self.assertTrue(item["inspect_ref"].endswith("entry " + entry))
+        # A re-close with the identical review is idempotent.
+        again = self.h.close_episode(
+            task["task_id"], task["task_id"],
+            effect_attributions=[{
+                "entry_id": entry, "execution_id": used.execution_id,
+                "verdict": "helped",
+                "note": "The rule fixed the unit before the objective; the "
+                        "recorded check then matched the reference scale."}])
+        self.assertEqual(again["entry_usage"]["n_entries"], 1)
+        effects = [e for e in inspect_versions(self.h, entry)["events"]
+                   if e["kind"] == "effect"
+                   and e.get("execution_id") == used.execution_id]
+        self.assertEqual(len(effects), 1)
+
+    def test_pause_then_promote_keeps_recall_and_index_consistent(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, used = self.solve("pause-use", use=entry)
+        self.h.close_episode(task["task_id"], task["task_id"])
+        paused = self.h.close_episode(
+            task["task_id"], task["task_id"],
+            effect_attributions=[{
+                "entry_id": entry, "execution_id": used.execution_id,
+                "verdict": "refuting", "lifecycle_action": "demote",
+                "note": "The rule's stated premise did not hold here."}])
+        self.assertFalse(self.h.sbank.get(entry).is_published)
+        self.assertEqual(paused["index_sync"]["state"], "synced")
+        recommendations = self.h.recall(task)["recommendations"]
+        self.assertFalse(any(
+            item.get("evidence") == "strategic_entry"
+            and (item.get("entry_id") == entry
+                 or entry in (item.get("evidence_refs") or []))
+            for item in recommendations))
+        restored = self.h.close_episode(
+            task["task_id"], task["task_id"],
+            effect_attributions=[{
+                "entry_id": entry, "execution_id": used.execution_id,
+                "verdict": "helped", "lifecycle_action": "promote",
+                "note": "Re-read the case: the use was in scope and helped."}])
+        self.assertTrue(self.h.sbank.get(entry).is_published)
+        self.assertEqual(restored["index_sync"]["state"], "synced")
+        recommendations = self.h.recall(task)["recommendations"]
+        self.assertTrue(any(
+            item.get("evidence") == "strategic_entry"
+            and (item.get("entry_id") == entry
+                 or entry in (item.get("evidence_refs") or []))
+            for item in recommendations))
+
+    def test_retire_archive_keeps_reason_evidence_and_usage(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, used = self.solve("retire-use", use=entry)
+        self.h.close_episode(task["task_id"], task["task_id"])
+        result = self.h.retire(
+            entry, reason="Agent retires after reviewing the adopted use.",
+            evidence_execution_ids=[used.execution_id])
+        card = result["cold_archive_card"]
+        evidence = card["evidence_summary"]
+        self.assertEqual(evidence["management_reason"],
+                         "Agent retires after reviewing the adopted use.")
+        self.assertEqual(evidence["evidence_execution_ids"],
+                         [used.execution_id])
+        self.assertGreaterEqual(evidence["usage"]["totals"]["adoptions"], 1)
+        self.assertIn("NOT a usefulness statistic",
+                      evidence["forward_calibration"]["note"])
+        self.assertNotIn("hit_rate", evidence)
+        self.assertIsNone(self.h.sbank.get(entry))
+        self.assertFalse(any(
+            item.get("evidence") == "strategic_entry"
+            for item in self.h.recall({
+                "task_id": "retire-after",
+                "family": "assignment",
+                "description": "Nonnegative integer X,Y with X >= 2Y.",
+            })["recommendations"]))
+
+    def test_cli_close_episode_accepts_effect_and_inspect_shows_usage(self):
+        entry, training, _ = self.seed()
+        self.activate(entry)
+        task, used = self.solve("cli-review", use=entry)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["--home", self.home, "close-episode",
+                         "--task", task["task_id"],
+                         "--episode", task["task_id"],
+                         "--attribute-effect", json.dumps({
+                             "entry_id": entry,
+                             "execution_id": used.execution_id,
+                             "verdict": "unrelated",
+                             "note": "Interface explanation only."})])
+        self.assertEqual(code, 0, buf.getvalue())
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["result"]["effect_attributions"][0]["verdict"],
+                         "unrelated")
+        self.assertEqual(payload["result"]["entry_usage"]["n_entries"], 1)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["--home", self.home, "inspect", "--bank",
+                         "strategic", "--entry", entry])
+        self.assertEqual(code, 0)
+        result = json.loads(buf.getvalue())["result"]
+        self.assertEqual(result["utility"]["totals"]["unrelated"], 1)
+        self.assertIn("publication", result["status_view"])
+        self.assertIn("state",
+                      result["status_view"]["verification"])
+        self.assertIn("forward_calibration", result)
+
+
 class TestRuleLifecycle(RuleCase):
     def test_normal_closed_task_short_submission_then_transfer_and_boundary(self):
         entry_id, training, _ = self.seed()

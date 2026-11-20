@@ -110,7 +110,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
 
         # A NEW decision: episode 2 builds a context and predicts.
         self.provider.requests.clear()
-        planned_prediction(self.h,
+        seen = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
@@ -119,6 +119,12 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         row = pairs["pairs"][0]
         self.assertEqual(row["task_id"], "t1")
         self.assertEqual(row["episode_id"], "ep1")
+        # The recorded selection names the SAME readable bodies that were
+        # sent — never a null from a directory/body mismatch.
+        self.assertEqual(
+            seen.trace.model_info["input_selection"]["pair_ids"],
+            [sent["evaluation_id"] for sent in pairs["pairs"]])
+        self.assertNotIn(None, seen.trace.model_info["input_selection"]["pair_ids"])
         # The ORIGINAL prediction and the REAL observation both travel.
         self.assertEqual(row["benefit"]["predicted"], 0.8)
         self.assertEqual(row["benefit"]["observed"], 1.0)
@@ -197,8 +203,12 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
             _filter_pairs_by_model,
         )
         block = {"pairs": [
-            {"model_identity": "model-a@v1", "benefit": {"signed_error": 0.2}},
-            {"model_identity": "other@v9", "benefit": {"signed_error": 0.3}},
+            {"evaluation_id": "ev_a", "prediction_id": "sp_a",
+             "task_id": "t1", "model_identity": "model-a@v1",
+             "benefit": {"signed_error": 0.2}},
+            {"evaluation_id": "ev_b", "prediction_id": "sp_b",
+             "task_id": "t1", "model_identity": "other@v9",
+             "benefit": {"signed_error": 0.3}},
         ]}
         filtered = _filter_pairs_by_model(block, "model-a@v1")
         self.assertEqual(len(filtered["pairs"]), 1)
@@ -906,6 +916,43 @@ class TestGReviewReproductions(GCase):
                 "semantic_probe": {"path": "execution_features.solution_variables.CFC", "equals": 1}})
             self.close_g(ep)
         self.assertFalse(self.next_feedback()["prediction_execution_pairs"]["same_task_comparisons"])
+
+
+class TestEmptyConditionalSelectionIsExplained(unittest.TestCase):
+    """No applicable group is a fact about THIS candidate's conditions, not
+    a claim that no calibration was accumulated."""
+
+    def test_empty_selection_keeps_the_reason_and_the_readable_history(self):
+        from or_harness.world_model.g_signal import select_conditional_g
+        # 30 groups exist, but all belong to another family: readable
+        # history, none applicable to THIS candidate.
+        rows = [{
+            "conditions": {"family": "other",
+                           "cell": "class=unknown|rc[0.00,0.25]|"
+                                   "tc[0.00,0.25]|rx[0.00,0.25]"},
+            "metric": "task_check_passed",
+            "observation_rule_version": "wm-g/1",
+            "scope": "attempt",
+            "execution_conditions": {"solver": "python",
+                                     "config": {"time_limit": 60}},
+            "declared_budget": None, "task_ids": [],
+        } for _ in range(30)]
+        out = select_conditional_g(
+            {"conditional_g": rows,
+             "conditional_g_selection": {"n_available": 30}},
+            profile={"family": "routing"},
+            conditions={"config": {"time_limit": 60}, "solver": "python"},
+            convention={"metric": "task_check_passed",
+                        "observation_rule_version": "wm-g/1"})
+        selection = out["conditional_g_selection"]
+        self.assertEqual(out["conditional_g"], [])
+        self.assertEqual(selection["n_applicable"], 0)
+        self.assertEqual(selection["n_included"], 0)
+        self.assertEqual(selection["n_available"], 30)
+        self.assertEqual(selection["reason"],
+                         "no_condition_group_applies_to_this_candidate")
+        self.assertIn("NOT a same-condition prior", selection["note"])
+        self.assertIn("30 historical group", selection["note"])
 
 
 if __name__ == "__main__":

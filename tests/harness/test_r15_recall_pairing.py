@@ -306,7 +306,8 @@ def _block(pairs):
         conditions = row.get("conditions") or {}
         method = row.get("method_planned") or {}
         meta.append({
-            "index": i, "evaluation_id": row["evaluation_id"],
+            "index": i, "pair_ref": row["evaluation_id"],
+            "evaluation_id": row["evaluation_id"],
             "prediction_id": row["prediction_id"], "task_id": row["task_id"],
             "scope": row.get("scope"), "strategy_id": conditions.get("strategy_id"),
             "cell": conditions.get("cell"),
@@ -415,6 +416,301 @@ class TestHistoricalPairSelection(unittest.TestCase):
         c = selection_signature([{"name": "random search"}],
                                 ["family:routing"])
         self.assertNotEqual(a, c)
+
+
+class TestPairDirectoryAlwaysNamesItsBody(unittest.TestCase):
+    """The directory (``selection_meta``) and the bodies (``pairs``) must
+    describe the SAME case after sorting, budget trimming and filtering."""
+
+    def test_stale_position_is_ignored_and_the_body_is_still_found(self):
+        # The published block is relevance-ordered and budget-trimmed, but
+        # its legacy directory kept the ORIGINAL positions (9, 4), which are
+        # outside this two-pair block. A positional lookup would return an
+        # empty object; identity lookup must return the right body.
+        block = _block([
+            _pair(0, task_id="t_cur", strategy_id="S04",
+                  executions=["ex_a"], method_name="exact milp solve"),
+            _pair(1, task_id="t_cur", strategy_id="S05",
+                  executions=["ex_b"], method_name="exact lp solve"),
+        ])
+        block["selection_meta"][0]["index"] = 9
+        block["selection_meta"][1]["index"] = 4
+        block["n_pairs_total"] = 43
+        block["n_pairs_included"] = 2
+        block["n_pairs_omitted"] = 41
+        sel = select_paired_feedback(
+            block, recall_ids=["ex_a", "ex_b"],
+            candidate_methods=[{"method": {"name": "exact milp solve"}}],
+            task_id="t_cur")
+        self.assertEqual([p["evaluation_id"] for p in sel["pairs"]],
+                         ["ev_0", "ev_1"])
+        for pair in sel["pairs"]:
+            # A real body, never a directory-only shell.
+            self.assertIn("conditions", pair)
+            self.assertIn("method_planned", pair)
+            self.assertNotIn(None, [pair.get("evaluation_id")])
+
+    def test_directory_entry_without_a_body_is_not_a_case(self):
+        real = _pair(0, task_id="t_cur", strategy_id="S04",
+                     executions=["ex_real"], method_name="exact milp solve")
+        block = _block([real])
+        # A directory row for a case whose body was trimmed away, plus a
+        # shell row (the old failure mode: selection fields only).
+        block["selection_meta"].append({
+            "index": 0, "pair_ref": "ev_missing", "evaluation_id": "ev_missing",
+            "prediction_id": "sp_missing", "task_id": "t_cur",
+            "strategy_id": "S04", "execution_ids": []})
+        block["pairs"].append({"selected_reason": ["old selection"],
+                               "relevance": 4, "background": False})
+        sel = select_paired_feedback(
+            block, recall_ids=["ex_real"],
+            candidate_methods=[{"method": {"name": "exact milp solve"}}],
+            task_id="t_cur")
+        self.assertEqual([p["evaluation_id"] for p in sel["pairs"]], ["ev_0"])
+        self.assertEqual(sel["n_pairs_unreadable"], 1)
+        self.assertEqual(sel["n_pairs_index_without_body"], 1)
+        self.assertIn("integrity_note", sel)
+        self.assertEqual(sel["n_pairs_included"], 1)
+        self.assertEqual(sel["n_pairs_available"], 1)
+
+    def test_window_budget_and_display_counts_stay_separate(self):
+        block = _block([
+            _pair(0, task_id="t_cur", strategy_id="S04",
+                  executions=["ex_a"], method_name="exact milp solve"),
+        ])
+        block.update({"n_pairs_total": 43, "n_pairs_included": 1,
+                      "n_pairs_omitted": 42})
+        sel = select_paired_feedback(
+            block, task_id="other", candidate_methods=[])
+        # Window: 43. Published block carried 1 and omitted 42 for size.
+        self.assertEqual(sel["n_pairs_total"], 43)
+        self.assertEqual(sel["n_pairs_publish_included"], 1)
+        self.assertEqual(sel["n_pairs_publish_omitted"], 42)
+        # This block can READ one body and DISPLAY one (background pass).
+        self.assertEqual(sel["n_pairs_readable"], 1)
+        self.assertEqual(sel["n_pairs_available"], 1)
+        self.assertEqual(sel["n_pairs_included"], 1)
+        self.assertIn("counts_note", sel)
+
+    def test_model_filter_keeps_directory_and_bodies_aligned(self):
+        from or_harness.world_model.episode_closeout import (
+            _filter_pairs_by_model,
+        )
+        a = _pair(0, task_id="t_cur", strategy_id="S04",
+                  executions=["ex_a"], method_name="exact milp solve")
+        b = _pair(1, task_id="t_cur", strategy_id="S05",
+                  executions=["ex_b"], method_name="exact lp solve")
+        a["model_identity"] = b["model_identity"] = "model-a@1"
+        block = _block([a, b])
+        block["model_identity"] = "model-a@1"
+        filtered = _filter_pairs_by_model(block, "model-a@1")
+        self.assertEqual(len(filtered["pairs"]), 2)
+        self.assertEqual(
+            [m["pair_ref"] for m in filtered["selection_meta"]],
+            [p["evaluation_id"] for p in filtered["pairs"]])
+        withheld = _filter_pairs_by_model(block, "model-b@9")
+        self.assertEqual(withheld["pairs"], [])
+        self.assertEqual(withheld["selection_meta"], [])
+        self.assertEqual(withheld["n_pairs_withheld"], 2)
+
+    def test_legacy_block_without_directory_is_derived_from_bodies(self):
+        block = _block([_pair(0, task_id="t_cur", strategy_id="S04",
+                              executions=["ex_a"],
+                              method_name="exact milp solve")])
+        block.pop("selection_meta")
+        sel = select_paired_feedback(
+            block, recall_ids=["ex_a"],
+            candidate_methods=[{"method": {"name": "exact milp solve"}}],
+            task_id="t_cur")
+        self.assertEqual([p["evaluation_id"] for p in sel["pairs"]], ["ev_0"])
+        self.assertEqual(sel["n_pairs_unreadable"], 0)
+        self.assertNotIn("integrity_note", sel)
+
+
+class TestProviderMaterialIsCompacted(unittest.TestCase):
+    """The sent material keeps method/prediction/outcome and stops inlining
+    the check specs and repeated explanations the stored record holds."""
+
+    def _view(self, content):
+        return RetrievalView(
+            channels_run=["structural"],
+            hits=[{"identity": "strategic_knowledge:7",
+                   "layer": "strategic_knowledge", "evidence_id": "7",
+                   "version": "unknown", "channels": ["structural"],
+                   "evidence_class": "legacy_knowledge",
+                   "content": content}],
+        )
+
+    def test_full_check_spec_is_replaced_by_the_exact_reference(self):
+        content = {
+            "entry_id": "7", "strategy_id": "S04",
+            "knowledge": {"entry_id": "7", "rule": {
+                "entry_id": "7", "strategy_id": "S04",
+                "detail_ref": "orx inspect --bank strategic --entry 7",
+                "body": {"when": "W", "do": "D", "expect": "E"},
+                "verification_scope": {
+                    "state": "fact_checked", "authority": "agent",
+                    "rule_version": 1, "n_checks": 2,
+                    "publication": {"state": "published", "scope": "small"},
+                    "seed_checks": [{
+                        "execution_id": "ex_1", "state": "passed",
+                        "validity": {"valid": True, "revision": 0},
+                        "acceptance_rule": {"checker": "x",
+                                            "spec": {"a": list(range(200))}},
+                        "scope": {"basis": ["x"], "unchecked": ["y"]},
+                    }],
+                }}}}
+        sent = _project_retrieval_for_provider(self._view(content))
+        rule = sent["hits"][0]["content"]["knowledge"]["rule"]
+        # Method and verdict stay readable.
+        self.assertEqual(rule["body"]["when"], "W")
+        self.assertEqual(rule["verification_scope"]["state"], "fact_checked")
+        self.assertEqual(rule["verification_scope"]["publication"]["scope"],
+                         "small")
+        check = rule["verification_scope"]["seed_checks"][0]
+        self.assertEqual(check["execution_id"], "ex_1")
+        self.assertEqual(check["state"], "passed")
+        # The spec is NOT inlined a second time; the exact field is named.
+        self.assertNotIn("acceptance_rule", check)
+        self.assertNotIn("scope", check)
+        self.assertIn("acceptance_rule", check["check_ref"])
+        self.assertIn("relative to detail_ref", check["check_ref"])
+        self.assertEqual(rule["verification_scope"]["detail_ref"],
+                         "orx inspect --bank strategic --entry 7")
+        # Exact duplicate identity fields are stated once.
+        self.assertNotIn("entry_id", rule)
+        self.assertEqual(rule["entry_ref"], "content.entry_id")
+        self.assertNotIn("strategy_id", rule)
+        self.assertEqual(rule["strategy_id_ref"], "content.strategy_id")
+
+    def test_large_solution_variable_dump_becomes_a_bounded_preview(self):
+        variables = {f"x_{i}": float(i) for i in range(120)}
+        content = {"execution_id": "ex_1", "method": {"name": "m"},
+                   "failure_summary": [{"error_class": "model"}],
+                   "task_check": "failed",
+                   "solution_variables": variables,
+                   "inspect_hint": "orx inspect --bank experience --id ex_1"}
+        sent = _project_retrieval_for_provider(
+            RetrievalView(channels_run=["semantic"], hits=[{
+                "identity": "execution_evidence:ex_1",
+                "layer": "execution_evidence", "evidence_id": "ex_1",
+                "version": "v", "channels": ["semantic"],
+                "evidence_class": "execution_fact", "content": content}]))
+        body = sent["hits"][0]["content"]
+        preview = body["solution_variables"]
+        self.assertEqual(preview["n_variables"], 120)
+        self.assertLessEqual(len(preview["preview_nonzero"]), 8)
+        self.assertIn("solution_variables", preview["detail_ref"])
+        # Method, failure and task check survive untouched.
+        self.assertEqual(body["method"]["name"], "m")
+        self.assertEqual(body["failure_summary"], [{"error_class": "model"}])
+        self.assertEqual(body["task_check"], "failed")
+
+    def test_identical_warning_and_version_note_are_stated_once(self):
+        def hit(identity, content):
+            return {"identity": identity, "layer": "strategic_knowledge",
+                    "evidence_id": identity.split(":")[1], "version": "unknown",
+                    "channels": ["structural"],
+                    "evidence_class": "legacy_knowledge",
+                    "version_unknown_note": "same explanation",
+                    "content": content}
+        warning = "cost not comparable across candidates"
+        view = RetrievalView(channels_run=["structural"], hits=[
+            hit("strategic_knowledge:1",
+                {"entry_id": "1", "risk_warnings": [warning, "own-1"]}),
+            hit("strategic_knowledge:2",
+                {"entry_id": "2", "risk_warnings": [warning, "own-2"]}),
+        ])
+        sent = _project_retrieval_for_provider(view)
+        self.assertEqual(sent["common_risk_warnings"], [warning])
+        self.assertNotIn(warning, sent["hits"][0]["content"]["risk_warnings"])
+        self.assertIn("own-1", sent["hits"][0]["content"]["risk_warnings"])
+        self.assertEqual(sent["version_unknown_note"], "same explanation")
+        self.assertNotIn("version_unknown_note", sent["hits"][0])
+
+
+class TestPairBodyStaysReadableAfterCompaction(unittest.TestCase):
+    """The pair projection removes scaffolding, never the method, the
+    prediction, the outcome or a failure difference."""
+
+    def _pair(self):
+        return {
+            "evaluation_id": "ev_1", "prediction_id": "sp_1",
+            "task_id": "t1", "scope": "attempt",
+            "method_planned": {"name": "m", "steps": ["a", "b", "c"]},
+            "method_actual": {"name": "m", "steps": ["a", "b2", "c"]},
+            "benefit": {"predicted": 0.8, "observed": 1.0,
+                        "acceptance_rule": {"checker": "c",
+                                            "fingerprint": "f",
+                                            "spec": {"big": list(range(50))}}},
+            "risk_actual": [
+                {"event": "implementation_failure", "label": "not_occurred",
+                 "predicted": True, "label_basis": "ok"},
+                {"event": "timeout", "label": "not_occurred",
+                 "predicted": False, "label_basis": "unpredicted_no_brier"},
+                {"event": "task_check_failed", "label": "occurred",
+                 "predicted": False, "label_basis": "unpredicted_no_brier"},
+            ],
+            "cost_measured": {"tool_calls": {"predicted": 3, "actual": 4}},
+            "cost_observed_fact": {
+                "values": {"tool_calls": 4, "latency_s": 1.0},
+                "dimension_scopes": {"tool_calls": "attempt"},
+                "boundary_exclusions": ["no complete window"],
+                "execution_ids": ["ex_1"],
+                "conditions": {"family": "routing",
+                               "solver_conditions": {"solver": "python"}},
+                "window": {"anchor": 1}, "work_facts": {"host_rounds": 3},
+                "source_refs": ["ac_1"]},
+            "task_check": {"state": "failed", "action_id": "ac_2",
+                           "scope": {"basis": ["x"], "unchecked": ["y"]}},
+            "execution_conditions": {
+                "comparable": True, "execution_id": "ex_1",
+                "comparison_key": {"solver": "python"},
+                "config": {"solver": "python"}, "sources": {"x": "y"}},
+        }
+
+    def test_method_difference_survives_and_plan_does_not_repeat_steps(self):
+        from or_harness.strategy.evidence_views import compact_feedback_pair
+        value = compact_feedback_pair(self._pair())
+        self.assertEqual(value["method_actual"]["steps"], ["a", "b2", "c"])
+        self.assertNotIn("steps", value["method_planned"])
+        self.assertEqual(value["method_planned"]["steps_ref"],
+                         "method_actual.steps")
+        self.assertEqual(
+            value["method_planned"]["step_differences"],
+            [{"step": 2, "planned": "b", "actual": "b2"}])
+        self.assertIn("method_deviation", value)
+
+    def test_unpredicted_non_events_are_counted_and_occurrences_stay(self):
+        from or_harness.strategy.evidence_views import compact_feedback_pair
+        value = compact_feedback_pair(self._pair())
+        events = [e["event"] for e in value["risk_actual"]]
+        self.assertIn("implementation_failure", events)  # predicted
+        self.assertIn("task_check_failed", events)       # occurred
+        self.assertNotIn("timeout", events)              # neither
+        self.assertEqual(value["risk_actual_omitted"]["n"], 1)
+        self.assertIn("detail_ref", value["risk_actual_omitted"])
+
+    def test_cost_fact_keeps_values_scopes_exclusions_and_ref(self):
+        from or_harness.strategy.evidence_views import compact_feedback_pair
+        value = compact_feedback_pair(self._pair())
+        fact = value["cost_observed_fact"]
+        self.assertEqual(fact["dimension_scopes"], {"tool_calls": "attempt"})
+        self.assertEqual(fact["boundary_exclusions"],
+                         ["no complete window"])
+        self.assertEqual(fact["execution_ids"], ["ex_1"])
+        self.assertNotIn("window", fact)
+        self.assertNotIn("work_facts", fact)
+        self.assertNotIn("source_refs", fact)
+        self.assertIn("detail_ref", fact)
+        # The measured actuals are not stated twice.
+        self.assertNotIn("values", fact)
+        self.assertEqual(fact["values_not_scored"], {"latency_s": 1.0})
+        self.assertEqual(value["cost_measured"]["tool_calls"]["actual"], 4)
+        # The check scope is a spec; the verdict stays.
+        self.assertEqual(value["task_check"]["state"], "failed")
+        self.assertNotIn("scope", value["task_check"])
+        self.assertIn("scope_ref", value["task_check"])
 
 
 # ---------------------------------------------------------------------------

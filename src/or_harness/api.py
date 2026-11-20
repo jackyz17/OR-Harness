@@ -1645,7 +1645,9 @@ class ORHarness:
                       *, terminal_state: str = "completed",
                       finish_action_id: Optional[str] = None,
                       min_calibration_samples: Optional[int] = None,
-                      induction_decision=None,execution_id=None
+                      induction_decision=None, execution_id=None,
+                      effect_attributions: Optional[
+                          Sequence[Dict[str, Any]]] = None
                       ) -> Dict[str, Any]:
         """Close ONE episode: evaluate its bound predictions against their
         real outcomes and publish the experience calibration.
@@ -1660,7 +1662,34 @@ class ORHarness:
         ``finish_action_id`` optionally names the ``finish_task`` action
         that ended the episode (the close-out links to it; it does not
         create a second task lifecycle).
+
+        ``effect_attributions`` records the agent's utility review of the
+        entries THIS episode adopted, in the SAME call: each item is the
+        existing ``{"entry_id","verdict","execution_id"?, "note"?,
+        "lifecycle_action"?}`` shape. It uses the same validation and
+        recording channel as ``induce --attribute-effect`` and needs no
+        induction job — so it works when H+ = 0. A ``refuting`` verdict keeps
+        its existing default (pause); an explicit ``keep``/``demote``/
+        ``promote`` is the agent's management decision. Retiring remains the
+        explicit ``retire`` command.
+
+        The result also carries ``entry_usage``: the entries this episode
+        actually adopted (version resolved from their frozen ``used_entries``
+        declaration), their read-time utility summary and the adoptions that
+        still have no effect judgement. Reading it writes nothing.
         """
+        validated_attributions: List[Dict[str, Any]] = []
+        if effect_attributions:
+            from or_harness.world_model.hplus import mode
+            if mode(self) == "frozen":
+                raise ValueError(
+                    "the strategy library is frozen for testing; utility "
+                    "management is not applied in this home")
+            # Validate BEFORE closing so a malformed attribution cannot leave
+            # the caller with a closed episode and a rejected review.
+            validated_attributions = [
+                self._validate_effect_attribution(raw)
+                for raw in effect_attributions]
         from or_harness.world_model.episode_closeout import (
             DEFAULT_MIN_CALIBRATION_SAMPLES,
             close_episode,
@@ -1702,6 +1731,25 @@ class ORHarness:
         else:
             result["induction_gate"] = record_decision(self, task_id, episode_id, induction_decision)
 
+        # The agent's utility review is recorded AT THE SAME close-out (also
+        # when H+ = 0): this is management of EXISTING knowledge and needs no
+        # induction job or pending state.
+        if validated_attributions:
+            recorded = self._record_attributions_at_close(
+                validated_attributions)
+            result["effect_attributions"] = recorded
+            # Pause/promote also changes which version ordinary recall may
+            # offer: synchronize the rule index for exactly the entries the
+            # agent managed (same interface the induce path uses).
+            from or_harness.strategy.rule_versions import sync_rule_entries
+            affected = sorted({plan["entry_id"]
+                               for plan in validated_attributions})
+            result["index_sync"] = sync_rule_entries(self, affected, affected)
+        # Read-time usage material for the entries this episode adopted.
+        # Generated AFTER the review above, so the summary reflects it.
+        from or_harness.strategy.rule_versions import episode_entry_usage
+        result["entry_usage"] = episode_entry_usage(self, task_id,
+                                                    episode_id)
         from or_harness.world_model.conditions import release_context
         for row in self.store.conn.execute(
                 "SELECT context_id FROM runtime_inputs WHERE task_id=? AND episode_id IS ?",
@@ -6042,9 +6090,54 @@ class ORHarness:
         if bank == "strategic":
             if entry_id is not None:
                 entry = self.sbank.get(entry_id, version=rule_version)
-                from or_harness.strategy.rule_versions import inspect_versions
-                return {"bank": "strategic", "count": int(entry is not None), "entries": [entry.to_dict()] if entry else [],
-                        "rule_history": inspect_versions(self, entry_id)}
+                from or_harness.strategy.rule_versions import (
+                    inspect_versions, utility_summary,
+                )
+                result = {"bank": "strategic",
+                          "count": int(entry is not None),
+                          "entries": [entry.to_dict()] if entry else [],
+                          "rule_history": inspect_versions(
+                              self, entry_id, version=rule_version)}
+                if entry is not None:
+                    # THREE different questions, kept apart in ONE view:
+                    # is it currently offered (publication), how far was its
+                    # CLAIM checked (verification), and how did AGENT-
+                    # JUDGED USE actually turn out (usage). "validated" is
+                    # the second, never the third.
+                    utility = result["rule_history"].get("utility") or \
+                        utility_summary(self, entry_id, version=rule_version)
+                    result["utility"] = utility
+                    result["status_view"] = {
+                        "publication": utility.get("status"),
+                        "legacy_status": entry.status,
+                        "verification": utility.get("verification"),
+                        "usage": {
+                            "source": utility.get("source"),
+                            "totals": utility.get("totals"),
+                            "latest_management": utility.get(
+                                "latest_management"),
+                        },
+                        "note": (
+                            "publication says whether the entry is currently "
+                            "offered; verification says how far the CLAIM "
+                            "was checked; usage says how the agent judged "
+                            "actual adoptions. validated / fact_checked / "
+                            "published / an adoption count are NOT proof "
+                            "that using the entry helps"),
+                    }
+                    if entry.rule:
+                        track = entry.prediction_track
+                        result["forward_calibration"] = {
+                            "n_predictions": int(track.n_predictions),
+                            "hit_rate": round(track.hit_rate, 4),
+                            "n_adoptions": int(track.n_adoptions),
+                            "note": (
+                                "forward calibration of a DECLARED prediction "
+                                "track, NOT a utility statistic; n_predictions "
+                                "= 0 means not estimated, never a measured "
+                                "zero effect. Read the usage summary instead"),
+                        }
+                return result
             entries = self.sbank.list(status=status, strategy_id=strategy_id)
             return {"bank": "strategic", "count": len(entries),
                     "entries": [e.to_dict() for e in entries]}
@@ -6246,6 +6339,60 @@ class ORHarness:
             self.sbank.update(entry)
         return recorded
 
+    def _record_attributions_at_close(
+            self, validated: Sequence[Dict[str, Any]]
+            ) -> List[Dict[str, Any]]:
+        """Record the agent's utility review from a CLOSING call, once.
+
+        Same channels as ``induce --attribute-effect``: a versioned entry
+        appends a ``record_effect`` event (and its management event), a legacy
+        entry appends to ``effect_attribution`` and applies its management
+        decision here (the offline ``revise`` pass would otherwise replay it
+        later — the same decision, not a second one). An identical attribution
+        submitted twice by an idempotent re-close is recorded once.
+        """
+        from or_harness.strategy.rule_versions import record_effect
+        from or_harness.world_model.conditions import digest
+        recorded: List[Dict[str, Any]] = []
+        keys = ("verdict", "execution_id", "note", "lifecycle_action",
+                "evidence_execution_ids")
+        for plan in validated:
+            item = plan["item"]
+            entry = self.sbank.get(plan["entry_id"])
+            if entry is None:
+                continue
+            if entry.rule:
+                recorded.append(record_effect(self, entry.entry_id, item))
+                continue
+            signature = digest({key: item.get(key) for key in keys})
+            previous = [raw for raw in entry.effect_attribution
+                        if isinstance(raw, dict)
+                        and str(raw.get("execution_id"))
+                        == str(item.get("execution_id"))]
+            if previous and digest(
+                    {key: previous[-1].get(key) for key in keys}) == signature:
+                recorded.append({"entry_id": entry.entry_id,
+                                 **previous[-1], "idempotent": True})
+                continue
+            action = plan["lifecycle_action"]
+            if action is None and item.get("verdict") == "refuting":
+                # The existing default for a NEGATIVE judgement (same rule as
+                # the offline lifecycle replay): a refuting verdict pauses the
+                # version unless an explicit management action says otherwise.
+                action = "demote"
+            if action is not None:
+                item = {**item, "applied_at": item.get("at")}
+            entry.effect_attribution.append(item)
+            self.sbank.update(entry)
+            recorded.append({"entry_id": entry.entry_id, **item})
+            if action is not None:
+                entry, transitions = self.sbank.apply_lifecycle_action(
+                    entry.entry_id, action,
+                    reason=item.get("note") or "agent review at close-out")
+                if transitions:
+                    recorded[-1]["transitions"] = transitions
+        return recorded
+
     def _validate_effect_attribution(self, raw: Dict[str, Any]
                                      ) -> Dict[str, Any]:
         """Validate ONE effect attribution (verdict + optional management).
@@ -6366,8 +6513,32 @@ class ORHarness:
                                  in (used.get("known_entry_ids") or [])]
 
 
-    def retire(self, entry_id: str, reason: str) -> Dict[str, Any]:
-        card = self.sbank.retire(entry_id, reason=reason)
+    def retire(self, entry_id: str, reason: str, *,
+               outcome: str = "retired",
+               evidence_execution_ids: Optional[Sequence[str]] = None
+               ) -> Dict[str, Any]:
+        """Retire ONE entry to the cold archive on the agent's decision.
+
+        The reason and any cited evidence are KEPT on the archive card (the
+        framework never derives a utility verdict from them, and the old
+        forward-calibration numbers are labelled as calibration — not as
+        proof the rule was useful). The read-time usage summary is archived
+        beside them so a later reader sees what the retirement was based on.
+        """
+        from or_harness.strategy.rule_versions import utility_summary
+        cited = [str(item).strip() for item in
+                 (evidence_execution_ids or []) if str(item).strip()]
+        for execution_id in cited:
+            if self._recorded_execution(execution_id) is None:
+                raise ValueError(
+                    f"evidence execution {execution_id!r} is not a recorded "
+                    "execution: retirement evidence must cite real facts")
+        try:
+            usage = utility_summary(self, entry_id)
+        except ValueError:
+            usage = None
+        card = self.sbank.retire(entry_id, reason=reason, outcome=outcome,
+                                 evidence_execution_ids=cited, usage=usage)
         # The entry left the hot store, so its vector must leave the index
         # too: a vector that outlives its record would surface a claim that
         # no longer exists — and it would keep occupying a retrieval slot
@@ -6379,7 +6550,8 @@ class ORHarness:
         # interface, which removes a vector whose entry can no longer be
         # resolved (no second wrapper function is needed).
         self.index_sync.sync_entries([entry_id])
-        return {"retired": entry_id, "cold_archive_card": card.to_dict()}
+        return {"retired": entry_id, "cold_archive_card": card.to_dict(),
+                "utility": usage, "evidence_execution_ids": cited}
 
     def exclude_execution(self, execution_id: str, reason: str, *,
                           superseded_by: Optional[str] = None
@@ -6914,7 +7086,8 @@ class ORHarness:
 
     def check_task_result(self, execution_id: str,
                           check: Optional[Dict[str, Any]] = None,
-                          *, episode_id: Optional[str] = None
+                          *, episode_id: Optional[str] = None,
+                          verification: Optional[Dict[str, Any]] = None
                           ) -> Dict[str, Any]:
         """Check whether an execution's ANSWER satisfies the ORIGINAL task.
 
@@ -6937,19 +7110,41 @@ class ORHarness:
 
         Three verdicts, and none of them is a default:
 
-        - ``passed`` — every DECLARED basis held on the recorded values. The
-          report still names what it did not check (the model's fidelity to
-          the task, undeclared constraints), so "passed" is never read as
-          "fully validated".
+        - ``passed`` — every DECLARED basis held on the recorded values. It
+          covers those bases only: the fixed checker scope travels in
+          ``report.scope.note`` and is not expanded into per-task findings.
+          A pass does NOT block a new ``plan-next`` when the agent's own
+          self-check finds a problem.
         - ``failed`` — a declared basis ran and did not hold. The execution
           is NOT demoted or rewritten: its observed quality and cost stand,
           and it stays in the evidence set (the cost is real, the failure is
           raw material). What changes is that it can no longer count as a
           success sample (see :func:`or_harness.core.schema.task_check_state`).
+          The verdict does not establish the CAUSE (task reading vs model vs
+          implementation vs the check itself) and does not by itself require
+          a new solve: a corrected check or missing evidence may be supplied
+          on the SAME execution.
         - ``insufficient`` — no basis declared, no solution vector recorded, a
           needed variable missing, or the execution produced no usable
           result. NOT a pass, NOT a failure, and NEVER a request that the
           user supply a reference.
+
+        The agent owns the pre-submission self-check: reading the original
+        task, verifying the model/code/solution, choosing a calculation or
+        validation method, and deciding whether to commit, repair the check,
+        or plan a new attempt. This method supplies the deterministic part and
+        the material; it does not choose that decision for the agent.
+
+        ``verification`` optionally carries the evidence of a verification the
+        AGENT ran on this execution (an independent script, a manual
+        recomputation, an enumeration): ``{"script": PATH, "output": PATH,
+        "result": {"ran": bool, "exit_code": int, "assertions": [...]}}`` or
+        ``result_path`` (a JSON file). Files are captured as IMMUTABLE
+        artifacts and the normalised record is labelled ``agent_reported``
+        and stored under ``execution_features.verification_evidence`` —
+        separate from the framework's ``task_check``. It creates no solving
+        attempt, never overwrites the solve ``result.json``, and a satisfied
+        agent assertion is never reported as a framework check.
 
         Recording (the same two channels the rest of the harness uses):
 
@@ -6960,12 +7155,14 @@ class ORHarness:
            works for staged (unrecorded) and recorded executions alike, so a
            check may legitimately arrive AFTER the episode closed.
 
-        Also returned: the REFLECTION MATERIAL the outer agent needs to locate
-        the problem (task text + digest, the model/code hashes, prior attempts
-        in the same episode, the full report). Locating the cause is the
-        agent's job — the framework does not classify the failure as a
-        modeling mistake, does not rebuild the model, and never relaxes the
-        task to match a reference value.
+        Also returned: ``reflection_material`` — the self-check material for
+        this execution (task text + digest with an inspect reference, the
+        candidate and performed method, the captured script/result artifact
+        references, the captured solution and its reference, the full check
+        report, agent-reported verification evidence and prior attempts as
+        references). Locating the cause is the agent's job — the framework
+        does not classify the failure as a modeling mistake, does not rebuild
+        the model, and never relaxes the task to match a reference value.
         """
         from or_harness.strategy.verification import verify_task_result
         from or_harness.strategy.evidence_access import resolve_execution
@@ -6975,6 +7172,11 @@ class ORHarness:
         if record is None:
             raise ValueError(f'unknown execution_id {execution_id!r}: unavailable or withdrawn evidence')
         task_id = str(record.task_id)
+        # The AGENT's own verification evidence (a separate source, separate
+        # storage). Validated and captured BEFORE any write so a bad bundle
+        # cannot leave a half-written check behind.
+        verification_block = (self._normalize_verification(record, verification)
+                              if verification is not None else None)
         resolved_episode = episode_id
         if resolved_episode is None:
             action = self.actions.by_execution(execution_id)
@@ -7007,8 +7209,14 @@ class ORHarness:
             "verify", task_id, resolved_episode, pre_snapshot=snap,
             params={"execution_id": execution_id,
                     "basis": list(report["scope"]["basis"]),
-                    "intent": report.get("intent")})
+                    "intent": report.get("intent"),
+                    "verification": (None if verification_block is None else {
+                        "state": verification_block["state"],
+                        "source": verification_block["source"],
+                        "artifacts": verification_block["artifacts"]})})
         report["action_id"] = action.action_id
+        if verification_block is not None:
+            verification_block["action_id"] = action.action_id
         g_assessment_ref = None
         g_issues = []
         with self.store.transaction():
@@ -7029,6 +7237,18 @@ class ORHarness:
             if not retained:
                 self.bank.set_task_check(execution_id,report)
             record.execution_features['task_check']=copy.deepcopy(report)
+            if verification_block is not None:
+                # A SEPARATE feature, never merged into task_check: the
+                # framework's deterministic verdict and the agent's own
+                # verification must stay distinguishable forever.
+                evidence = [dict(item) for item in
+                            (record.execution_features.get(
+                                'verification_evidence') or [])
+                            if isinstance(item, dict)]
+                evidence.append(copy.deepcopy(verification_block))
+                record.execution_features['verification_evidence'] = evidence
+                if not retained:
+                    self.bank.set_verification_evidence(execution_id, evidence)
             from or_harness.strategy.evidence_access import refresh_retained
             refresh_retained(self,record)
         dependencies={'affected_versions':[],'authority':'agent'}
@@ -7070,26 +7290,37 @@ class ORHarness:
                 "calibration_version": republished.get(
                     "calibration_version"),
             }
+        # The SELF-CHECK MATERIAL is returned for every verdict: a pass also
+        # needs the original task, the captured solution and the artifacts to
+        # be reviewed by the agent before it commits. It is material with
+        # references, not a diagnosis.
+        result["reflection_material"] = self._reflection_material(
+            record, report, resolved_episode)
+        if verification_block is not None:
+            result["verification"] = copy.deepcopy(verification_block)
         if report["state"] == "failed":
-            result["reflection_material"] = self._reflection_material(
-                record, report, resolved_episode)
             result["next"] = (
-                "the declared checks found a violation. Compare the frozen "
-                "prediction with the actual execution and distinguish a "
-                "confirmed cause from a hypothesis or unknown. Before the "
-                "answer is committed, use task-based evidence to justify any "
-                "repair and obtain a fresh plan-next decision for a new solve. "
-                "After the answer is committed, use reference answers or "
-                "external verdicts only for offline analysis; keep the answer "
-                "locked and do not return to solving to match a reference. "
+                "a declared check found a violation; the framework does NOT "
+                "infer the cause from it. Compare the original task, the "
+                "model, the captured code and the check differences: decide "
+                "whether the check or its evidence is wrong/incomplete "
+                "(correct it and re-run check-task on THIS execution — no new "
+                "attempt), or whether the model/implementation is wrong "
+                "(obtain a fresh plan-next selection before a new attempt). "
                 "The failed attempt stays recorded with its real cost and can "
-                "be cited as contrast evidence")
+                "be cited as contrast evidence. Before the answer is "
+                "committed, use task-based evidence; after it is committed, "
+                "reference answers and external verdicts are for offline "
+                "analysis only — never re-solve to match a reference")
         elif report["state"] == "insufficient":
             result["next"] = (
                 "the answer's validity is UNKNOWN, not confirmed: declare the "
-                "check basis that applies, or record the solution vector "
-                "(result.json `variables`) so a domain check can run. An "
-                "unchecked answer is not evidence that the task was solved")
+                "deterministic check basis that applies to THIS task (do not "
+                "declare `integer` for a problem that is genuinely "
+                "continuous), or record the solution vector (result.json "
+                "`variables`) so the declared check can run. An unchecked "
+                "answer is not evidence that the task was solved, and a check "
+                "that cannot run is not evidence that it was wrong")
         return result
 
     def _task_payload_for(self, record: ExecutionRecord,
@@ -7135,17 +7366,166 @@ class ORHarness:
             task["description"] = text
         return task
 
+    def _normalize_verification(self, record: ExecutionRecord,
+                                payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and CAPTURE the verification the AGENT ran on an execution.
+
+        The harness does not execute this script and cannot certify its
+        result. What it does is make the claim inspectable and honestly
+        labelled: the script, output and result JSON are stored as immutable
+        artifacts (never overwriting the solve ``result.json``), and the
+        normalised record says ``source=agent_reported``. A satisfied
+        assertion never becomes a framework check, and the task-check verdict
+        is untouched — :meth:`check_task_result` still stores the framework's
+        own deterministic result under ``execution_features.task_check``.
+
+        Two failure modes are kept apart on purpose:
+
+        - ``script_error`` — the script did not run / raised (``ran=false``,
+          a recorded ``error``, or a non-zero ``exit_code``);
+        - ``assertion_violations`` — the script ran and an agent-declared
+          assertion was not satisfied.
+
+        A bundle with neither files nor a result is refused: "I verified it"
+        without any inspectable evidence is not verification.
+        """
+        from or_harness.core.artifacts import capture
+        if not isinstance(payload, dict):
+            raise ValueError("verification must be a JSON object")
+        artifacts: Dict[str, Any] = {}
+
+        def _capture_file(value: Any, key: str, kind: str, source: str) -> None:
+            if value in (None, ""):
+                return
+            path = Path(str(value))
+            if not path.is_file():
+                raise ValueError(f"verification {key} file not found: "
+                                 f"{value!r} (pass an existing path)")
+            try:
+                data = path.read_bytes()
+            except OSError as exc:
+                raise ValueError(f"verification {key} file could not be "
+                                 f"read: {exc}") from exc
+            artifacts[key] = capture(self.home, data, kind=kind, source=source)
+
+        _capture_file(payload.get("script"), "script", "verification_script",
+                      "agent-supplied verification script; the framework did "
+                      "NOT execute it")
+        _capture_file(payload.get("output"), "output", "verification_output",
+                      "agent-captured verification output")
+        result = payload.get("result")
+        if result is None and payload.get("result_path"):
+            path = Path(str(payload["result_path"]))
+            if not path.is_file():
+                raise ValueError(f"verification result_path not found: "
+                                 f"{payload['result_path']!r}")
+            try:
+                result = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"verification result_path is not readable "
+                                 f"JSON: {exc}") from exc
+            artifacts["result"] = capture(
+                self.home, path.read_bytes(), kind="verification_result",
+                source="agent-supplied verification result; not a framework "
+                       "verdict")
+        if result is not None and not isinstance(result, dict):
+            raise ValueError("verification result must be a JSON object")
+        if not artifacts and result is None:
+            raise ValueError(
+                "verification needs at least one of `script`, `output`, "
+                "`result` or `result_path`: a claim with no inspectable "
+                "evidence is not a recorded verification")
+        raw_assertions = (result or {}).get("assertions")
+        if isinstance(raw_assertions, dict):
+            raw_assertions = [raw_assertions]
+        assertions: List[Dict[str, Any]] = []
+        for index, item in enumerate(raw_assertions or []):
+            if not isinstance(item, dict):
+                continue
+            raw_ok = item.get("ok")
+            status = ("satisfied" if raw_ok is True
+                      else "violated" if raw_ok is False
+                      else "undecided")
+            assertions.append({
+                "name": str(item.get("name") or item.get("assertion")
+                            or f"assertion[{index}]"),
+                "status": status,
+                "observed": copy.deepcopy(item.get("observed")),
+                "expected": copy.deepcopy(item.get("expected")),
+                "note": (None if item.get("note") is None
+                         else str(item.get("note"))),
+            })
+        if len(assertions) > 200:
+            raise ValueError("verification result carries more than 200 "
+                             "assertions; split the verification")
+        ran = (result or {}).get("ran")
+        if ran is None:
+            ran = payload.get("ran")
+        error = (result or {}).get("error")
+        exit_code = (result or {}).get("exit_code")
+        if exit_code is None:
+            exit_code = payload.get("exit_code")
+        n_satisfied = sum(1 for item in assertions
+                          if item["status"] == "satisfied")
+        n_violated = sum(1 for item in assertions
+                         if item["status"] == "violated")
+        n_undecided = sum(1 for item in assertions
+                          if item["status"] == "undecided")
+        if error or ran is False:
+            state = "script_error"
+        elif assertions and n_violated:
+            state = "assertion_violations"
+        elif assertions and n_undecided:
+            state = "assertions_undecided"
+        elif assertions:
+            state = "assertions_satisfied"
+        elif result is not None:
+            state = "no_assertions"
+        else:
+            state = "evidence_only"
+        return {
+            "source": "agent_reported",
+            "state": state,
+            "task_id": record.task_id,
+            "execution_id": record.execution_id,
+            "captured_at": time.time(),
+            "ran": ran,
+            "exit_code": exit_code,
+            "error": (None if error is None else str(error)),
+            "assertions": assertions,
+            "n_satisfied": n_satisfied,
+            "n_violated": n_violated,
+            "n_undecided": n_undecided,
+            "artifacts": artifacts,
+            "note": (
+                "the AGENT ran this verification and reported the result; the "
+                "framework captured the files but did NOT execute the script "
+                "and did not certify its output. This is evidence kept apart "
+                "from report.checks: a satisfied assertion is not a framework "
+                "verdict and never proves the answer correct, while a violated "
+                "assertion or a script error is a signal to check the model, "
+                "the code or the check — not a framework failure verdict"),
+        }
+
     def _reflection_material(self, record: ExecutionRecord,
                              report: Dict[str, Any],
                              episode_id: Optional[str]) -> Dict[str, Any]:
-        """What the outer agent needs to locate a task-check failure.
+        """The SELF-CHECK MATERIAL for one execution (material, not a diagnosis).
 
-        Deliberately MATERIAL, not a diagnosis: the framework supplies the
-        original task, the artifacts that were produced, the check report and
-        the earlier attempts of this episode. Deciding whether the problem is
-        the task's interpretation, the model, the implementation or the
-        reference basis is the agent's judgment — the framework does not
-        presume it is a modeling error and does not prescribe a rebuild.
+        Supplies the five things a pre-submission self-check needs, each tied
+        to THIS execution and each preferring a REFERENCE over a repeated
+        expansion: the original task text/version, the candidate and the
+        method actually performed, the captured script/result artifacts, the
+        captured solution (with a reference for the full record), and the
+        check report with its differences. Agent-run verification evidence is
+        included separately. The prior attempts are one-line references to
+        earlier executions of the same task — the whole attempt chain is not
+        re-expanded on every check.
+
+        Deciding whether the problem is the task's interpretation, the model,
+        the implementation, the recording or the check itself is the agent's
+        judgment — the framework does not presume it is a modeling error and
+        does not prescribe a rebuild.
         """
         from or_harness.world_model.state import task_text
         text = None
@@ -7154,6 +7534,9 @@ class ORHarness:
                                             record.task_text_digest)
         if text is None:
             text = task_text({"task_id": record.task_id})
+        solution = record.execution_features.get("solution_variables")
+        solution_variables = dict(solution) if isinstance(solution, dict) else solution
+        artifacts = dict(record.execution_features.get("artifacts") or {})
         prior: List[Dict[str, Any]] = []
         for other in self.bank.query(task_id=record.task_id):
             if other.execution_id == record.execution_id:
@@ -7164,35 +7547,80 @@ class ORHarness:
                 "status": (other.quality or {}).get("status"),
                 "objective": (other.quality or {}).get("objective"),
                 "task_check": task_check_state(other),
+                "inspect_ref": ("orx inspect --bank experience --execution "
+                                + str(other.execution_id)),
             })
+        prediction = getattr(record, "prediction_snapshot", None)
+        prediction_id = (getattr(prediction, "prediction_id", None)
+                         if prediction is not None else None)
         return {
             "task_id": record.task_id,
             "episode_id": episode_id,
             "task_text": text,
             "task_text_digest": record.task_text_digest,
+            "task_ref": {
+                "command": (f"orx inspect --bank texts --task "
+                            f"{record.task_id}"),
+                "text_digest": record.task_text_digest,
+                "note": ("the original requirements THIS execution was "
+                         "produced under; the same task_id with another "
+                         "digest is a different task text"),
+            },
             "strategy_id": record.strategy_id,
+            "candidate": {
+                "prediction_id": prediction_id,
+                "strategy_id": record.strategy_id,
+                "method_planned": copy.deepcopy(record.method_planned),
+                "method_actual": copy.deepcopy(record.method_actual),
+                "solver": dict(record.solver or {}),
+                "ref": (("orx inspect --bank predictions --prediction "
+                         + str(prediction_id)) if prediction_id else None),
+            },
             "solver": dict(record.solver),
             "code_hash": (record.solver or {}).get("code_hash"),
+            "artifacts": artifacts,
+            "artifacts_ref": {
+                "command": ("orx inspect --bank experience --execution "
+                            + str(record.execution_id)),
+                "note": ("immutable script/result/error artifacts captured for "
+                         "this execution; the solve result.json is one of "
+                         "them and is never overwritten by checks or "
+                         "verification"),
+            },
             "reported_quality": dict(record.quality or {}),
-            "solution_variables": (
-                record.execution_features.get("solution_variables")),
+            "solution_variables": solution_variables,
+            "solution_ref": {
+                "command": ("orx inspect --bank experience --execution "
+                            + str(record.execution_id)
+                            + " #execution_features.solution_variables"),
+                "n_variables": (len(solution) if isinstance(solution, dict)
+                                else None),
+                "note": ("the solution this execution captured; a check that "
+                         "needs values can also read the result artifact"),
+            },
             "check_report": report,
+            "verification_evidence": copy.deepcopy(
+                record.execution_features.get("verification_evidence") or []),
             "prior_attempts": prior,
             "guidance": (
-                "compare the frozen prediction with the captured execution. "
-                "Locate a specific method premise, implementation step or "
-                "execution condition only when supported by the original task, "
-                "script, result, logs or check differences. Separate confirmed "
-                "causes, hypotheses still to check and unknowns; do not force "
-                "an attribution. Optimal status, a self-authored check passing "
-                "or a reference mismatch alone proves neither semantic "
-                "correctness nor a failure cause. For an optional G assessment, "
-                "use the existing g_attribution.assessment in one to three "
-                "sentences with necessary evidence references; keep additional "
-                "independent causes when needed, without repeating complete "
-                "methods, tasks, solution vectors or all checks. Use reference "
-                "answers and external correctness feedback only after the "
-                "answer is committed, for offline analysis rather than a "
-                "return to solving. Never change the task to match a reference "
-                "value"),
+                "self-check before committing: (1) read the original task and "
+                "the candidate/method actually performed; (2) check the model "
+                "against the task (variable meaning and domain, units and "
+                "billing range, time horizon, objective meaning, key "
+                "constraints, feasibility of the returned solution, and an "
+                "optimality argument when the task needs one); (3) choose any "
+                "applicable method — hand calculation, code review, an "
+                "independent verification script, enumeration, bounds; (4) "
+                "decide whether the problem is the solve, the implementation, "
+                "the recording or the check itself. A passed check does not "
+                "prove the model matches the task; a failed check does not "
+                "prove the model is wrong; neither decides the next action for "
+                "you. Correct a check or its evidence on this same execution "
+                "when that is the problem; plan a new attempt only for a real "
+                "model/implementation problem. For an optional G assessment "
+                "use g_attribution.assessment in one to three sentences with "
+                "necessary evidence references. Use reference answers and "
+                "external correctness feedback only after the answer is "
+                "committed, for offline analysis rather than a return to "
+                "solving — never change the task to match a reference value"),
         }

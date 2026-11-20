@@ -20,6 +20,7 @@ import json
 import os
 import sys
 import unittest
+from pathlib import Path
 
 from helpers import HarnessTestCase
 
@@ -300,11 +301,20 @@ class TestInsufficientIsNeverAPass(TaskCheckCase):
         self.assertEqual(report["state"], TASK_CHECK_PASSED)
         # ...but ONLY for the declared basis, and the report says so.
         self.assertEqual(report["scope"]["basis"], ["integer"])
-        self.assertTrue(any("model" in item
-                            for item in report["scope"]["unchecked"]))
+        # The generic checker limitation is a fixed scope note, not a
+        # per-task "unchecked requirement" finding.
+        self.assertEqual(report["scope"]["unchecked"], [])
+        self.assertIn("does not read natural-language requirements",
+                      report["scope"]["note"])
         # With nothing declared there is no pass at all.
         self.assertEqual(verify_task_result(record, {})["state"],
                          TASK_CHECK_INSUFFICIENT)
+        # The generic checker limit is a FIXED scope note, not a finding about
+        # this task: nothing invented goes into ``unchecked``.
+        passed = verify_task_result(record, {"integer": {}})
+        self.assertEqual(passed["scope"]["unchecked"], [])
+        self.assertIn("does not read natural-language requirements",
+                      passed["scope"]["note"])
 
     def test_missing_solution_vector_is_insufficient(self):
         """No recorded vector means the domain check cannot run."""
@@ -499,6 +509,14 @@ class TestRepairTrajectoryIsReadable(TaskCheckCase):
         self.assertEqual(material["solution_variables"],
                          {"x1": 2.5, "x2": 1.5})
         self.assertTrue(material["guidance"])
+        # The material is tied to THIS execution and prefers references.
+        self.assertEqual(material["solution_ref"]["n_variables"], 2)
+        self.assertIn("--execution " + relaxed.execution_id,
+                      material["solution_ref"]["command"])
+        self.assertIn("--task t1", material["task_ref"]["command"])
+        self.assertIn("submitted_script", material["artifacts"])
+        self.assertIn("verification_evidence", material)
+        self.assertIn("candidate", material)
         # (d) the failed attempt is citable as contrast evidence
         self.assertTrue(self.h.bank.get(relaxed.execution_id)
                         .execution_features.get("task_check"))
@@ -799,6 +817,272 @@ class TestFormalPathProducesEvaluation(TaskCheckCase):
         closed = self.h.close_episode("t1", "ep1")
         self.assertEqual(closed["task_checks"]["unchecked"], 1)
         self.assertIn("UNKNOWN", closed["task_checks"]["note"])
+
+
+# ---------------------------------------------------------------------------
+# 9b. the pre-submission self-check loop: material, sources, and the limits of
+#     what a verdict may command. These assert BEHAVIOUR and EVIDENCE
+#     RELATIONS, never prose snapshots.
+# ---------------------------------------------------------------------------
+
+class TestSelfCheckLoop(TaskCheckCase):
+
+    def _verify_count(self):
+        return len(self.h.actions.query(task_id="t1", action_type="verify"))
+
+    def _attempt_count(self):
+        view = self.h.budget_view("t1", episode_id="ep1")
+        return view["consumption"]["n_attempts"]
+
+    def _workspace_result_sha(self, execution_id):
+        record = self.h.bank.get(execution_id)
+        ref = (record.execution_features.get("artifacts") or {}).get(
+            "workspace_result")
+        return ref.get("sha256") if isinstance(ref, dict) else None
+
+    def test_a_passed_check_does_not_block_a_new_plan(self):
+        """A pass covers the declared checks; it must not lock the episode."""
+        task = _task("t1")
+        first = self.solve(task, variables={"x1": 2, "x2": 3},
+                           objective=10755.0, tag="pass_replan1")
+        checked = self.h.check_task_result(
+            first.execution_id,
+            {"reference_objective": 10755.0, "integer": {}})
+        self.assertEqual(checked["state"], "passed")
+        # The agent may still plan and run a different candidate afterwards.
+        work = Path(self.home) / "ws_replan"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 10755.0,"
+            " 'objective_bound': 10755.0, 'runtime_seconds': 0.01,"
+            " 'variables': {'x1': 2, 'x2': 3}}, fh)\n",
+            encoding="utf-8")
+        second = execute_scored(self.h, task, "S02", str(script), str(work),
+                                solver="highs", episode_id="ep1")
+        self.h.record(second)
+        self.assertEqual(len(self.h.bank.query(task_id="t1")), 2)
+        checked2 = self.h.check_task_result(second.execution_id, {"integer": {}})
+        self.assertEqual(checked2["state"], "passed")
+        self.assertEqual(self._verify_count(), 2)
+
+    def test_a_failed_check_does_not_force_a_new_solve(self):
+        """A wrong/mis-declared check is corrected on the SAME execution."""
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="fail_repair1")
+        failed = self.h.check_task_result(
+            record.execution_id, {"reference_objective": 9999.0})
+        self.assertEqual(failed["state"], "failed")
+        attempts_before = self._attempt_count()
+        evidence_before = len(self.h.bank.query(task_id="t1"))
+        # The declared reference was wrong (a check problem, not a solve
+        # problem): re-check the SAME execution with the corrected basis.
+        passed = self.h.check_task_result(
+            record.execution_id,
+            {"reference_objective": 10755.0,
+             "reference_source": "self_derived"})
+        self.assertEqual(passed["state"], "passed")
+        self.assertEqual(len(self.h.bank.query(task_id="t1")),
+                         evidence_before)
+        self.assertEqual(self._attempt_count(), attempts_before)
+        self.assertEqual(task_check_state(
+            self.h.bank.get(record.execution_id)), "passed")
+        # Both checks are real verify actions, neither is an attempt.
+        self.assertEqual(self._verify_count(), 2)
+
+    def test_a_recheck_adds_no_solving_attempt(self):
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="recheck1")
+        self.h.check_task_result(record.execution_id, {"integer": {}})
+        before = self._attempt_count()
+        for _ in range(2):
+            self.h.check_task_result(record.execution_id, {"integer": {}})
+        self.assertEqual(self._attempt_count(), before)
+        self.assertEqual(len(self.h.bank.query(task_id="t1")), 1)
+
+    def test_independent_verification_attaches_to_the_execution(self):
+        """Agent-run evidence is captured on THIS execution, separate source."""
+        from or_harness.core.artifacts import read
+        task = _task("t1")
+        work = Path(self.home) / "verify_ws"
+        work.mkdir(parents=True, exist_ok=True)
+        solve_script = work / "solve.py"
+        solve_script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 10755.0,"
+            " 'objective_bound': 10755.0, 'runtime_seconds': 0.01,"
+            " 'variables': {'x1': 2, 'x2': 3}}, fh)\n",
+            encoding="utf-8")
+        record = execute_scored(self.h, task, "S02", str(solve_script),
+                                str(work), solver="highs", episode_id="ep1")
+        self.h.record(record)
+        script = work / "verify.py"
+        script.write_text("# independent check\nprint('ok')\n", encoding="utf-8")
+        output = work / "verify.out"
+        output.write_text("checked 1 constraint, 0 violations\n", encoding="utf-8")
+        result_path = work / "verify_result.json"
+        result_path.write_text(json.dumps({
+            "ran": True, "exit_code": 0,
+            "assertions": [
+                {"name": "integrality of x1", "ok": True,
+                 "observed": 2, "expected": "integer"},
+                {"name": "objective coefficient unit", "ok": False,
+                 "observed": 750, "expected": 50,
+                 "note": "recomputed one order by hand"},
+            ]}), encoding="utf-8")
+        sha_before = self._workspace_result_sha(record.execution_id)
+        checked = self.h.check_task_result(
+            record.execution_id, {"reference_objective": 10755.0},
+            verification={"script": str(script), "output": str(output),
+                          "result_path": str(result_path)})
+        self.assertEqual(checked["state"], "passed")
+        block = checked["verification"]
+        self.assertEqual(block["source"], "agent_reported")
+        self.assertEqual(block["state"], "assertion_violations")
+        self.assertEqual(block["n_satisfied"], 1)
+        self.assertEqual(block["n_violated"], 1)
+        for key in ("script", "output", "result"):
+            self.assertIn(key, block["artifacts"])
+            data = read(self.home, block["artifacts"][key])
+            self.assertTrue(data)
+        stored = self.h.bank.get(record.execution_id)
+        evidence = stored.execution_features.get("verification_evidence") or []
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0]["source"], "agent_reported")
+        # The solve result.json artifact was NOT overwritten, and the
+        # framework verdict stays a separate fact.
+        self.assertEqual(
+            self._workspace_result_sha(record.execution_id), sha_before)
+        self.assertTrue((work / "result.json").is_file())
+        self.assertEqual(json.loads((work / "result.json").read_text())
+                         ["objective_value"], 10755.0)
+        self.assertEqual(
+            (stored.execution_features.get("task_check") or {}).get("state"),
+            "passed")
+        self.assertEqual(len(self.h.bank.query(task_id="t1")), 1)
+
+    def test_agent_reported_verification_is_not_a_framework_check(self):
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="verify2")
+        checked = self.h.check_task_result(
+            record.execution_id, {},
+            verification={"result": {"ran": True, "assertions": [
+                {"name": "looks right", "ok": True}]}})
+        # No framework basis declared: still UNKNOWN, never a pass.
+        self.assertEqual(checked["state"], "insufficient")
+        report = checked["report"]
+        self.assertEqual(report["scope"]["basis"], [])
+        for check in report["checks"]:
+            self.assertEqual(check.get("source"), "framework")
+        self.assertEqual(checked["verification"]["source"],
+                         "agent_reported")
+        self.assertEqual(checked["verification"]["assertions"][0]["status"],
+                         "satisfied")
+        self.assertEqual(quality_score(self.h.bank.get(record.execution_id)),
+                         1.0)
+
+    def test_script_error_differs_from_a_violated_assertion(self):
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="verify3")
+        errored = self.h.check_task_result(
+            record.execution_id, {"integer": {}},
+            verification={"result": {"ran": False,
+                                     "error": "ValueError: bad input"}})
+        self.assertEqual(errored["verification"]["state"], "script_error")
+        violated = self.h.check_task_result(
+            record.execution_id, {"integer": {}},
+            verification={"result": {"ran": True, "exit_code": 0,
+                                     "assertions": [
+                                         {"name": "unit", "ok": False}]}})
+        self.assertEqual(violated["verification"]["state"],
+                         "assertion_violations")
+        # Neither agent-reported outcome rewrote the framework verdict.
+        self.assertEqual(violated["state"], "passed")
+        stored = self.h.bank.get(record.execution_id)
+        self.assertEqual(len(stored.execution_features[
+            "verification_evidence"]), 2)
+
+    def test_omitting_integer_is_not_reported_as_req_missing(self):
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="continuous1")
+        report = self.h.check_task_result(
+            record.execution_id,
+            {"reference_objective": 10755.0})["report"]
+        self.assertEqual(report["state"], "passed")
+        self.assertEqual(report["scope"]["unchecked"], [])
+        self.assertFalse(any("integer" in item.lower()
+                             for item in report["scope"]["unchecked"]))
+        self.assertIn("does not", report["scope"]["note"])
+
+    def test_old_reports_keep_their_recorded_scope(self):
+        """Aggressive trimming must never rewrite history."""
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="legacy1")
+        legacy = {"state": "passed", "checked_at": 1.0,
+                  "checks": [{"check": "integer_domains",
+                              "source": "framework", "ok": True}],
+                  "scope": {"basis": ["integer"],
+                            "unchecked": [
+                                "whether the MODEL represents the task (a "
+                                "correct answer to a wrong model is still "
+                                "wrong)",
+                                "constraint satisfaction not declared as a "
+                                "probe or a recomputation"]}}
+        self.h.bank.set_task_check(record.execution_id, legacy)
+        stored = self.h.bank.get(record.execution_id)
+        self.assertEqual(
+            (stored.execution_features.get("task_check") or {})
+            .get("scope", {}).get("unchecked"),
+            legacy["scope"]["unchecked"])
+        self.assertEqual(task_check_state(stored), "passed")
+
+    def test_cli_summary_offers_causes_instead_of_commanding_a_resolve(self):
+        import io
+        from contextlib import redirect_stdout
+        from or_harness.cli import main
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2.5, "x2": 1.5},
+                            objective=10750.0, tag="clisum1")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["--home", self.home, "check-task",
+                         record.execution_id, "--check",
+                         json.dumps({"integer": {"variables": ["x1", "x2"]}})])
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        summary = payload["summary"]
+        self.assertIn("FAILED", summary)
+        self.assertNotIn("re-solve in the same episode", summary)
+        self.assertIn("SAME execution", summary)
+        self.assertIn("reflection_material", payload["result"])
+
+    def test_cli_passed_summary_names_the_self_check_material(self):
+        import io
+        from contextlib import redirect_stdout
+        from or_harness.cli import main
+        task = _task("t1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="clisum2")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["--home", self.home, "check-task",
+                         record.execution_id, "--check",
+                         json.dumps({"reference_objective": 10755.0,
+                                     "integer": {}})])
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["result"]["state"], "passed")
+        self.assertNotIn("Unchecked:", payload["summary"])
+        self.assertIn("does NOT block a new plan-next", payload["summary"])
 
 
 # ---------------------------------------------------------------------------

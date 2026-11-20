@@ -810,11 +810,497 @@ def settle_episode_uses(harness, task_id, episode_id):
     return result
 
 
-def inspect_versions(harness, entry_id):
+def inspect_versions(harness, entry_id, *, version=None):
     rows = harness.store.conn.execute("SELECT * FROM rule_versions WHERE entry_id=? ORDER BY version", (str(entry_id),))
-    return {"entry_id": str(entry_id), "versions": [{**dict(r), "body": get_value(harness.store,r["body_ref"]),
-        "metadata": get_value(harness.store,r["metadata_ref"])} for r in rows],
-        "checks": check_records(harness.store,entry_id), "events": event_records(harness.store,entry_id)}
+    result = {"entry_id": str(entry_id),
+              "versions": [{**dict(r),
+                            "body": get_value(harness.store, r["body_ref"]),
+                            "metadata": get_value(harness.store, r["metadata_ref"])}
+                           for r in rows],
+              "checks": check_records(harness.store, entry_id),
+              "events": event_records(harness.store, entry_id)}
+    # The compact USE summary is generated on read (never written back into
+    # the entry body), so the full event/check logs above stay the reference
+    # for detail and the summary stays cheap to read.
+    try:
+        result["utility"] = utility_summary(harness, entry_id, version=version)
+    except ValueError:
+        result["utility"] = None
+    return result
+
+
+#: The agent's use-effect vocabulary. These are JUDGMENTS, not measurements;
+#: the framework only stores and aggregates them.
+UTILITY_VERDICTS = ("helped", "neutral", "unrelated", "refuting")
+
+#: How many evidence references a compact utility summary carries inline.
+#: The complete event/check history stays readable through ``inspect_versions``.
+_UTILITY_REF_LIMIT = 8
+
+
+def _event_order(event):
+    return (float(event.get("at") or 0.0), str(event.get("event_id") or ""))
+
+
+def _latest_effects(events):
+    """Latest effect event per (version, execution_id) — read-time only.
+
+    A later corrected judgment REPLACES the earlier one for the CURRENT
+    statistic; the earlier event stays in ``rule_events`` and is still
+    visible through :func:`inspect_versions` (nothing is deleted).
+    """
+    latest = {}
+    for event in events:
+        if event.get("kind") != "effect":
+            continue
+        execution_id = str(event.get("execution_id") or "")
+        if not execution_id:
+            continue
+        try:
+            version = int(event.get("version"))
+        except (TypeError, ValueError):
+            version = 0
+        key = (version, execution_id)
+        if key not in latest or _event_order(event) >= _event_order(latest[key]):
+            latest[key] = event
+    return latest
+
+
+def _utility_reference(event, *, reason=None):
+    item = {"event_id": event.get("event_id"),
+            "version": event.get("version"),
+            "execution_id": event.get("execution_id"),
+            "verdict": (event.get("verdict") if event.get("kind") == "effect"
+                        else None),
+            "at": event.get("at")}
+    if reason:
+        item["reason"] = reason
+    return item
+
+
+def utility_summary(harness, entry_id, *, version=None):
+    """A short, READ-TIME aggregate of how an entry's use actually turned out.
+
+    Generated from the existing records — adoption (``use``) events, effect
+    judgements, checks and management events — so no full log is copied back
+    into the entry body. Never writes anything.
+
+    Counting rules (the deliberate distinction is the point):
+
+    - adoption = a distinct ``(entry_id, version, execution_id)`` use event;
+      a repeated registration of the same adoption is one adoption;
+    - a judgement = the LATEST effect event for that adoption. A corrected
+      judgement replaces the earlier one in the current statistic, while the
+      earlier event stays readable in the version history;
+    - ``judged`` counts adoptions with a CURRENT VALID judgement;
+      ``unjudged`` counts adoptions with no judgement at all;
+      ``invalidated`` counts adoptions whose latest judgement no longer
+      counts because the evidence was excluded/withdrawn (the adoption fact
+      and the historical judgement remain recorded);
+    - a judgement that cannot be tied to a recorded adoption of a known
+      version (no frozen adoption version, version 0, or an execution that
+      did not declare adoption) is reported under ``unattributed_judgments``;
+      it is NOT assigned to the current version;
+    - the verdict counts come only from valid current judgements. A passed
+      task check is not ``helped``, a failed task check is not ``refuting``,
+      and a technical check failure is evidence, not a utility verdict;
+    - for a legacy (unversioned) entry the summary uses the agent's
+      ``effect_attribution`` list and the maintained adoption counter — and
+      says so, because per-adoption execution links may not exist there.
+    """
+    from or_harness.strategy.evidence_access import validity
+    entry = harness.sbank.get(str(entry_id))
+    if entry is None:
+        raise ValueError(f"unknown entry_id {entry_id!r}")
+    if not entry.rule:
+        return _legacy_utility_summary(harness, entry)
+    versions_state = {int(row["version"]): str(row["state"])
+                      for row in harness.store.conn.execute(
+                          "SELECT version,state FROM rule_versions "
+                          "WHERE entry_id=? ORDER BY version", (str(entry_id),))}
+    events = event_records(harness.store, entry_id)
+    checks = check_records(harness.store, entry_id)
+    latest_effects = _latest_effects(events)
+    adoptions = {}
+    for event in events:
+        if event.get("kind") != "use":
+            continue
+        execution_id = str(event.get("execution_id") or "")
+        if not execution_id:
+            continue
+        try:
+            use_version = int(event.get("version"))
+        except (TypeError, ValueError):
+            continue
+        adoptions.setdefault((use_version, execution_id), event)
+    management_events = {}
+    for event in events:
+        if event.get("kind") != "management":
+            continue
+        try:
+            managed_version = int(event.get("version"))
+        except (TypeError, ValueError):
+            continue
+        if managed_version not in management_events or                 _event_order(event) >= _event_order(management_events[managed_version]):
+            management_events[managed_version] = event
+    version_items = []
+    unattributed = []
+    totals = {"adoptions": 0, "judged": 0, "unjudged": 0,
+              "invalidated": 0, "helped": 0, "neutral": 0,
+              "unrelated": 0, "refuting": 0,
+              "unattributed_judgments": 0}
+    for known_version in sorted(versions_state):
+        adoption_ids = sorted(
+            execution_id for (use_version, execution_id) in adoptions
+            if use_version == known_version)
+        verdicts = {name: 0 for name in UTILITY_VERDICTS}
+        judged, unjudged, invalidated = [], [], []
+        for execution_id in adoption_ids:
+            event = latest_effects.get((known_version, execution_id))
+            if event is None:
+                unjudged.append(execution_id)
+                continue
+            if event.get("withdrawn"):
+                invalidated.append(_utility_reference(
+                    event, reason="the agent withdrew this judgement"))
+                continue
+            if str(event.get("verdict") or "") not in UTILITY_VERDICTS:
+                invalidated.append(_utility_reference(
+                    event, reason="the latest judgement is not a valid verdict"))
+                continue
+            valid = validity(harness, execution_id)
+            if not valid.get("valid", True):
+                invalidated.append(_utility_reference(
+                    event, reason="the adoption evidence is excluded/withdrawn"))
+                continue
+            judged.append(execution_id)
+            verdicts[str(event["verdict"])] += 1
+        version_checks = [c for c in checks
+                          if int(c.get("version", 0)) == known_version]
+        check_states = {}
+        for check in version_checks:
+            state = str(check.get("state") or "unknown")
+            check_states[state] = check_states.get(state, 0) + 1
+        management = management_events.get(known_version)
+        item = {
+            "version": known_version,
+            "state": versions_state.get(known_version),
+            "adoptions": len(adoption_ids),
+            "judged": len(judged),
+            "unjudged": len(unjudged),
+            "invalidated": len(invalidated),
+            "verdicts": verdicts,
+            "evidence": {
+                "adoption_execution_ids": adoption_ids[:_UTILITY_REF_LIMIT],
+                "n_adoption_execution_ids": len(adoption_ids),
+                "judged_execution_ids": judged[:_UTILITY_REF_LIMIT],
+                "unjudged_execution_ids": unjudged[:_UTILITY_REF_LIMIT],
+                "invalidated": invalidated[:_UTILITY_REF_LIMIT],
+                "effect_event_ids": [e.get("event_id") for e in
+                                     (latest_effects.get((known_version, eid))
+                                      for eid in judged) if e],
+                "n_checks": len(version_checks),
+                "checks_by_state": check_states,
+                "check_ids": [c.get("check_id") for c in
+                              version_checks[-_UTILITY_REF_LIMIT:]],
+            },
+            "latest_management": (
+                None if management is None else {
+                    "action": management.get("action"),
+                    "state": management.get("state"),
+                    "execution_id": management.get("execution_id"),
+                    "reason": management.get("reason"),
+                    "event_id": management.get("event_id"),
+                    "at": management.get("at"),
+                    "effect_event_id": management.get("effect_event_id"),
+                }),
+        }
+        version_items.append(item)
+        for key in ("adoptions", "judged", "unjudged", "invalidated",
+                    "helped", "neutral", "unrelated", "refuting"):
+            totals[key] += (len(adoption_ids) if key == "adoptions" else
+                            len(judged) if key == "judged" else
+                            len(unjudged) if key == "unjudged" else
+                            len(invalidated) if key == "invalidated" else
+                            verdicts.get(key, 0))
+    for (use_version, execution_id), event in latest_effects.items():
+        if use_version in versions_state and \
+                (use_version, execution_id) in adoptions:
+            continue
+        unattributed.append(_utility_reference(
+            event,
+            reason=("the judgement does not resolve to a recorded adoption "
+                    "of a known version; it is not assigned to the current "
+                    "version")))
+    totals["unattributed_judgments"] = len(unattributed)
+    latest_management = None
+    if management_events:
+        event = max(management_events.values(), key=_event_order)
+        latest_management = {
+            "action": event.get("action"),
+            "version": event.get("version"),
+            "state": event.get("state"),
+            "execution_id": event.get("execution_id"),
+            "reason": event.get("reason"),
+            "event_id": event.get("event_id"),
+            "at": event.get("at"),
+        }
+    rule = entry.rule or {}
+    active_version = rule.get("active_version")
+    requested = int(version) if version is not None else None
+    return {
+        "entry_id": str(entry_id),
+        "strategy_id": entry.strategy_id,
+        "source": "rule_events",
+        "status": {
+            "publication": rule.get("state"),
+            "legacy_status": entry.status,
+            "active_version": active_version,
+            "candidate_version": rule.get("candidate_version"),
+            "merged_into": rule.get("merged_into"),
+            "published": bool(entry.is_published),
+            "versions": versions_state,
+        },
+        "verification": {
+            "state": entry.verification_state,
+            "note": ("how far the entry's CLAIM was checked; it is not a "
+                     "statement that using the rule helped"),
+        },
+        "requested_version": requested,
+        "versions": version_items,
+        "totals": totals,
+        "unattributed_judgments": unattributed,
+        "latest_management": latest_management,
+        "note": (
+            "read-time aggregate of adoption (use), effect, check and "
+            "management records; nothing was rewritten. helped/neutral/"
+            "unrelated/refuting are AGENT judgements, not measured facts: a "
+            "passed task check is not helped, a failed task check is not "
+            "refuting, and a check failure is evidence only. judged counts "
+            "current VALID judgements; unjudged means no judgement at all; "
+            "invalidated means the judgement lost its supporting evidence "
+            "(excluded/withdrawn) while the adoption and the historical "
+            "judgement remain recorded. Zero, missing and unevaluated are "
+            "different: an explicit 0 verdict count with 0 adoptions is a "
+            "measured empty state, not evidence of no benefit."),
+    }
+
+
+def _legacy_utility_summary(harness, entry):
+    """Honest, small summary for an unversioned entry.
+
+    Legacy rows keep the agent's ``effect_attribution`` list on the entry and
+    an adoption COUNT in the prediction track; they have no frozen per-use
+    version events. The summary reports exactly that and does not pretend the
+    counter is a per-execution adoption log.
+    """
+    from or_harness.strategy.evidence_access import validity
+    latest = {}
+    for raw in entry.effect_attribution or []:
+        if not isinstance(raw, dict):
+            continue
+        execution_id = str(raw.get("execution_id") or "")
+        if not execution_id:
+            continue
+        if execution_id not in latest or \
+                float(raw.get("at") or 0.0) >= float(latest[execution_id].get("at") or 0.0):
+            latest[execution_id] = raw
+    verdicts = {name: 0 for name in UTILITY_VERDICTS}
+    invalidated = []
+    for execution_id, raw in latest.items():
+        verdict = str(raw.get("verdict") or "")
+        if verdict not in UTILITY_VERDICTS or not validity(
+                harness, execution_id).get("valid", True):
+            invalidated.append({**_utility_reference(
+                {**raw, "kind": "effect", "version": None},
+                reason="not a valid current judgement")})
+            continue
+        verdicts[verdict] += 1
+    adoptions = int(entry.prediction_track.n_adoptions or 0)
+    judged = sum(verdicts.values())
+    return {
+        "entry_id": entry.entry_id,
+        "strategy_id": entry.strategy_id,
+        "source": "legacy_effect_attribution",
+        "status": {
+            "publication": entry.status,
+            "legacy_status": entry.status,
+            "active_version": None,
+            "candidate_version": None,
+            "merged_into": None,
+            "published": bool(entry.is_published),
+            "versions": {},
+        },
+        "verification": {
+            "state": entry.verification_state,
+            "note": ("how far the entry's CLAIM was checked; it is not a "
+                     "statement that using the rule helped"),
+        },
+        "requested_version": None,
+        "versions": [],
+        "totals": {
+            "adoptions": adoptions,
+            "judged": judged,
+            "unjudged": None,
+            "invalidated": len(invalidated),
+            "helped": verdicts["helped"],
+            "neutral": verdicts["neutral"],
+            "unrelated": verdicts["unrelated"],
+            "refuting": verdicts["refuting"],
+            "unattributed_judgments": 0,
+        },
+        "unattributed_judgments": [],
+        "latest_management": None,
+        "adoption_source": "prediction_track.n_adoptions",
+        "note": (
+            "legacy (unversioned) entry: the adoption count comes from the "
+            "maintained track and there is no per-adoption execution log to "
+            "reconcile; unjudged is therefore null rather than guessed. "
+            "Judgement counts are the agent's own attributions and not "
+            "measured effects."),
+    }
+
+
+def episode_entry_usage(harness, task_id, episode_id):
+    """Entries actually adopted by THIS episode, with their utility summary.
+
+    Read-time only. The version is resolved from each execution's frozen
+    ``used_entries`` declaration (never re-typed by the caller). The returned
+    ``effect_review.pending`` lists this episode's adoptions that still have
+    no current valid judgement, so a positive adoption cannot silently
+    disappear from the review.
+    """
+    actions = harness.actions.query(task_id=task_id, episode_id=episode_id,
+                                    action_type='execute_strategy')
+    from or_harness.strategy.evidence_access import resolve_execution
+    adopted = {}
+    for action in actions:
+        execution_id = action.linked_execution_id
+        if not execution_id:
+            continue
+        record = resolve_execution(harness, execution_id, include_excluded=True)
+        if record is None:
+            continue
+        used = (record.execution_features or {}).get('used_entries') or {}
+        for entry_id in used.get('known_entry_ids') or []:
+            entry = harness.sbank.get(entry_id)
+            if entry is None:
+                continue
+            version = adopted_version(harness, record, entry_id)
+            if version is None and entry.rule:
+                # A versioned adoption without a resolvable frozen version
+                # cannot be attributed; naming the current version would be
+                # a guess.
+                continue
+            key = None if version is None else int(version)
+            adopted.setdefault(str(entry_id), {}).setdefault(
+                key, []).append(execution_id)
+    entries = []
+    pending = []
+    for entry_id in sorted(adopted, key=lambda value: (
+            int(value) if value.isdigit() else 0, value)):
+        summary = utility_summary(harness, entry_id)
+        versions = []
+        for use_version, execution_ids in sorted(
+                adopted[entry_id].items(),
+                key=lambda pair: (pair[0] is not None, pair[0] or 0)):
+            version_summary = next(
+                (item for item in summary.get("versions") or []
+                 if item.get("version") == use_version), None)
+            judgements = []
+            for execution_id in sorted(execution_ids):
+                if use_version is None:
+                    # Legacy entry: the latest agent attribution on the entry
+                    # is the only per-use record (no versioned events).
+                    raw = [a for a in (harness.sbank.get(entry_id)
+                                       .effect_attribution or [])
+                           if isinstance(a, dict)
+                           and str(a.get("execution_id")) == execution_id]
+                    latest = max(raw, key=lambda a: float(
+                        a.get("at") or 0.0)) if raw else None
+                    event = latest
+                    current = (latest is not None
+                               and str(latest.get("verdict") or "")
+                               in UTILITY_VERDICTS)
+                else:
+                    event = latest_effects_for(harness, entry_id,
+                                               use_version, execution_id)
+                    current = (event is not None
+                               and not event.get("withdrawn")
+                               and str(event.get("verdict") or "")
+                               in UTILITY_VERDICTS)
+                item = {"execution_id": execution_id,
+                        "judged": bool(current)}
+                if event is not None:
+                    item["latest_verdict"] = event.get("verdict")
+                    item["effect_event_id"] = (event.get("event_id")
+                                               or event.get("at"))
+                judgements.append(item)
+                if not current:
+                    pending.append({
+                        "entry_id": entry_id,
+                        "version": use_version,
+                        "execution_id": execution_id,
+                        "inspect_ref": (
+                            "orx inspect --bank strategic --entry "
+                            + entry_id),
+                    })
+            versions.append({
+                "version": use_version,
+                "n_adoptions_this_episode": len(execution_ids),
+                "execution_ids": sorted(execution_ids),
+                "judgements": judgements,
+                "n_unjudged": sum(1 for item in judgements
+                                  if not item["judged"]),
+                "utility": version_summary,
+            })
+        entry = harness.sbank.get(entry_id)
+        entries.append({
+            "entry_id": entry_id,
+            "strategy_id": (entry.strategy_id if entry else None),
+            "versions": versions,
+            "status": summary.get("status"),
+            "verification": summary.get("verification"),
+            "totals": summary.get("totals"),
+            "latest_management": summary.get("latest_management"),
+            "inspect_ref": ("orx inspect --bank strategic --entry "
+                            + entry_id),
+        })
+    return {
+        "entries": entries,
+        "n_entries": len(entries),
+        "n_adoptions": sum(len(ids) for versions in adopted.values()
+                           for ids in versions.values()),
+        "effect_review": {
+            "pending": pending,
+            "n_pending": len(pending),
+            "note": ("this episode adopted these entry versions; record how "
+                     "each use turned out with `close-episode "
+                     "--attribute-effect` (also valid when H+ = 0) or "
+                     "`induce --attribute-effect`. A judgement is optional: "
+                     "leaving an adoption unjudged keeps it UNKNOWN, never "
+                     "neutral-by-default. A refuting verdict pauses the "
+                     "version; an explicit keep/demote/promote remains the "
+                     "agent's management decision."),
+        },
+        "note": ("read-time summary of the entries THIS episode actually "
+                 "adopted, resolved from their frozen used_entries; the full "
+                 "history stays at inspect_ref. Adoption is not usefulness, "
+                 "and a zero verdict count is not evidence of harm."),
+    }
+
+
+def latest_effects_for(harness, entry_id, version, execution_id):
+    """The latest effect event for one adoption, or None (read-only)."""
+    latest = None
+    for event in event_records(harness.store, entry_id, int(version)):
+        if event.get("kind") != "effect":
+            continue
+        if str(event.get("execution_id") or "") != str(execution_id):
+            continue
+        if latest is None or _event_order(event) >= _event_order(latest):
+            latest = event
+    return latest
 
 
 def refresh_execution_support(harness,execution_id):

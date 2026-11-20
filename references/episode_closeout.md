@@ -17,9 +17,9 @@ orx close-episode --task t1 --episode ep1 [--terminal completed|failed|aborted|b
     [--finish-action ACTION_ID] [--min-samples N]
 ```
 
-Finish [task-derived checks and retries](../SKILL.md#3b-check-the-original-task-and-decide-whether-to-retry), record each attempt, and commit the answer. Pass the actual terminal state. Use `--finish-action` to link the recorded `finish_task` event and its end time. In benchmarks, the evaluator scores the committed answer against the reference.
+Finish the [pre-submission self-check](../SKILL.md#3b-self-check-the-answer-then-decide-to-repair-re-solve-or-commit), record each attempt, and commit the answer. Pass the actual terminal state. Use `--finish-action` to link the recorded `finish_task` event and its end time. In benchmarks, the evaluator scores the committed answer against the reference.
 
-Close-out evaluates bound predictions, publishes calibration, and records rule use. Read `task_checks` for counts by verdict and for unchecked attempts. If the result is `state="pending"` with `closeout: null` (exit 2), finish the listed `unfinished_actions` and retry. Repeated close calls return the saved record.
+Close-out evaluates bound predictions, publishes calibration, and records rule use. It also returns `entry_usage`: the entries this episode actually adopted (version resolved from their frozen `used_entries`), their read-time utility totals, and `effect_review.pending` — this episode's adoptions with no current valid effect judgement. Record those judgements with `--attribute-effect` on the same close call (valid for H+ = 0 too); a `refuting` judgement keeps the existing default pause, and `keep`/`demote`/`promote` is an explicit management decision. `retire` remains explicit. Read `task_checks` for counts by verdict and for unchecked attempts. If the result is `state="pending"` with `closeout: null` (exit 2), finish the listed `unfinished_actions` and retry. Repeated close calls return the saved record.
 
 During library building, take the review IDs from `result.induction_schedule.pending_ids` and follow the [induction handoff](induction.md#take-a-required-review).
 
@@ -211,6 +211,6 @@ Select one round with `ORHarness.strategy_execution_window(..., round_index=N)` 
 
 ## 8. Late evidence and corrections
 
-A later `check-task` adds evidence to the execution it cites. Read `validity_corrections[]` for observations re-derived under their original metrics and attribution rules. A late check, exclusion, or restore inside the window can republish calibration (`calibration_republished`). The stored evaluation preserves the close-out facts. Use `orx calibration --rebuild` to regenerate the publication from current records without rerunning the solver or predictor.
+A later `check-task` adds evidence to the execution it cites. Read `validity_corrections[]` for observations re-derived under their original metrics and attribution rules. An agent-reported verification attached with `check-task --verification` is additional self-check material tied to that execution; it is NOT a framework task check and does not feed G, C, R or calibration. A late check, exclusion, or restore inside the window can republish calibration (`calibration_republished`). The stored evaluation preserves the close-out facts. Use `orx calibration --rebuild` to regenerate the publication from current records without rerunning the solver or predictor.
 
 Use the check's recorded coverage when interpreting acceptance. Later reference comparisons can supply [offline induction evidence](induction.md#read-material-and-choose-comparisons) within their documented scope. Once evaluation detail is archived, later checks can annotate retained execution facts while the archived evaluation stays final.

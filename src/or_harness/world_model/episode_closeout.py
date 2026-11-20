@@ -4514,25 +4514,37 @@ def _filter_pairs_by_model(block: Dict[str, Any],
     # pair), so filtering checks the block first, then each pair for a
     # legacy block that still carries it per row.
     block_ident = block.get("model_identity")
+    raw_pairs = [pair for pair in (block.get("pairs") or [])
+                 if isinstance(pair, dict)]
+    # A directory entry is not a case: a row without its own identity has no
+    # body to show, so it is counted as unreadable instead of being carried
+    # into the request as an empty example.
+    readable = [pair for pair in raw_pairs if _is_material_pair(pair)]
+    unreadable = len(raw_pairs) - len(readable)
     kept: List[Dict[str, Any]] = []
     withheld = 0
     if block_ident is not None:
         if str(block_ident) == str(model_identity):
-            kept = list(block.get("pairs") or [])
+            kept = list(readable)
         else:
-            withheld = len(block.get("pairs") or [])
+            withheld = len(readable)
     else:
-        for pair in (block.get("pairs") or []):
+        for pair in readable:
             if str(pair.get("model_identity") or "(unknown)") == \
                     str(model_identity):
                 kept.append(pair)
             else:
                 withheld += 1
     filtered["pairs"] = kept
+    # The index must describe the SAME bodies: filtering by model may drop
+    # rows, and an index left pointing at them would later resolve to a body
+    # that is no longer here (or to the wrong position).
+    filtered["selection_meta"] = _selection_meta(list(enumerate(kept)))
     filtered["same_task_comparisons"] = same_task_comparisons(kept)
     filtered["filtered"] = True
     filtered["model_identity"] = str(model_identity)
     filtered["n_pairs_included"] = len(kept)
+    filtered["n_pairs_unreadable"] = unreadable
     if withheld:
         filtered["n_pairs_withheld"] = withheld
         filtered["filter_note"] = (
@@ -4542,6 +4554,11 @@ def _filter_pairs_by_model(block: Dict[str, Any],
     else:
         filtered["filter_note"] = (
             f"every kept pair belongs to model identity {model_identity!r}")
+    if unreadable:
+        filtered["integrity_note"] = (
+            f"{unreadable} stored pair row(s) carried no case body "
+            "(a stale selection index or a damaged legacy row); they were "
+            "excluded rather than shown as cases")
     return filtered
 
 
@@ -5213,16 +5230,12 @@ def build_paired_feedback(
             continue
         used += size
         included.append(row)
-    # The rows the SELECTION may consider, in their stable relevance order
-    # (failures/repairs first, then most recent). Each keeps its index so a
-    # selection can return the full row by position and the ordering is
-    # total and stable across processes.
-    selection_ordered = sorted(
-        enumerate(rows),
-        key=lambda t: (0 if _is_failure(t[1][2]) else 1,
-                       -_recency(t[1][0]), t[0]))
-    selection_rows = [(i, row) for i, (_stored, _eval, row)
-                      in selection_ordered]
+    # The rows the SELECTION may consider are exactly the rows whose bodies
+    # this block carries. An index over the full window would name pairs the
+    # block does not include (budget-trimmed rows), and a later lookup by
+    # position would then return another case or nothing at all. The order is
+    # the same relevance order as ``pairs``; ``pair_ref`` (the evaluation id)
+    # is the identity a selection resolves, never the numeric position.
     out: Dict[str, Any] = {
         "feedback_version": PAIRED_FEEDBACK_VERSION,
         "model_identity": ident,
@@ -5233,6 +5246,7 @@ def build_paired_feedback(
         "n_pairs_total": n_total,
         "n_pairs_included": len(included),
         "n_pairs_omitted": omitted,
+        "n_pairs_unreadable": 0,
         "budget_chars": budget,
         "used_chars": used,
         "ordering": ("failures/repairs first, then most recent: the budget "
@@ -5242,12 +5256,10 @@ def build_paired_feedback(
         "basis": ("derived from CLOSED episodes' stored evaluations in the "
                   "current window; no model call, no re-scoring, no new "
                   "storage"),
-        # The per-row SELECTION index: the fields a later relevance choice
-        # needs (which candidate/method, which executions, which task/cell,
-        # whether it failed), kept small and derived from facts already in
-        # the row. This is what lets a prediction request pick the pairs
-        # RELEVANT to it without re-reading the bank.
-        "selection_meta": _selection_meta(selection_rows),
+        # The per-row SELECTION index is built from the SAME list this block
+        # stores in ``pairs``: every directory entry has a body here, and its
+        # ``pair_ref`` is the identity a selection resolves.
+        "selection_meta": _selection_meta(list(enumerate(included))),
         "pairs": included,
         "same_task_comparisons": same_task_comparisons(included),
     }
@@ -5264,6 +5276,25 @@ def build_paired_feedback(
     return out
 
 
+def _is_material_pair(row: Any) -> bool:
+    """Whether ``row`` is a CASE body, not a directory entry about one.
+
+    A case body names the evaluation and the prediction it pairs. A row that
+    lacks either is a selection artifact (or a damaged legacy row), never a
+    case: presenting it would invent an empty example.
+    """
+    return (isinstance(row, dict) and bool(row.get("evaluation_id"))
+            and bool(row.get("prediction_id")))
+
+
+def _pair_ref(row: Dict[str, Any]) -> Optional[str]:
+    """The stable identity used to look a case body up across reordering."""
+    if not isinstance(row, dict):
+        return None
+    value = row.get("evaluation_id")
+    return str(value) if value else None
+
+
 def _selection_meta(indexed_rows: Sequence[Tuple[int, Dict[str, Any]]]
                     ) -> List[Dict[str, Any]]:
     """The lightweight per-row index a later relevance selection reads.
@@ -5273,6 +5304,11 @@ def _selection_meta(indexed_rows: Sequence[Tuple[int, Dict[str, Any]]]
     it failed — never the methods' steps or the prediction's numbers, which
     live in the full row. It is a DERIVED field of the published block, so
     the read path never has to scan the bank to know what is available.
+
+    ``pair_ref`` is the BODY's identity. ``index`` is only a stable
+    tiebreak within the block that produced this meta; it is never used to
+    look a body up, because relevance ordering and budget trimming reorder
+    the block while this index keeps its original positions.
     """
     meta: List[Dict[str, Any]] = []
     for index, row in indexed_rows:
@@ -5280,6 +5316,7 @@ def _selection_meta(indexed_rows: Sequence[Tuple[int, Dict[str, Any]]]
         method = row.get("method_planned") or {}
         meta.append({
             "index": index,
+            "pair_ref": _pair_ref(row),
             "evaluation_id": row.get("evaluation_id"),
             "prediction_id": row.get("prediction_id"),
             "task_id": row.get("task_id"),
@@ -5468,10 +5505,48 @@ def select_paired_feedback(
     and is marked as such. An empty pool yields an EMPTY selection with a
     ``missing`` note — a cold start never invents history.
     """
+    raw_pairs = [pair for pair in (block.get("pairs") or [])
+                 if isinstance(pair, dict)]
+    # A case is identified by its OWN body. The block may carry a directory
+    # row without one (an old selection index, a damaged row); that is not a
+    # case and must never be selected, counted as included, or given a
+    # ``selected_reason``.
+    pairs = [pair for pair in raw_pairs if _is_material_pair(pair)]
+    unreadable = len(raw_pairs) - len(pairs)
+    bodies: Dict[str, Dict[str, Any]] = {}
+    for pair in pairs:
+        bodies.setdefault(str(pair["evaluation_id"]), pair)
     meta = list(block.get("selection_meta") or [])
-    pairs = list(block.get("pairs") or [])
-    if not meta and pairs:
-        meta = ensure_selection_meta(block).get("selection_meta") or []
+    stale_index = 0
+    if meta:
+        # Validate the directory against the bodies that are actually here:
+        # an entry with no resolvable ``pair_ref`` describes a case this
+        # block does not carry. Drop it and say so; never let a positional
+        # index pick another case.
+        usable: List[Dict[str, Any]] = []
+        referenced: set = set()
+        for entry in meta:
+            if not isinstance(entry, dict):
+                stale_index += 1
+                continue
+            ref = entry.get("pair_ref") or entry.get("evaluation_id")
+            if ref is not None and str(ref) in bodies:
+                if str(ref) in referenced:
+                    # A duplicated directory row is not a second case.
+                    stale_index += 1
+                    continue
+                usable.append(entry)
+                referenced.add(str(ref))
+            else:
+                stale_index += 1
+        # A body the index forgot is still a case: derive its directory row
+        # from the body itself (no bank read) instead of hiding it.
+        for index, pair in enumerate(pairs):
+            if str(pair["evaluation_id"]) not in referenced:
+                usable.append(_selection_meta([(index, pair)])[0])
+        meta = usable
+    else:
+        meta = _selection_meta(list(enumerate(pairs)))
     cap = limit if limit is not None else _paired_feedback_max_pairs()
     out: Dict[str, Any] = {
         "feedback_version": block.get("feedback_version"),
@@ -5506,9 +5581,18 @@ def select_paired_feedback(
         out["n_pairs_available"] = 0
         out["n_pairs_included"] = 0
         out["n_pairs_omitted"] = 0
-        out["missing"] = ("the published block carries no pairs: a cold "
-                          "start has no paired feedback to select from (this "
-                          "is absent, not 'nothing matched')")
+        out["n_pairs_unreadable"] = unreadable
+        if stale_index:
+            out["n_pairs_index_without_body"] = stale_index
+        if unreadable or stale_index:
+            out["integrity_note"] = (
+                "the stored block carries no readable case body: pair rows "
+                "without identity and directory entries without a body were "
+                "excluded rather than shown as cases (a legacy block may "
+                "need `orx calibration --rebuild` to republish its index)")
+        out["missing"] = ("the published block carries no readable pairs: a "
+                          "cold start has no paired feedback to select from "
+                          "(this is absent, not 'nothing matched')")
         return out
     recall_set = {str(r) for r in (recall_ids or []) if r}
     candidate_tokens: set = set()
@@ -5527,7 +5611,7 @@ def select_paired_feedback(
 
     scored: List[Tuple[int, int, int, Dict[str, Any], List[str]]] = []
     scope_omitted = 0
-    for entry in meta:
+    for position, entry in enumerate(meta):
         score, reasons = _row_relevance(
             entry, recall_ids=recall_set,
             candidate_tokens=candidate_tokens,
@@ -5540,37 +5624,76 @@ def select_paired_feedback(
             continue
         scored.append((score,
                        0 if entry.get("is_failure") else 1,
-                       int(entry.get("index") or 0),
+                       # Directory ORDER, not the stale original position:
+                       # the ordering stays total and stable without
+                       # assuming the block was never reordered.
+                       position,
                        entry, reasons))
     out["n_pairs_available"] = len(scored)
+    out["n_pairs_unreadable"] = unreadable
+    out["n_pairs_readable"] = len(pairs)
+    # The published block's OWN budget counts are not this selection's
+    # counts: keep them apart so "43 in the window, 6 carried, 6 readable,
+    # 6 displayed" can never be collapsed into one misleading number.
+    out["n_pairs_publish_total"] = block.get("n_pairs_total")
+    out["n_pairs_publish_included"] = block.get("n_pairs_included")
+    out["n_pairs_publish_omitted"] = block.get("n_pairs_omitted")
+    if stale_index:
+        out["n_pairs_index_without_body"] = stale_index
+    if unreadable or stale_index:
+        parts = []
+        if unreadable:
+            parts.append(f"{unreadable} pair row(s) carried no case body")
+        if stale_index:
+            parts.append(f"{stale_index} directory entr(ies) named no body "
+                         "in this block or duplicated one")
+        out["integrity_note"] = (
+            " and ".join(parts) + ": they were excluded rather than shown "
+            "as cases (a legacy block may need `orx calibration --rebuild` "
+            "to republish its index)")
+    out["counts_note"] = (
+        "n_pairs_total is the calibration window; n_pairs_publish_included / "
+        "n_pairs_publish_omitted are how many bodies the published block kept "
+        "or left out for its size budget; n_pairs_readable / n_pairs_available "
+        "are what THIS block can actually offer; n_pairs_included is what was "
+        "selected for display and n_pairs_omitted is what the display ceiling "
+        "or relevance left out")
     if scope_omitted:
         out["selection"]["scope_omitted"] = scope_omitted
         out["selection"]["scope_filter"] = str(scope)
     # HIGHEST relevance first, then genuine FAILURES before successes (a
-    # lesson needs the failures), then stable index.
+    # lesson needs the failures), then the block's own order.
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
 
     selected: List[Dict[str, Any]] = []
     omitted = 0
     background = 0
+    missing_body = 0
     used_per_strategy: Dict[str, int] = {}
 
-    def _append(score: int, index: int, entry: Dict[str, Any],
-                reasons: List[str]) -> None:
-        row = copy.deepcopy(pairs[index]) if 0 <= index < len(pairs) else {}
+    def _append(score: int, entry: Dict[str, Any],
+                reasons: List[str]) -> bool:
+        ref = str(entry.get("pair_ref") or entry.get("evaluation_id") or "")
+        body = bodies.get(ref)
+        if body is None:
+            # The directory and the body disagreed at selection time: skip
+            # it and report the gap rather than emitting an empty case.
+            return False
+        row = copy.deepcopy(body)
         row["selected_reason"] = (
             reasons or ["background material: no direct relevance signal "
                         "to this problem or candidate"])
         row["relevance"] = score
         row["background"] = score == 0
         selected.append(row)
+        return True
 
     # Pass 1: the genuinely RELEVANT pairs, in relevance order but with
     # failures before successes WITHIN each relevance rank, so the bounded
     # set never becomes all-success or all-failure. Repeated retries of one
     # (task, strategy) may hold at most two slots, so one candidate cannot
     # crowd the others out.
-    for score, _fail, index, entry, reasons in scored:
+    for score, _fail, _position, entry, reasons in scored:
         if score == 0:
             continue
         if len(selected) >= cap:
@@ -5580,18 +5703,22 @@ def select_paired_feedback(
         if used_per_strategy.get(bucket, 0) >= 2:
             omitted += 1
             continue
+        if not _append(score, entry, reasons):
+            missing_body += 1
+            continue
         used_per_strategy[bucket] = used_per_strategy.get(bucket, 0) + 1
-        _append(score, index, entry, reasons)
     # Pass 2: BACKGROUND material (no direct relevance signal). Added ONLY
     # when the relevant set is EMPTY, in a SMALL bounded number, and every
     # row is MARKED background — a cold-ish pool points at representative
     # recent history without passing it off as relevance.
     if not selected:
-        for score, _fail, index, entry, reasons in scored:
+        for score, _fail, _position, entry, reasons in scored:
             if len(selected) >= min(cap, BACKGROUND_PAIR_LIMIT):
                 omitted += 1
                 continue
-            _append(score, index, entry, reasons)
+            if not _append(score, entry, reasons):
+                missing_body += 1
+                continue
             background += 1
     else:
         omitted += sum(1 for t in scored if t[0] == 0)
@@ -5602,6 +5729,12 @@ def select_paired_feedback(
     out["n_pairs_included"] = len(selected)
     out["n_pairs_omitted"] = omitted
     out["n_background"] = background
+    if missing_body:
+        out["n_pairs_missing_body"] = missing_body
+        out["integrity_note"] = (
+            (out.get("integrity_note", "") + " ").strip()
+            + f"{missing_body} selected directory entr(ies) had no readable "
+              "body at lookup time; they were skipped, not shown as cases")
     out["ordering"] = ("by relevance to THIS decision (recall link, declared "
                        "method, same task/cell, strategy hint); within a "
                        "relevance rank, genuine failures and repairs before "
@@ -5617,9 +5750,14 @@ def select_paired_feedback(
             "relevance signal to this decision) — carried to avoid an empty "
             "history, never presented as a match")
     if not selected:
-        out["missing"] = ("no pair was relevant to this decision; the pool "
-                          "exists but nothing matched (reported rather than "
-                          "padding with unrelated history)")
+        if unreadable or stale_index:
+            out["missing"] = ("the stored directory named no readable case "
+                              "body: nothing can be shown (a broken "
+                              "association, not a relevance miss)")
+        else:
+            out["missing"] = ("no pair was relevant to this decision; the "
+                              "pool exists but nothing matched (reported "
+                              "rather than padding with unrelated history)")
     return out
 
 
@@ -5637,7 +5775,7 @@ def ensure_selection_meta(block: Dict[str, Any]) -> Dict[str, Any]:
     pairs = block.get("pairs") or []
     rows: List[Tuple[int, Dict[str, Any]]] = []
     for index, row in enumerate(pairs):
-        if isinstance(row, dict):
+        if _is_material_pair(row):
             rows.append((index, row))
     derived = dict(block)
     derived["selection_meta"] = _selection_meta(rows)

@@ -129,6 +129,15 @@ class Recommendation:
             if expected:out['expected']=expected
             else:out.pop('expected',None)
         if self.claim is None:out.pop('claim',None)
+        # ``confidence`` is a SUPPORT COUNT (n/5), not a probability. When a
+        # rule carries no statistical estimate it is 0.0 by construction;
+        # label that so the zero is not read as a measured effect of zero.
+        if self.knowledge.get('rule'):
+            estimate = self.knowledge.get('estimate') or {}
+            out['confidence_basis'] = (
+                "support_count" if (estimate.get('statistical_support_n') or 0) > 0
+                else "not_estimated: no statistical support; confidence=0.0 "
+                     "is an empty default, not a measured zero")
         return out
 
 
@@ -395,6 +404,20 @@ class Selector:
                 "was induced from")
         warnings.extend(self._cost_basis_warnings(cost_basis))
         warnings.extend(entry.risk_conditions)
+        # HONEST BASIS: the prediction track's ``hit_rate`` is a MEAN over
+        # resolved forward predictions. With no resolved prediction the
+        # property is 0.0 by construction, which is "not measured", NOT a
+        # demonstrated 0% hit rate. Say which one this is instead of printing
+        # a default beside a sample count.
+        track = getattr(entry, "prediction_track", None)
+        n_track = int(getattr(track, "n_predictions", 0) or 0)
+        if n_track:
+            basis = (f"entry {entry.entry_id} ({entry.status}, forward "
+                     f"hit_rate={track.hit_rate:.2f}, n={n_track})")
+        else:
+            basis = (f"entry {entry.entry_id} ({entry.status}; forward "
+                     "calibration is NOT estimated: n=0, so a 0.0 hit_rate "
+                     "would be an empty default, not a measured zero)")
         return Recommendation(
             strategy_id=strategy_id,
             expected_quality=entry.expected_quality_hat,
@@ -402,9 +425,7 @@ class Selector:
             evidence="strategic_entry", evidence_refs=[entry.entry_id],
             confidence=confidence, cross_family=cross_family,
             risk_warnings=warnings,
-            basis=f"entry {entry.entry_id} ({entry.status}, "
-                  f"hit_rate={entry.prediction_track.hit_rate:.2f}, "
-                  f"n={entry.prediction_track.n_predictions})",
+            basis=basis,
             cost_known_dims=sorted(cost.measured_dims()),
             cost_basis_dims=list(cost_basis or []),
             claim=(atomic(entry.claim,f'orx inspect --bank strategic --entry {entry.entry_id}') if entry.claim is not None else None),

@@ -316,7 +316,50 @@ Read material for J before submitting. If `index_sync.state` is `deferred`, retr
 
 ## Existing-entry use and utility
 
-For an adopted rule, pass `execute --used-entry-ids ENTRY@VERSION`. Use `inspect --bank strategic --entry ENTRY` to resolve `result.entries[0].rule.view_version`. An omitted declaration leaves use unknown. Pass `--used-entry-ids ''` to declare no adoption.
+For an adopted rule, pass `execute --used-entry-ids ENTRY@VERSION`. An omitted
+declaration leaves use unknown; pass `--used-entry-ids ''` to declare no
+adoption. The version is resolved from the frozen `used_entries` declaration,
+so you do not re-type it for every judgement.
+
+Read the entry's UTILITY summary with `orx inspect --bank strategic --entry N`
+(`result.utility`, and the same block inside `rule_history.utility`):
+
+- `totals.adoptions` — distinct `(entry, version, execution_id)` adoptions;
+- `totals.judged` — adoptions with a CURRENT VALID effect judgement;
+- `totals.unjudged` — adoptions with no judgement at all;
+- `totals.{helped,neutral,unrelated,refuting}` — your own latest judgements;
+- `totals.invalidated` — judgements whose supporting execution was excluded/
+  withdrawn (the adoption and the historical judgement stay recorded);
+- `unattributed_judgments` — judgements that cannot be tied to an adopted
+  version; they are never guessed onto the current version;
+- `latest_management`, `status`, and per-version `evidence` references.
+
+Three facts stay separate in `status_view`: publication (is it offered?),
+verification (how far was the CLAIM checked?) and usage (how did actual use
+turn out?). `validated`/`legacy_status` is the historical maturity label, not
+a proof of usefulness; a passing check or a publication does not prove that
+using the entry helps, and the forward track's `hit_rate`/`n_predictions`
+belongs to `forward_calibration` — `n_predictions = 0` means "not estimated",
+not a measured zero effect. A failed task check is not `refuting`; a technical
+check failure is evidence, not a utility verdict.
+
+At `close-episode`, `result.entry_usage.effect_review.pending` lists this
+episode's adoptions that still lack a judgement. Record the review in the SAME
+close-out (works for H+ = 0):
+
+```bash
+orx close-episode --task T --episode E --terminal completed \
+  --attribute-effect '{"entry_id":"2","execution_id":"EX_USED","verdict":"helped","note":"The rule fixed the price unit before the objective was written; the recorded check then matched the reference scale."}'
+```
+
+A `refuting` judgement keeps its existing default (pause that version); a
+confirmed in-scope error can be paused immediately, without waiting for a
+fixed number of failures. Use `keep`/`demote`/`promote` for an explicit
+management decision. Leave the judgement unevaluated when the evidence does
+not support one — missing or low-sample use is NOT evidence of uselessness.
+If several judgements are neutral/unrelated/refuting, or another rule or the
+documented procedure now covers the case, consider revising or retiring the
+entry — your decision, not an automatic threshold.
 
 Add a sourced transfer, boundary or counterexample observation in `check-task` through `rule_assessments`. Each item identifies the `entry_id`, `version`, `purpose`, `verdict`, `source`, `assessment` and `evidence_refs`.
 
@@ -333,6 +376,15 @@ orx retire --entry ENTRY --reason 'The rule should leave ordinary recall under c
 | `demote` | Suspends the selected version and removes it from ordinary recall if active. |
 | `promote` | Activates the selected version after identity and merge checks. |
 | `retire` | Moves the entry to the cold archive. |
+
+A management decision applies to the version the cited execution ACTUALLY
+adopted: a problem found in v1 does not demote a corrected v2 that is now
+active. A changed statistic never restores a paused version by itself —
+restore is an explicit `promote` (or a new version with an explicit
+publication decision). `retire` accepts `--evidence-execution-id` (repeatable)
+so the cold-archive card keeps the stated reason, the cited facts and the
+read-time usage summary; retire/restore maintain the recall index through the
+same synchronization path.
 
 `verdict:"refuting"` defaults to demotion when `lifecycle_action` is omitted. Specify `keep` to record the judgment while retaining the version. The primary `execution_id` identifies the frozen adopted version. Existing-body maintenance returns `maintenance_only:true`.
 

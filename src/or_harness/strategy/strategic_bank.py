@@ -28,6 +28,8 @@ made once instead of being repeated on every induction.
 
 from __future__ import annotations
 
+import copy
+
 import time
 import json
 from typing import Any, Dict, List, Optional, Tuple
@@ -350,8 +352,20 @@ class StrategicBank:
 
 
     def retire(self, entry_id: str, reason: str,
-               outcome: str = "retired") -> ColdArchiveCard:
-        """Harness-confirmed irreversible disposal into the cold archive."""
+               outcome: str = "retired", *,
+               evidence_execution_ids: Optional[Sequence[str]] = None,
+               usage: Optional[Dict[str, Any]] = None) -> ColdArchiveCard:
+        """Harness-confirmed irreversible disposal into the cold archive.
+
+        The agent's MANAGEMENT decision; the framework performs no utility
+        certification. The archive card keeps the agent's stated reason and
+        the evidence it cited, plus the read-time usage summary when the
+        caller supplied one. The old forward track is stored under
+        ``forward_calibration`` with an explicit note: a hit rate is a
+        calibration diagnostic of a DECLARED prediction, never proof that
+        using the rule helped (and n_predictions = 0 is "not estimated", not
+        a measured zero benefit).
+        """
         entry = self.get(entry_id)
         if entry is None:
             raise StorageError(f"unknown entry_id {entry_id!r}")
@@ -363,11 +377,24 @@ class StrategicBank:
             reason=reason,
             entry_id=entry.entry_id,
             evidence_summary={
+                "management_reason": str(reason),
+                "evidence_execution_ids": list(evidence_execution_ids or []),
+                "usage": copy.deepcopy(usage or {}),
                 "support_n": entry.support_n,
-                "hit_rate": round(entry.prediction_track.hit_rate, 4),
-                "n_predictions": entry.prediction_track.n_predictions,
+                "forward_calibration": {
+                    "hit_rate": round(entry.prediction_track.hit_rate, 4),
+                    "n_predictions": entry.prediction_track.n_predictions,
+                    "note": ("forward calibration of a DECLARED prediction "
+                             "track; it is NOT a usefulness statistic. "
+                             "n_predictions = 0 means not estimated, never a "
+                             "measured zero effect. Read `usage` for the "
+                             "agent's own effect judgements and adoptions"),
+                },
                 "predicates": entry.predicates,
                 "provenance": list(entry.provenance)[:10],
+                "note": ("retirement records the agent's stated management "
+                         "basis and cited evidence; it is not an automatic "
+                         "utility verdict"),
             },
         )
         with self.store.transaction() as conn:

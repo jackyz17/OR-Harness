@@ -141,6 +141,15 @@ def compact_execution(harness, record, *, field_limit=2400):
         **{k: copy.deepcopy(used[k]) for k in ("entry_ids", "known_entry_ids", "unknown_entry_ids", "versions", "rule_versions") if k in used}}
     task_text = harness.store.get_task_text(record.task_id, record.task_text_digest) if record.task_text_digest else None
     task_text=task_text or f.get('retained_task_text')
+    # An oversized method is carried WHOLE or by reference, never as a
+    # misleading prefix: the reading copy keeps a pointer to the exact field
+    # instead of clipping the steps the method needs to be understood.
+    method = method_view(record)
+    for document in ("actual", "planned"):
+        value = method.get(document)
+        if isinstance(value, dict) and chars(value) > field_limit:
+            method[document] = atomic(
+                value, ref + f" #method_{document}", field_limit)
     return {
         "execution_id": record.execution_id, "task_id": record.task_id,
         "strategy_id": record.strategy_id, "created_at": record.created_at,
@@ -148,7 +157,7 @@ def compact_execution(harness, record, *, field_limit=2400):
         "problem": {"profile": {"family": profile.family, "problem_class": profile.problem_class},
                     "cir": atomic(record.cir_snapshot, ref + " #cir_snapshot", field_limit)},
         "task_text": atomic(task_text, ref + " #task_text", field_limit) if task_text else {"unknown": "task text not retained"},
-        "method": method_view(record),
+        "method": method,
         "method_source": (actual or {}).get("source") if actual else "unknown",
         "outcome": {k: (record.quality or {}).get(k) for k in ("status", "feasible", "objective", "gap")},
         "status": (record.quality or {}).get("status"),
@@ -185,6 +194,179 @@ def method_view(record):
     return dedupe_methods(raw['method_planned'],raw['method_actual'])
 
 
+def _pair_ref(row, field):
+    evaluation_id = row.get("evaluation_id")
+    if not evaluation_id:
+        return None
+    return (f"orx inspect --bank evaluations --evaluation {evaluation_id}"
+            f" #{field}")
+
+
+def _compact_pair_methods(row):
+    """Keep the performed method whole; point the plan at it when they agree.
+
+    The original plan and the performed method are BOTH predictions the
+    world model needs, so neither is dropped. When the two describe the same
+    method with at most two textual step differences, the performed steps are
+    carried once and the plan keeps its name plus the exact differing steps.
+    A genuinely different method keeps both full lists.
+    """
+    planned = row.get("method_planned")
+    actual = row.get("method_actual")
+    if not (isinstance(planned, dict) and isinstance(actual, dict)):
+        return
+    if planned.get("name") != actual.get("name"):
+        return
+    planned_steps = planned.get("steps")
+    actual_steps = actual.get("steps")
+    if not (isinstance(planned_steps, list) and isinstance(actual_steps, list)
+            and planned_steps and len(planned_steps) == len(actual_steps)):
+        return
+    differences = [
+        {"step": index + 1, "planned": planned_step, "actual": actual_step}
+        for index, (planned_step, actual_step)
+        in enumerate(zip(planned_steps, actual_steps))
+        if planned_step != actual_step]
+    if len(differences) > 2:
+        return
+    planned.pop("steps", None)
+    planned["steps_ref"] = "method_actual.steps"
+    if differences:
+        planned["step_differences"] = differences
+        row.setdefault("method_deviation", {
+            "state": "minor_textual_difference",
+            "differences": differences,
+            "note": ("the performed steps are carried once under "
+                     "method_actual.steps; only the differing plan steps are "
+                     "restated here")})
+
+
+def _compact_pair_cost_fact(row):
+    """Cost EVIDENCE without the audit scaffolding.
+
+    Kept: the measured values, each dimension's scope, any lower bound, the
+    exclusions that explain a missing dimension, the executions and the
+    observation rule. Dropped: window anchors, work-fact call lists, source
+    refs and the solver condition block duplicated from the pair's own
+    ``execution_conditions``; the exact record is named by ``detail_ref``.
+    """
+    cost = row.get("cost_observed_fact")
+    if not isinstance(cost, dict):
+        return
+    ref = _pair_ref(row, "cost_observed_fact")
+    compact = {}
+    for key in ("values", "dimension_scopes", "lower_bounds",
+                "boundary_exclusions", "execution_ids",
+                "observation_rule_version"):
+        if cost.get(key) not in (None, {}, [], ""):
+            compact[key] = copy.deepcopy(cost[key])
+    conditions = cost.get("conditions")
+    if isinstance(conditions, dict):
+        kept_conditions = {}
+        for key in ("family", "phase", "window_coverage", "execution_host",
+                    "structure"):
+            if conditions.get(key) not in (None, {}, [], ""):
+                kept_conditions[key] = copy.deepcopy(conditions[key])
+        solver = conditions.get("solver_conditions")
+        if isinstance(solver, dict):
+            kept_conditions["solver_conditions"] = {
+                key: copy.deepcopy(solver[key]) for key in
+                ("solver", "config", "constraints")
+                if solver.get(key) not in (None, {}, [], "")}
+        if kept_conditions:
+            compact["conditions"] = kept_conditions
+    if ref:
+        compact["detail_ref"] = ref
+    row["cost_observed_fact"] = compact
+
+
+def _compact_pair_implementation(row):
+    """Technical outcome + the cause it already carries, not its scaffolding."""
+    observation = row.get("implementation_observation")
+    if not isinstance(observation, dict):
+        return
+    ref = _pair_ref(row, "implementation_observation")
+    kept = {key: copy.deepcopy(observation[key]) for key in
+            ("event", "comparable", "executed", "exit_code", "label",
+             "observation_rule_version", "reason", "result_received", "scope",
+             "task_id", "solver_interface", "execution_agent",
+             "semantic_attribution")
+            if observation.get(key) not in (None, {}, [], "")}
+    if observation.get("reusable_script") is not None and ref:
+        kept["reusable_script_ref"] = ref + ".reusable_script"
+    if observation.get("predicted_probability") is not None:
+        kept["predicted_probability_ref"] = (
+            f"risk_predicted[{observation.get('event')}].probability")
+    row["implementation_observation"] = kept
+
+
+def _compact_pair_task_check(row):
+    """Keep the verdict and the action; the check scope is a spec, not a result."""
+    check = row.get("task_check")
+    if not isinstance(check, dict):
+        return
+    compact = {key: copy.deepcopy(check[key]) for key in
+               ("state", "action_id") if check.get(key) is not None}
+    if isinstance(check.get("scope"), dict):
+        compact["scope_ref"] = _pair_ref(row, "task_check.scope")
+        compact["check_report_ref"] = _pair_ref(row, "task_check")
+    row["task_check"] = compact
+
+
+def _compact_pair_execution_conditions(row):
+    """The comparison key and its unknowns; drop the duplicated flat copies."""
+    conditions = row.get("execution_conditions")
+    if not isinstance(conditions, dict):
+        return
+    kept = {key: copy.deepcopy(conditions[key]) for key in
+            ("comparable", "comparison_key", "execution_id", "unknown")
+            if conditions.get(key) not in (None, {}, [], "")}
+    row["execution_conditions"] = kept
+
+
+def _compact_pair_cost_values(row):
+    """Do not state the measured actuals twice (``cost_measured`` has them)."""
+    fact = row.get("cost_observed_fact")
+    if not isinstance(fact, dict) or "values" not in fact:
+        return
+    measured = row.get("cost_measured")
+    if not isinstance(measured, dict) or not measured:
+        return
+    extra = {key: value for key, value in (fact.get("values") or {}).items()
+             if key not in measured}
+    fact.pop("values", None)
+    if extra:
+        fact["values_not_scored"] = extra
+    ref = _pair_ref(row, "cost_observed_fact.values")
+    if ref:
+        fact["values_ref"] = ref
+
+
+def _compact_pair_risk(row):
+    """Drop UNPREDICTED 'did not happen' events from the reading copy.
+
+    They contribute nothing a prediction can learn from (the calibration
+    already counts them), while a predicted event, an observed occurrence and
+    an UNKNOWN label are kept exactly. The omitted count and the reference
+    that restores them travel with the row.
+    """
+    risk = row.get("risk_actual")
+    if not isinstance(risk, list):
+        return
+    kept = [event for event in risk if isinstance(event, dict) and (
+        event.get("predicted") or event.get("label") in ("occurred", None))]
+    omitted = len(risk) - len(kept)
+    if not omitted:
+        return
+    row["risk_actual"] = kept
+    row["risk_actual_omitted"] = {
+        "n": omitted,
+        "reason": ("unpredicted events labelled 'not_occurred': counted in "
+                   "the calibration population, not repeated per case"),
+        "detail_ref": _pair_ref(row, "risk_actual"),
+    }
+
+
 def compact_feedback_pair(value):
     """Project current or cached pairs without changing labels or coverage."""
     row=copy.deepcopy(value)
@@ -206,6 +388,13 @@ def compact_feedback_pair(value):
             if isinstance(steps,list) and actual.get('steps')==steps:
                 actual.pop('steps');actual['steps_ref']=key+'.steps'
                 break
+    _compact_pair_methods(row)
+    _compact_pair_risk(row)
+    _compact_pair_implementation(row)
+    _compact_pair_cost_fact(row)
+    _compact_pair_task_check(row)
+    _compact_pair_execution_conditions(row)
+    _compact_pair_cost_values(row)
     return row
 
 

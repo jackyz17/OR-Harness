@@ -165,6 +165,21 @@ def select_conditional_g(calibration, *, profile, conditions, convention, scope=
     out["conditional_g_selection"] = {"n_available": len(rows), "n_applicable": len(ranked),
         "n_included": len(out["conditional_g"]), "n_omitted": len(rows)-len(out["conditional_g"]),
         "limit": limit, "basis": "same family, compatible known structure and solving limits; unknown stays unknown"}
+    if not out["conditional_g"]:
+        # An EMPTY selection is a fact about THIS candidate's conditions, not
+        # evidence that no calibration has accumulated. The global summary
+        # above stays a diagnostic; the historical groups remain readable but
+        # are not a same-condition prior, and the reason is stated rather
+        # than left as a bare zero.
+        out["conditional_g_selection"]["reason"] = (
+            "no_condition_group_applies_to_this_candidate")
+        out["conditional_g_selection"]["note"] = (
+            "no conditional group matches this candidate: the global "
+            "calibration above is a diagnostic of past error, NOT a "
+            "same-condition prior; the "
+            f"{len(rows)} historical group(s) remain readable but are not "
+            "counted here (a missing family/structure/setting match stays "
+            "unknown, never a default match)")
     return out
 
 

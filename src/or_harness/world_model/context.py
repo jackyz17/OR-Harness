@@ -754,10 +754,14 @@ def build_joint_representation(
     if not cir_dict["present"]:
         missing.append("CIR: no relational structure supplied")
     if not has_model:
-        missing.append(
-            "mathematical model: not written yet — the math attributes come "
-            "from the spec/CIR or stay unknown; this is a normal state and "
-            "does not block a prediction")
+        # A MISSING INPUT, stated as one. The explanation ("this is normal
+        # and does not block a prediction") is a fixed property of the
+        # representation, not a finding about this task, so it travels in
+        # ``notes`` instead of padding the gap list.
+        missing.append("mathematical model: not written yet")
+        out_notes.append(
+            "a mathematical model is not required for a prediction: the math "
+            "attributes come from the spec/CIR or stay unknown")
     for name in math.unknowns:
         missing.append(f"math.{name}: unknown (not established by any source)")
     if profile is None:
@@ -1138,6 +1142,151 @@ def _recompute_version_state(hit: Dict[str, Any]) -> Dict[str, Any]:
     return hit
 
 
+def _compact_check_rule_ref(base_ref: str, execution_id: Any,
+                            field: str) -> str:
+    """A LOCAL reference to a check spec that stays at its source.
+
+    The full acceptance rule (its assertions, probe paths and checker
+    settings) is already stored and reachable through ``inspect``. Inlining
+    it into every reading copy duplicates the same spec and buries the
+    method, the failure and the difference the model actually has to read.
+    The reference is relative to the rule's own ``detail_ref``, so it is
+    short and unambiguous, and nothing is lost.
+    """
+    suffix = (f"verification.scope.seed_checks[{execution_id}]."
+              f"{field}")
+    return f"{suffix} (relative to detail_ref)" if base_ref else suffix
+
+
+def _prune_empty(value: Any) -> Any:
+    """Drop null/empty containers from a READING copy only.
+
+    An empty list or a ``null`` here means "the memory records nothing for
+    this field"; it is not evidence and not a finding. The stored record
+    keeps the explicit form. Numeric zero and ``false`` are KEPT: unlike an
+    absent field, they are real values (e.g. a measured zero, a disabled
+    flag).
+    """
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            pruned = _prune_empty(item)
+            if pruned is None or pruned == {} or pruned == [] or pruned == "":
+                continue
+            out[key] = pruned
+        return out
+    if isinstance(value, list):
+        return [_prune_empty(item) for item in value]
+    return value
+
+
+def _compact_verification_scope(scope: Dict[str, Any], *,
+                                base_ref: str) -> Dict[str, Any]:
+    """The APPLICABILITY half of a rule's verification, without the specs.
+
+    Kept: the verdict (state / authority), the version, the publication
+    decision and its supported scope, which evidence was valid, and per
+    seed check its execution, outcome and validity. Replaced by a local
+    reference: the full ``acceptance_rule`` spec and the generic check
+    ``scope`` (whose only content is the fixed "what a check did not cover"
+    prose). The stored verification record keeps both.
+    """
+    out: Dict[str, Any] = {}
+    for key in ("state", "authority", "rule_version", "n_checks",
+                "publication"):
+        if key in scope:
+            out[key] = copy.deepcopy(scope[key])
+    validity = scope.get("evidence_validity")
+    if validity:
+        out["evidence_validity"] = copy.deepcopy(validity)
+    checks: List[Dict[str, Any]] = []
+    for check in (scope.get("seed_checks") or []):
+        if not isinstance(check, dict):
+            continue
+        item = {key: copy.deepcopy(check[key])
+                for key in ("execution_id", "state", "validity")
+                if key in check}
+        if "acceptance_rule" in check:
+            item["check_ref"] = _compact_check_rule_ref(
+                base_ref, check.get("execution_id"), "acceptance_rule")
+        if "scope" in check:
+            item["scope_ref"] = _compact_check_rule_ref(
+                base_ref, check.get("execution_id"), "scope")
+        checks.append(item)
+    if checks:
+        out["seed_checks"] = checks
+    if base_ref:
+        out["detail_ref"] = base_ref
+    return out
+
+
+def _compact_provider_content(content: Dict[str, Any]) -> Dict[str, Any]:
+    """Project ONE hit's content for the provider without losing its meaning.
+
+    This is a SEND-TIME projection: the stored context keeps the full item.
+    It removes exactly two kinds of weight:
+
+    - an inlined CHECK SPEC or a rendered duplicate of a field the same
+      content already carries, replaced by a local reference;
+    - a long ``solution_variables`` dump, replaced by a bounded preview, its
+      counts and the exact reference that fetches the full values.
+
+    It never removes the method, the original prediction, the real outcome,
+    a failure, a measured cost or a stated difference.
+    """
+    if not isinstance(content, dict):
+        return content
+    knowledge = content.get("knowledge")
+    if isinstance(knowledge, dict):
+        rule = knowledge.get("rule")
+        if isinstance(rule, dict):
+            entry_id = str(rule.get("entry_id")
+                           or content.get("entry_id") or "")
+            version = (rule.get("view_version")
+                       or rule.get("active_version"))
+            base_ref = str(rule.get("detail_ref")
+                           or f"orx inspect --bank strategic --entry "
+                              f"{entry_id}")
+            scope = rule.get("verification_scope")
+            if isinstance(scope, dict):
+                rule["verification_scope"] = _compact_verification_scope(
+                    scope, base_ref=base_ref)
+            if entry_id and str(content.get("entry_id")) == entry_id:
+                rule.pop("entry_id", None)
+                rule["entry_ref"] = "content.entry_id"
+                if str(knowledge.get("entry_id")) == entry_id:
+                    knowledge.pop("entry_id", None)
+                    knowledge["entry_ref"] = "content.entry_id"
+            if (content.get("strategy_id")
+                    and rule.get("strategy_id") == content["strategy_id"]):
+                rule.pop("strategy_id", None)
+                rule["strategy_id_ref"] = "content.strategy_id"
+        # Null/empty placeholders carry no information in a READING copy;
+        # the stored entry keeps the explicit form. Numeric zero and False
+        # are values and survive.
+        content["knowledge"] = _prune_empty(knowledge)
+    for key in ("expected", "relations"):
+        if content.get(key) in ({}, [], None):
+            content.pop(key, None)
+    variables = content.get("solution_variables")
+    if isinstance(variables, dict) and len(json.dumps(
+            variables, ensure_ascii=False, default=str)) > 600:
+        items = list(variables.items())
+        nonzero = [(key, value) for key, value in items
+                   if value not in (0, 0.0, None, False, "")]
+        content["solution_variables"] = {
+            "n_variables": len(items),
+            "n_nonzero": len(nonzero),
+            "preview_nonzero": dict(nonzero[:8]),
+            "detail_ref": (str(content.get("inspect_hint")
+                               or "orx inspect --bank experience")
+                           + " #execution_features.solution_variables"),
+            "note": ("a bounded preview; the complete values remain on the "
+                     "execution record and are not repeated here"),
+        }
+    return content
+
+
 def _project_retrieval_for_provider(view: "RetrievalView") -> Dict[str, Any]:
     """The duplicate-free retrieval block the provider is actually given.
 
@@ -1196,6 +1345,7 @@ def _project_retrieval_for_provider(view: "RetrievalView") -> Dict[str, Any]:
                     if rec.get(key) is not None:
                         content = _merge_content(content, {key: rec[key]})
         content = _dedupe_content_text(content)
+        content = _compact_provider_content(content)
         new_hit = copy.deepcopy(hit)
         new_hit["content"] = content
         # A stored (frozen) hit collapsed by the earlier rule may name the
@@ -1255,7 +1405,32 @@ def _project_retrieval_for_provider(view: "RetrievalView") -> Dict[str, Any]:
     dedup["unique_content"] = len(hits)
     dedup["content_channels"] = {
         hit["identity"]: hit["content_channels"] for hit in hits}
-    return {
+    # EXACT repeats ACROSS hits are block-level facts, not findings about one
+    # case. The version-unknown explanation is identical for every hit that
+    # lacks a digest, and a cost warning can be identical for every entry;
+    # stating them once keeps them from drowning the per-case material.
+    version_notes = [hit.get("version_unknown_note") for hit in hits
+                     if hit.get("version_unknown_note")]
+    version_unknown_note = None
+    if len(version_notes) > 1 and len(set(version_notes)) == 1:
+        version_unknown_note = version_notes[0]
+        for hit in hits:
+            hit.pop("version_unknown_note", None)
+    warning_counts: Dict[str, int] = {}
+    for hit in hits:
+        content = hit.get("content") or {}
+        for warning in set(content.get("risk_warnings") or []):
+            warning_counts[warning] = warning_counts.get(warning, 0) + 1
+    common_warnings = sorted(warning for warning, count
+                             in warning_counts.items() if count > 1)
+    if common_warnings:
+        for hit in hits:
+            content = hit.get("content") or {}
+            if content.get("risk_warnings"):
+                content["risk_warnings"] = [
+                    warning for warning in content["risk_warnings"]
+                    if warning not in common_warnings]
+    block: Dict[str, Any] = {
         "channels_run": list(view.channels_run),
         "n_hits": len(hits),
         "hits": hits,
@@ -1267,11 +1442,22 @@ def _project_retrieval_for_provider(view: "RetrievalView") -> Dict[str, Any]:
         "notes": list(view.notes) + [
             "each item's content is carried ONCE (in `hits`); the structural "
             "and semantic lists are indexes that point at it, and a "
-            "cross-channel field is merged rather than one copy winning"],
+            "cross-channel field is merged rather than one copy winning",
+            "full check specifications and complete solution-variable dumps "
+            "are referenced by their exact `check_ref` / `detail_ref` instead "
+            "of being inlined a second time"],
         "task_digest": view.task_digest,
         "recall_digest": view.recall_digest,
         "evidence_classes": _evidence_classes_of(hits),
     }
+    if version_unknown_note:
+        block["version_unknown_note"] = version_unknown_note
+    if common_warnings:
+        block["common_risk_warnings"] = common_warnings
+        block["common_risk_warnings_note"] = (
+            "identical warnings carried by more than one hit; stated once "
+            "rather than repeated per case")
+    return block
 
 
 def _evidence_classes_of(hits: Sequence[Dict[str, Any]]) -> Dict[str, int]:

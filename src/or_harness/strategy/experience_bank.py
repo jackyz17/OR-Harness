@@ -335,6 +335,44 @@ class ExperienceBank:
                          (self.store.dumps(rec.to_storage_dict(self.store)), execution_id))
         return rec
 
+    def set_verification_evidence(self, execution_id: str,
+                                  evidence: Optional[List[Dict[str, Any]]]
+                                  ) -> ExecutionRecord:
+        """Write (or clear) the AGENT-REPORTED verification evidence.
+
+        A separate feature from ``task_check`` on purpose: a task check is
+        the FRAMEWORK's deterministic verdict on declared bases, while this
+        is the agent's own verification (an independent script, an
+        enumeration, a manual recomputation) with the files it produced.
+        Keeping them in different keys means a reader can never mistake one
+        source for the other, the framework verdict can never be rewritten
+        by a satisfied agent assertion, and the solver's ``result.json``
+        observation is untouched (the evidence is saved as its own immutable
+        artifact).
+
+        Staged (unrecorded) executions are updated in place, so the evidence
+        survives ``record --from-staged`` verbatim. ``None`` removes it.
+        """
+        rec = self.get(execution_id)
+        staged = False
+        if rec is None:
+            rec = self.get_pending(execution_id)
+            staged = rec is not None
+        if rec is None:
+            raise StorageError(f"unknown execution_id {execution_id!r}")
+        if evidence is None:
+            rec.execution_features.pop("verification_evidence", None)
+        else:
+            rec.execution_features["verification_evidence"] = [
+                dict(item) for item in evidence if isinstance(item, dict)]
+        table = "pending_executions" if staged else "executions"
+        with self.store.transaction() as conn:
+            conn.execute(
+                f"UPDATE {table} SET payload=? WHERE execution_id=?",
+                (self.store.dumps(rec.to_storage_dict(self.store)),
+                 execution_id))
+        return rec
+
     def set_task_check(self, execution_id: str,
                        report: Optional[Dict[str, Any]]) -> ExecutionRecord:
         """Write (or clear) the record's TASK-RESULT check annotation.

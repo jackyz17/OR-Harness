@@ -173,22 +173,50 @@ Use `--adapted-from` and `--adaptation` to cite past cases. Use `--used-entry-id
 
 **Read and continue** Read `result.execution_id`, `action_id`, `execution` and `prediction_binding`. `solution_variables` retains up to 2000 variables. For an exit-2 precondition error, check the saved P and task identity. Run `check-task` and record every real attempt, including a failed one. Use a new `plan-next` selection for a repaired attempt.
 
-### `orx check-task <execution_id> [--check JSON] [--episode ep1]`
+### `orx check-task <execution_id> [--check JSON] [--verification JSON_OR_FILE] [--episode ep1]`
 
-Check original task requirements against a staged or recorded execution. `check-task` writes a `verify` action and `execution_features.task_check`.
+Check original task requirements against a staged or recorded execution. `check-task` writes a `verify` action and `execution_features.task_check`. It never runs the solver again, so a corrected check or a late check on the same execution does not create a solving attempt or consume a retry.
 
-**Before answering** Build `--check` from the task's inputs, constraints and observed solution. Use the result to decide whether the same execution needs a better check or the solver needs another attempt.
+**Before answering** The self-check is the agent's, not the tool's: read the original task and inputs, review the model and code, and choose a verification method (hand calculation, code review, an independent verification script, enumeration, a bound/dual, or the deterministic bases below). `--check` declares ONLY the bases the framework can compute; it is not the whole self-check. Look at variable meaning and domain, units and billing range, time horizon, objective meaning, the key constraints, feasibility of the returned solution, and an optimality argument when the task needs one.
 
 | Check key | Use |
 |---|---|
-| `integer` | Check named `variables` or the recorded variables, with optional tolerance (default `1e-6`) |
-| `recompute_objective` | Compute the objective from variables, coefficients and optional constant and tolerance |
+| `reference_objective` | Compare the reported objective with a value you source (`reference_source`, `reference_version`, optional `tolerance`) |
+| `reference_status` | Check the reported solver status |
+| `integer` | Check named `variables` or the recorded variables, with optional tolerance (default `1e-6`). Declare it only if the TASK requires integer values; the framework never infers integrality, and a continuous task is not "missing" this check |
+| `recompute_objective` | Compute the objective from the variables with coefficients the agent declares |
 | `semantic_probe` | Apply `{path, equals\|min\|max\|in}` probes to recorded fields |
 | `intent` | Mark a `relaxation` or `intermediate` result |
 
-Read `result.state`, `report.checks[]`, `report.scope.unchecked[]` and `reflection_material`. `passed` means the declared checks held, `failed` means a check found a violation, and `insufficient` means missing evidence or an unusable result. Check missing coverage on the same EX when the evidence is available. For a new solve, obtain a fresh P in the same episode. See [G attribution evidence](episode_closeout.md#g-attribution-evidence) for a sourced G assessment.
+A useful deterministic check is not a proof that the model represents the task: `recompute_objective` with the coefficient you already used in the code can reproduce a unit error (see [the B018 example](../SKILL.md#self-check-examples)). The declared bases must come from the task's units and constraints.
 
-**After answering** Benchmark evaluators compare the locked answer with reference evidence outside the retry loop. For offline checks use `reference_objective` or `reference_status` with `reference_source` (`bench_declared|independent|self_derived`) and an available `reference_version`. The default objective tolerance is `1e-6 * max(1, abs(reference))`. Omitted source is treated as `self_derived`. See [offline use of reference evidence](induction.md#read-material-and-choose-comparisons).
+Read:
+
+- `result.state` — `passed`: the declared checks held on the recorded values; `failed`: a declared check found a violation; `insufficient`: the check could not decide. None of them decides the next action. A pass does not block a new `plan-next`; a failure does not prove the model is wrong.
+- `report.checks[]` — what the framework actually executed, with observed values, tolerance and `ok`.
+- `report.diffs[]` — the numeric differences for a failure.
+- `report.scope.basis` — the declared bases evaluated; `report.scope.unchecked` — only declared checks that could not run, with the reason; `report.scope.note` — the fixed scope statement. The framework does not scan the task text for uncovered constraints, so an empty `unchecked` is not a claim that nothing else needed checking.
+- `reflection_material` — the self-check material: `task_text`/`task_ref`, the candidate and performed method, `artifacts` references (script, result.json, error clips), the captured solution with `solution_ref`, the check report, `verification_evidence`, and prior attempts as one-line references. Read it before deciding, and prefer the references over re-reading the whole attempt chain.
+
+**Independent verification** When the agent runs its own verification (a separate script, an enumeration, a hand computation), attach the evidence to this same execution:
+
+```json
+{
+  "script": "ws/verify.py",
+  "output": "ws/verify.out",
+  "result": {"ran": true, "exit_code": 0,
+             "assertions": [
+               {"name": "B018 order coefficient equals 15*50",
+                "ok": false, "observed": 750, "expected": 50,
+                "note": "code used the per-chair price per order"}]}
+}
+```
+
+`--verification` accepts that JSON or a file path; `result_path` can name a JSON file instead of inline `result`. The script, output and result are captured as immutable artifacts and the normalised block is labelled `source=agent_reported` under `execution_features.verification_evidence` — a different source than the framework's `task_check`, and a separate file from the solve `result.json` (which is never overwritten). `state` distinguishes a `script_error` (the script did not run / raised) from `assertion_violations` (the script ran and an assertion was not satisfied); `assertions_*` and `evidence_only` cover the other cases. A satisfied assertion is the agent's claim, not a framework verdict, and creates no solving attempt.
+
+A failed check or a failed verification is corrected by re-running `check-task` on the same execution with better evidence or a correct check; a real model or implementation change requires a fresh `plan-next` selection and a new execution. See [G attribution evidence](episode_closeout.md#g-attribution-evidence) for a sourced G assessment.
+
+**After answering** Benchmark evaluators compare the locked answer with reference evidence outside the retry loop; reference comparisons are for evaluation and offline analysis, never a reason to return to solving. For offline checks use `reference_objective` or `reference_status` with `reference_source` (`bench_declared\|independent\|self_derived`) and an available `reference_version`. The default objective tolerance is `1e-6 * max(1, abs(reference))`. Omitted source is treated as `self_derived`. See [offline use of reference evidence](induction.md#read-material-and-choose-comparisons).
 
 ### `orx bind-strategy --prediction ID --action ACTION_ID`
 
@@ -268,11 +296,13 @@ with actuals 2/1/0; see [retry cost semantics](strategy_outcome.md#4-budgets-sto
 
 ## 7. Close out and inspect calibration
 
-### `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`
+### `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--attribute-effect JSON ...] [--min-samples N]`
 
 Close the episode with its actual terminal state. The command evaluates bound predictions, publishes calibration and schedules H+ reviews. Use `--finish-action` to link a recorded user-facing finish.
 
-Read `closeout`, `task_checks`, `cost_completeness_warnings` and `induction_schedule.pending_ids`. Resolve any `unfinished_actions` before closing again. Use the pending IDs to [start or resume reviews](induction.md#take-a-required-review).
+Read `closeout`, `task_checks`, `cost_completeness_warnings`, `induction_schedule.pending_ids` and `entry_usage`. Resolve any `unfinished_actions` before closing again. Use the pending IDs to [start or resume reviews](induction.md#take-a-required-review).
+
+`entry_usage.entries[]` lists the entries this episode actually adopted, with the version resolved from their frozen `used_entries`, the read-time utility totals (`adoptions`, `judged`, `unjudged`, verdict counts) and `inspect_ref`. `entry_usage.effect_review.pending` names adoptions that still have no current valid effect judgement. Review them in the same call (H+ = 0 included): `--attribute-effect '{"entry_id":"N","execution_id":"EX_USED","verdict":"helped|neutral|unrelated|refuting","note":"...","lifecycle_action":"keep|demote|promote"}'` (repeatable). A `refuting` verdict keeps the existing default pause; an explicit management action is the agent's decision. Retiring stays `orx retire`.
 
 ### `orx calibration [--min-samples N] [--rebuild]`
 
@@ -329,7 +359,7 @@ Read `status` and `prediction_made` to see whether the payload contains a predic
 | `retention` | Calibration and evidence windows, grace periods and archive counts |
 | `texts`, `values` | Task-text versions and stored values referenced by ID |
 
-Use `--prediction ID` or `--evaluation ID` for one record. For specific evidence and rules, use `inspect --bank experience --execution EX` or `inspect --bank strategic --entry ENTRY [--rule-version candidate|2]`. Use `--status suspect|dormant` to find rules to review for retirement. `inspect --bank values --value REF` resolves a saved body, fact or assessment. Use `--bank texts --task ID` and the execution's `task_text_digest` to locate its task version.
+Use `--prediction ID` or `--evaluation ID` for one record. For specific evidence and rules, use `inspect --bank experience --execution EX` or `inspect --bank strategic --entry ENTRY [--rule-version candidate|2]`. A single-entry read also returns `utility` (read-time adoption/effect/check/management summary with per-version evidence references), `status_view` (publication vs verification vs usage, kept separate) and, for versioned rules, `forward_calibration` (a calibration diagnostic, not a utility statistic). `validated`, a passed check or an adoption count is not proof that use helps. Use `--status suspect|dormant` to find rules to review for retirement. `inspect --bank values --value REF` resolves a saved body, fact or assessment. Use `--bank texts --task ID` and the execution's `task_text_digest` to locate its task version.
 
 ## 10. Corrections and store maintenance
 
@@ -343,7 +373,7 @@ Restore an excluded execution to active evidence. Use `rebuild-index --layer exe
 
 ### `orx retire --entry NUMBER --reason "..."`
 
-Move a rule to the cold archive and remove it from recall. Inspect its status and use evidence before retiring it. Retirement is permanent and the archive retains its entry number.
+Move a rule to the cold archive and remove it from recall. Inspect its status and use evidence before retiring it. Pass `--evidence-execution-id EX` (repeatable) for the facts the decision relies on; the cold-archive card keeps the stated reason, the cited executions and the read-time usage summary (the old forward-calibration numbers are labelled as calibration, never as proof of usefulness). Retirement is permanent and the archive retains its entry number.
 
 ### `orx rebuild-index [--layer both|execution|strategic] [--dry-run]`
 

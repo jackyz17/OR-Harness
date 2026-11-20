@@ -810,15 +810,33 @@ def cmd_check_task(args) -> int:
     fractional values is `optimal` with `gap=0` and still wrong, and without
     this call it would enter recall, the conditional statistics, the
     world-model feedback and offline induction as a success sample.
+
+    The VERDICT answers only "did the declared deterministic checks hold".
+    What the verdict MEANS for the next action — a wrong model, a wrong
+    optimisation code, a wrong check, or a misread task — is the agent's
+    decision, and the summary states the options without choosing one for
+    the agent. An optional ``--verification`` bundle records a verification
+    the AGENT ran (script, output, result) on this same execution; it is
+    kept separate from the framework checks and never becomes one of them.
     """
     h = _harness(args)
     try:
         check = _load_json_arg(args.check) if args.check else {}
         if not isinstance(check, dict):
             return _fail("--check must be a JSON object")
+        verification = None
+        if getattr(args, "verification", None):
+            try:
+                verification = _load_json_arg(args.verification)
+            except (ValueError, OSError, json.JSONDecodeError) as exc:
+                return _fail(f"--verification must be JSON or a JSON file: "
+                             f"{exc}")
+            if not isinstance(verification, dict):
+                return _fail("--verification must be a JSON object")
         try:
             result = h.check_task_result(args.execution_id, check,
-                                         episode_id=args.episode)
+                                         episode_id=args.episode,
+                                         verification=verification)
         except ValueError as exc:
             return _fail(str(exc))
         report = result["report"]
@@ -827,25 +845,55 @@ def cmd_check_task(args) -> int:
         provenance = report.get("reference_source")
         if provenance is not None:
             source_note = " " + provenance["note"] + "."
+        unrun = list((report.get("scope") or {}).get("unchecked") or [])
+        ran = [c.get("check") for c in report.get("checks") or []
+               if c.get("check") not in (None, "task_check_basis",
+                                         "execution_completed")]
         if state == "passed":
             summary = (f"Task check for {args.execution_id}: PASSED on "
-                       f"{', '.join(report['scope']['basis'])}. This covers "
-                       "the declared bases only — it is not a proof that the "
-                       "model represents the task." + source_note
-                       + " Unchecked: "
-                       + "; ".join(report["scope"]["unchecked"]) + ".")
+                       f"{', '.join(report['scope']['basis'])}"
+                       + (f" ({len(ran)} check(s) actually executed)"
+                          if ran else "") + ". This covers the declared "
+                       "checks only — it is not a proof that the model "
+                       "represents the task, and a pass does NOT block a new "
+                       "plan-next if your own self-check finds a problem."
+                       + source_note)
+            if unrun:
+                summary += (" Declared checks that could not run: "
+                            + "; ".join(unrun[:3]) + ".")
         elif state == "failed":
             diffs = "; ".join(d["reason"] for d in report["diffs"][:3])
             summary = (f"Task check for {args.execution_id}: FAILED. {diffs}. "
                        "The attempt stays recorded with its real cost and "
                        "can be cited as contrast evidence; it can no longer "
-                       "count as a success sample. Diagnose the cause "
-                       "yourself and re-solve in the same episode — never "
-                       "change the task to match a reference value.")
+                       "count as a success sample. Decide the cause before "
+                       "acting, in this order: if the CHECK or its evidence "
+                       "is wrong or incomplete, correct it and re-run "
+                       "check-task on the SAME execution; if the MODEL or "
+                       "implementation is wrong, get a fresh plan-next "
+                       "selection before a new attempt. The framework does "
+                       "not decide that cause for you, and never change the "
+                       "task to match a reference value.")
         else:
             summary = (f"Task check for {args.execution_id}: INSUFFICIENT — "
                        f"the answer's validity is UNKNOWN, not confirmed. "
-                       f"{report['conclusion']}")
+                       f"{report['conclusion']} A check that cannot run is "
+                       "neither a pass nor a failure, and it does not show "
+                       "that the answer is wrong.")
+            if unrun:
+                summary += (" Declared checks that could not run: "
+                            + "; ".join(unrun[:3]) + ".")
+        block = result.get("verification")
+        if block:
+            summary += (" Independent verification (AGENT-REPORTED, kept "
+                        "separate from the framework checks): "
+                        + str(block.get("state"))
+                        + " — " + str(block.get("n_satisfied", 0))
+                        + " satisfied, " + str(block.get("n_violated", 0))
+                        + " violated, " + str(block.get("n_undecided", 0))
+                        + " undecided. The script and output are saved on "
+                        "this execution; a satisfied assertion is the agent's "
+                        "claim, NOT a framework verdict.")
         return _emit(result, summary)
     finally:
         h.close()
@@ -1286,11 +1334,31 @@ def cmd_inspect(args) -> int:
             noun = noun[:-1]           # "1 card", not "1 cards"
         detail = ""
         if args.bank == "strategic":
-            detail = (" Entry track records show n_predictions, hit_rate, "
-                      "calibration_error, and consecutive_misses. Suspect / "
-                      "dormant statuses are the retirement CANDIDATES "
-                      "(`--status suspect|dormant`); retiring them is "
-                      "explicit (`orx retire`).")
+            utility = result.get("utility") or {}
+            totals = utility.get("totals") or {}
+            if args.entry and totals:
+                detail = (f" Usage (read-time from use/effect/check/management "
+                          f"events): {totals.get('adoptions', 0)} adoption(s), "
+                          f"{totals.get('judged', 0)} with a current valid "
+                          f"effect judgement (helped={totals.get('helped', 0)} "
+                          f"neutral={totals.get('neutral', 0)} "
+                          f"unrelated={totals.get('unrelated', 0)} "
+                          f"refuting={totals.get('refuting', 0)}), "
+                          f"{totals.get('unjudged')} not yet judged, "
+                          f"{totals.get('invalidated', 0)} judgement(s) no "
+                          "longer supported. Publication/verification and "
+                          "usage are different facts: `validated` or a "
+                          "passed check is NOT proof that use helps. Full "
+                          "history: rule_history.events/checks.")
+            else:
+                detail = (" Entry track records show n_predictions, hit_rate, "
+                          "calibration_error, and consecutive_misses (forward "
+                          "calibration, NOT a usefulness statistic). "
+                          "Per-entry usage: `inspect --bank strategic --entry "
+                          "ENTRY` reads the utility summary. Suspect / "
+                          "dormant statuses are retirement CANDIDATES "
+                          "(`--status suspect|dormant`); retiring them is "
+                          "explicit (`orx retire`).")
         elif args.bank == "archive":
             detail = (" A card blocks re-inducing that same pattern; lift it "
                       "with `induce --force` when the environment has "
@@ -1474,12 +1542,25 @@ def cmd_close_episode(args) -> int:
     twice."""
     h = _harness(args)
     try:
+        effect_attributions = None
+        if getattr(args, "attribute_effect", None):
+            effect_attributions = []
+            for raw in args.attribute_effect:
+                try:
+                    item = _load_json_arg(raw)
+                except (ValueError, OSError, json.JSONDecodeError) as exc:
+                    return _fail(f"--attribute-effect must be JSON or a JSON "
+                                 f"file: {exc}", 2)
+                if not isinstance(item, dict):
+                    return _fail("--attribute-effect must be a JSON object", 2)
+                effect_attributions.append(item)
         result = h.close_episode(
             args.task, args.episode, terminal_state=args.terminal,
             execution_id=getattr(args,'execution',None),
             finish_action_id=args.finish_action,
             min_calibration_samples=args.min_samples
             if args.min_samples is not None else None,
+            effect_attributions=effect_attributions,
             induction_decision=({"state": args.induction_decision, "reason": args.induction_reason or "reported close-out judgement"}
                                 if getattr(args, "induction_decision", None) else None))
         closeout = result["closeout"]
@@ -1497,11 +1578,14 @@ def cmd_close_episode(args) -> int:
                 f"({', '.join(unfinished)}). {result.get('note', '')}",
                 2)
         if result.get("already_closed"):
-            return _emit(result,
-                         f"Episode {args.task}/{args.episode} was already "
-                         f"closed (state {closeout['terminal_state']}); "
-                         "the stored record stands — nothing re-counted. "
-                         + _induction_handoff(result))
+            parts = [f"Episode {args.task}/{args.episode} was already "
+                     f"closed (state {closeout['terminal_state']}); "
+                     "the stored record stands — nothing re-counted."]
+            usage_summary = _entry_usage_summary(result)
+            if usage_summary:
+                parts.append(usage_summary)
+            parts.append(_induction_handoff(result))
+            return _emit(result, " ".join(parts))
         n_evaluated = sum(1 for e in result.get("evaluations", [])
                           if e.get("state") == "evaluated")
         n_excluded = sum(1 for e in result.get("evaluations", [])
@@ -1542,10 +1626,45 @@ def cmd_close_episode(args) -> int:
                 f"({checks.get('unchecked', 0)} of "
                 f"{checks['n_executions']} unchecked)."
                 + (" " + checks["note"] if checks.get("note") else ""))
+        entry_usage = _entry_usage_summary(result)
+        if entry_usage:
+            parts.append(entry_usage)
         parts.append(_induction_handoff(result))
         return _emit(result, " ".join(parts))
     finally:
         h.close()
+
+
+def _entry_usage_summary(result):
+    """The close-out's entry-utility review, as one short sentence.
+
+    Read from the SAME result the caller receives: the adopted entries, their
+    versions and the adoptions still awaiting a judgement. A recorded
+    judgement at this close is reported separately so a negative judgement
+    never silently stays only in the payload.
+    """
+    usage = result.get("entry_usage") or {}
+    review = usage.get("effect_review") or {}
+    parts = []
+    if usage.get("n_entries"):
+        adopted = ", ".join(
+            f"{item['entry_id']}@"
+            + ",".join(str(v["version"]) for v in item["versions"])
+            for item in usage["entries"][:5])
+        parts.append(
+            f"Entries adopted in this episode: {usage['n_entries']} "
+            f"({adopted}); {usage['n_adoptions']} adoption(s), "
+            f"{review.get('n_pending', 0)} without a current effect "
+            "judgement. Review each use and record it with "
+            "`close-episode --attribute-effect` (also when H+ = 0): a "
+            "refuting judgement pauses the version, and keep/demote/"
+            "promote is your management decision; retiring stays the "
+            "explicit `orx retire`.")
+    if result.get("effect_attributions"):
+        parts.append(
+            f"Recorded {len(result['effect_attributions'])} effect "
+            "judgement(s) at this close-out.")
+    return " ".join(parts)
 
 
 def _induction_handoff(result):
@@ -1789,12 +1908,28 @@ def cmd_choose_next(args) -> int:
 def cmd_retire(args) -> int:
     h = _harness(args)
     try:
-        result = h.retire(args.entry, reason=args.reason)
-        return _emit(result, f"Entry {args.entry} retired to the cold archive. "
-                             "It left the hot store; its cold-archive card now "
-                             "blocks re-inducing the same pattern (lift it with "
-                             "`induce --force` if the environment has genuinely "
-                             "drifted).")
+        result = h.retire(
+            args.entry, reason=args.reason,
+            evidence_execution_ids=getattr(args, "evidence_execution_id",
+                                           None))
+        usage = (result.get("utility") or {}).get("totals") or {}
+        detail = ""
+        if usage:
+            detail = (f" Archived usage summary: {usage.get('adoptions', 0)} "
+                      f"adoption(s), {usage.get('judged', 0)} judged "
+                      f"({usage.get('helped', 0)} helped, "
+                      f"{usage.get('neutral', 0)} neutral, "
+                      f"{usage.get('unrelated', 0)} unrelated, "
+                      f"{usage.get('refuting', 0)} refuting), "
+                      f"{usage.get('unjudged')} without a current valid "
+                      "judgement.")
+        return _emit(result, f"Entry {args.entry} retired to the cold archive."
+                             + detail
+                             + " It left the hot store; its cold-archive card "
+                             "records the stated reason and cited evidence and "
+                             "now blocks re-inducing the same pattern (lift it "
+                             "with `induce --force` if the environment has "
+                             "genuinely drifted).")
     finally:
         h.close()
 
@@ -2428,6 +2563,20 @@ def build_parser() -> argparse.ArgumentParser:
                          "`insufficient` — never a default pass. A probe path "
                          "that does not resolve reports `insufficient`, NOT a "
                          "refutation"))
+    p.add_argument("--verification", default=None, metavar="JSON_OR_FILE",
+                   help=("optional evidence of a verification the AGENT ran "
+                         "on THIS execution (an independent script, a manual "
+                         "recalculation, an enumeration). JSON or a file: "
+                         "{\"script\": PATH, \"output\": PATH, "
+                         "\"result\": {\"ran\": true, \"exit_code\": 0, "
+                         "\"assertions\": [{\"name\": ..., \"ok\": true, "
+                         "\"observed\": ..., \"expected\": ...}]}} or "
+                         "\"result_path\": PATH. The framework captures the "
+                         "files, labels the result AGENT-REPORTED and keeps it "
+                         "separate from its own deterministic checks; a "
+                         "satisfied assertion is never a framework verdict. "
+                         "This does not create a solving attempt and does not "
+                         "overwrite result.json"))
     p.add_argument("--episode", default=None,
                    help="episode to scope the check to (defaults to the "
                         "episode of the action that produced the execution)")
@@ -2648,6 +2797,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--induction-decision", choices=["allow", "skip", "pending"], default=None,
                    help="legacy close-out judgement; cannot override a new frozen binary H+ signal")
     p.add_argument("--induction-reason", default=None)
+    p.add_argument("--attribute-effect", action="append", default=None,
+                   metavar="JSON",
+                   help=("the agent's utility review of an entry THIS "
+                         "episode adopted (repeatable): {\"entry_id\": "
+                         "\"N\", \"verdict\": \"helped|neutral|unrelated|"
+                         "refuting\", \"execution_id\": \"EX_USED\", "
+                         "\"note\": TEXT, \"lifecycle_action\": "
+                         "\"keep|demote|promote\"}. Uses the same channel as "
+                         "`induce --attribute-effect` and needs no induction "
+                         "job, so it works when H+ = 0. A refuting verdict "
+                         "keeps its existing default (pause the version); an "
+                         "explicit management action is the agent's decision"))
     p.add_argument("--min-samples", type=int, default=None,
                    help="minimum resolved samples before a calibration "
                         "group reports a figure (below it: "
@@ -2816,6 +2977,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")
     p.add_argument("--entry", required=True)
     p.add_argument("--reason", required=True)
+    p.add_argument("--evidence-execution-id", action="append", default=None,
+                   metavar="EXECUTION_ID",
+                   help=("repeatable: real executions the retirement decision "
+                         "relies on. They are kept on the cold-archive card "
+                         "with the reason and the read-time usage summary, so "
+                         "the management basis stays auditable"))
     p.set_defaults(func=cmd_retire)
 
     p = sub.add_parser(

@@ -175,6 +175,10 @@ class TestCompactRules(ReviewCase):
         declared.quality_estimated=False
         recommendation=self.h.selector._from_entry(entry.strategy_id,self.h.profile(task('estimates')),declared).to_dict()
         self.assertEqual(recommendation['expected'],{'cost':{'tool_calls':0}})
+        # An empty forward track is NOT a measured 0% hit rate.
+        self.assertNotIn('hit_rate=0.00, n=0',recommendation['basis'])
+        self.assertIn('NOT estimated',recommendation['basis'])
+        self.assertIn('not_estimated',recommendation['confidence_basis'])
         from or_harness.strategy.vector_recall import _knowledge_entry
         from or_harness.strategy.embedding_index import document_entry,document_digest
         with patch.object(self.h.sbank,'get',return_value=declared):
