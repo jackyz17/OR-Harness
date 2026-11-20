@@ -224,9 +224,8 @@ class ORHarness:
                  prediction_mode: str = "h-x-b-value",
                  execution_context: Optional[Dict[str, Any]] = None,
                  induction_mode: Optional[str] = None):
-        # The outer runner knows its own execution model and current phase
-        # before its first action. Never substitute the predicting model or
-        # another episode's last host. Freeze this declaration in snapshots.
+        # The caller can declare the solving phase and interface before its
+        # first action. Freeze these conditions in snapshots.
         if execution_context is None:
             import os
             raw_context = os.environ.get("OR_EXECUTION_CONTEXT")
@@ -1089,13 +1088,6 @@ class ORHarness:
             retrieval_bounding=bounding,
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
-        if not historical and not context.solving_context.get("execution_host"):
-            from or_harness.world_model.cost_signal import latest_host
-            host = latest_host(self.actions.query(task_id=context.task_id),
-                self.bank.query(task_id=context.task_id),
-                cutoff=snapshot.created_at, episode_id=episode_id)
-            if host:
-                context.solving_context["execution_host"] = host
         selected_entries = {str(target.entry_id) for target in frozen_targets
                             if getattr(target, "entry_id", None)}
         selected_entries.update(str(hit.get("content", {}).get("entry_id"))
@@ -4915,10 +4907,6 @@ class ORHarness:
             record.method_planned = method_planned
         from or_harness.strategy.rule_versions import declared_task_identity
         record.execution_features["task_identity"] = declared_task_identity(task)
-        runner = (pre.harness_state or {}).get("execution_context") or {}
-        if runner:
-            record.execution_features["execution_host"] = {k: copy.deepcopy(runner[k])
-                for k in ("host", "model", "agent_id", "source", "source_ref") if k in runner}
         # Evidence completeness: preserve the coupling-aware representation
         # snapshot (CIR) that was actually solved. Snapshot only — CIR
         # extraction and coupling understanding are untouched. The PARSED

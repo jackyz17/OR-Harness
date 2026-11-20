@@ -9,7 +9,7 @@ Use this reference to read a `plan-next` forecast and inspect the evidence behin
 | Material | Where to read it | What it contributes |
 |---|---|---|
 | Problem | `joint` in storage, `joint_problem` in the request | Original task text, mathematical attributes, structural profile and their sources |
-| Solving conditions | `solving_context` and `execution_constraints` | Current progress, declared limits and usage, available tools, and known execution host, model and phase |
+| Solving conditions | `solving_context` and `execution_constraints` | Current progress, declared limits and usage, available tools, known modelling phase and solver interface |
 | Retrieved evidence | `retrieval` in storage, `retrieval_evidence` in the request | Relevant executions, structural recommendations and applicable rule versions |
 | Capability evidence | `capability` in storage, `harness_capability` in the request | Evidence about memory, prediction, planning, retrieval and tools. Each source reports `no_evidence`, `indirect_evidence` or `direct_evidence`. `capability_version` identifies the configuration and memory content |
 | Published feedback | `strategy_outcome_calibration`, `prediction_execution_pairs`, `prediction_reminders` and `hplus_feedback` in the request | Prior observations, selected cases and completed induction reviews |
@@ -27,13 +27,13 @@ A new decision can draw on published calibration and completed reviews available
 | Request block | What the model can use |
 |---|---|
 | `strategy_outcome_calibration.conditional_g` | Attributable passes, failures and unknowns on comparable tasks. Match the observation rule, metric, scope and known structure and execution settings |
-| `cost_evidence` | Raw cost ranges and executed cases that match the execution host and model, measurement scope, known phase and solving conditions |
-| `implementation_r_evidence` | Technical outcomes from closed attempts with matching execution agent and solver interface, with independent episode counts and source references |
+| `cost_evidence` | Raw cost ranges and executed cases that match the measurement scope, known phase and solving conditions |
+| `implementation_r_evidence` | Technical outcomes from closed attempts with matching solver interface, with independent episode counts and source references |
 | `prediction_execution_pairs` | Prior predictions paired with performed methods, checks, measured results, failures and comparability notes |
 | `prediction_reminders` | Applicable risk and interval observations. Global G and C residuals remain available in calibration diagnostics |
 | `hplus_feedback` | Relevant settled receipts with the original learning hypothesis, actual facts, supported conclusion and exact rule versions |
 
-`--execution-context` or `OR_EXECUTION_CONTEXT` can declare the execution host, model, interface and phase on the first decision. The prediction provider's identity tracks forecast calibration. The execution identity determines which actual costs and technical failures are comparable.
+`--execution-context` or `OR_EXECUTION_CONTEXT` can declare the solver interface and modelling phase on the first decision, for example `{"solver_interface":"highs","phase":"initial_modelling"}`. Execution-agent consistency is managed by the caller. The prediction provider's identity continues to track forecast calibration.
 
 Request selection preserves missing support as unknown and marks background or partial evidence. The input budget (`OR_HARNESS_INPUT_BUDGET_TOKENS`) can trim selected evidence further. Inspect the saved request diagnostics to see what survived. See [published feedback and calibration](episode_closeout.md#published-feedback) and [H+ learning labels](induction.md#read-publication-completion-and-learning-separately) for the observation rules.
 

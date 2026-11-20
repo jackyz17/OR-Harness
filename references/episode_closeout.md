@@ -106,7 +106,7 @@ For a timed-out execution, a sourced cause assessment in `technical_failure_evid
 
 For earlier execution records, the framework can derive technical facts from captured error, result, or protocol evidence. Historical predictions without the technical R convention still use the `error_class == 'model'` event rule for their own comparisons. Current-rule Brier is grouped under `implementation_failure@wm-r-technical/1`.
 
-`technical_r` reports `n_actual_attempts`, `n_known_labels`, `n_reported_probabilities`, and `n_scorable`. Attempt counts cover recorded executions in the closed window, including attempts whose R was omitted or never predicted. Each execution is counted once per task-episode. Brier uses the original probability of each comparable prediction with a known same-rule label. Groups use actual execution-agent identity, solver interface, family, and problem class. Later predictions can receive up to three applicable groups in `implementation_r_evidence`, with counts, source IDs, and available script references. Label and Brier support count independent episodes separately.
+`technical_r` reports `n_actual_attempts`, `n_known_labels`, `n_reported_probabilities`, and `n_scorable`. Attempt counts cover recorded executions in the closed window, including attempts whose R was omitted or never predicted. Each execution is counted once per task-episode. Brier uses the original probability of each comparable prediction with a known same-rule label. Groups use solver interface, family, and problem class. Later predictions can receive up to three applicable groups in `implementation_r_evidence`, with counts, source IDs, and available script references. Label and Brier support count independent episodes separately.
 
 ### C observations
 

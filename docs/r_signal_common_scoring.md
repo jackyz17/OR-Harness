@@ -18,11 +18,11 @@ R 固定为当前执行 agent、求解器接口和运行条件下，一次实现
 
 ## 已有发布窗口内的轻量参照
 
-`close-episode` 从现有执行记录发布 `technical_r`，包括未做预测、未报 R 的可信执行。按实际执行 agent（host/model/可选 agent_id）、实际记录的 solver interface 和粗结构分组。正常 runner 在首次预测前通过既有 execution_context 或 OR_EXECUTION_CONTEXT 传入已知身份和接口，执行回执保存实际身份；身份/接口缺失不会借用其他 agent 的基率。
+`close-episode` 从现有执行记录发布 `technical_r`，包括未做预测、未报 R 的可信执行。按实际记录的 solver interface 和粗结构分组。执行 agent 的一致性由调用方管理，框架不采集执行身份用于分组或筛选。`execution_context` 或 `OR_EXECUTION_CONTEXT` 仅声明已知求解器接口与建模阶段。
 
 下一次请求的 `implementation_r_evidence` 在体积裁剪前选取最多三个适用分组，只展示失败/成功/未知、支持范围、执行引用及少量已跑通脚本产物事实。完整统计和 Brier 留在审计汇总；旧分类器的实现失败率不会成为新 R 的先验。开放 episode、结算后的离线执行和冻结决策之后才发布的结果不会进入该决策历史。
 
-实际通过普通 API 发给替身 provider 的片段、对应结算和计划评分见 [r_signal_common_examples.json](r_signal_common_examples.json)。其中 5 次隔离执行得到 4 个已知标签（2 次失败、2 次成功）和 1 个未知；4 个已报概率中只有 3 个可评分。未预测的正常执行计入成功事实。下一条新任务首提请求收到一个匹配 agent/interface 的简短分组。
+实际通过普通 API 发给替身 provider 的片段、对应结算和计划评分见 [r_signal_common_examples.json](r_signal_common_examples.json)。其中 5 次隔离执行得到 4 个已知标签（2 次失败、2 次成功）和 1 个未知；4 个已报概率中只有 3 个可评分。未预测的正常执行计入成功事实。下一条新任务首提请求收到一个匹配 solver interface 的简短分组。
 
 ## C/R 共同计分
 
@@ -63,4 +63,4 @@ PYTHONPATH=src:tests/harness python -m unittest discover -s tests/harness
 
 回归经过真实的 predict、execute、record、close-episode、下一次 provider 请求及 plan-next 入口，provider 和宿主身份是明示的替身，库均隔离。既有断言已同步新的共同缺项规则；两项受机器调度影响的毫秒级时限测试使用受控时钟，继续断言调用次数、超时状态及已花费成本。
 
-当前工作区运行库没有已记录执行或已关闭 episode；未提供可评估的真实配对样本。这里验证了输入、观测、反馈和计分链路，没有据此宣称 R 的真实判别力或策略选择收益。后续结论需要同口径、有来源、可归因的实际执行样本；正常限时、外部阻断、缺少 agent/interface 和仅有旧错误类的记录仍可能未知。
+当前工作区运行库没有已记录执行或已关闭 episode；未提供可评估的真实配对样本。这里验证了输入、观测、反馈和计分链路，没有据此宣称 R 的真实判别力或策略选择收益。后续结论需要同口径、有来源、可归因的实际执行样本；正常限时、外部阻断、缺少接口和仅有旧错误类的记录仍可能未知。

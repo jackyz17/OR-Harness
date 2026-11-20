@@ -41,7 +41,6 @@ class RCase(GCase):
         self.provider.payload = payload()
         self.h = ORHarness(home=self.home, world_model=self.provider,
             embedding=LocalHashEmbeddingBackend(), execution_context={
-                "host": "test-runner", "model": "execution-model/v1", "agent_id": "agent/v1",
                 "solver_interface": "highs", "phase": "initial_modelling"})
         self.addCleanup(self.h.close)
 
@@ -236,23 +235,31 @@ class TestRFeedback(RCase):
         self.assertNotIn("mean_brier", g)
         self.assertEqual(self.h.calibration_summary()["technical_r"]["coverage"]["n_reported_probabilities"], 0)
 
-    def test_other_agent_interface_and_missing_identity_have_no_prior(self):
+    def test_missing_agent_identity_uses_history_but_other_interface_does_not(self):
         self.body(episode="history")
         self.close_g("history")
-        for index, change in enumerate(({"model": "other-model"}, {"agent_id": "other-agent"})):
-            original = copy.deepcopy(self.h.execution_context)
-            self.h.execution_context.update(change)
-            self.predict_r(episode="other" + str(index))
-            e = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]
-            self.assertFalse(e["groups"])
-            self.h.execution_context = original
         self.provider.payload = payload()
         planned_prediction(self.h,self.task, {"action_type": "execute_strategy", "strategy_id": "S04",
             "solver": "pulp", "method": COUPLED}, "other-interface")
         self.assertFalse(self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]["groups"])
         self.h.execution_context = {}
         self.predict_r(episode="missing")
-        self.assertFalse(self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]["groups"])
+        evidence = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]
+        self.assertEqual(len(evidence["groups"]), 1)
+        self.assertEqual(evidence["missing"], [])
+        self.assertNotIn("execution_agent", evidence)
+        self.assertNotIn("execution_agent", evidence["groups"][0]["conditions"])
+
+    def test_usage_report_identity_does_not_split_technical_history(self):
+        for episode, model in (("first", "model-a"), ("second", "model-b")):
+            r = self.body(episode=episode)
+            self.h.bank.annotate_features(r.execution_id, {
+                "host_usage": {"host": "test-host", "model": model}})
+            self.close_g(episode)
+        stats = self.h.calibration_summary()["technical_r"]
+        self.assertEqual(len(stats["groups"]), 1)
+        self.assertEqual(stats["groups"][0]["technical_successes"], 2)
+        self.assertEqual(stats["groups"][0]["n_distinct_episodes"], 2)
 
 
 class TestCommonCRScoring(RCase):

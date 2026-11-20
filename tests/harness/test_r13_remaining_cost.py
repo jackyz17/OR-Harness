@@ -410,7 +410,7 @@ class TestConditionalCostRequest(CCase):
         request_b = self.provider.requests[-1]
         for request in (request_a, request_b):
             evidence = request["prediction_context"]["cost_evidence"]
-            self.assertEqual(evidence["current_conditions"]["execution_host"]["model"], "executor-model/v1")
+            self.assertNotIn("execution_host", evidence["current_conditions"])
             self.assertEqual(evidence["current_conditions"]["phase"], "existing_model")
             self.assertEqual(len(evidence["reference_ranges"]), 1)
             group = evidence["reference_ranges"][0]
@@ -426,12 +426,12 @@ class TestConditionalCostRequest(CCase):
         groups = build_calibration_summary(self.h)["conditional_cost"]["groups"]
         self.assertEqual(len(groups), 1)
 
-    def test_host_family_phase_and_known_limits_mismatch_withhold_priors(self):
+    def test_family_and_phase_mismatch_withhold_priors_without_agent_filter(self):
         self.make_history("history", REUSE, 8)
-        for episode, options in (("other-host", {"model": "other-executor"}),
-                                 ("initial", {"existing": False})):
-            self.predict_c(episode, **options)
-            self.assertEqual(self.provider.requests[-1]["prediction_context"]["cost_evidence"]["reference_ranges"], [])
+        self.predict_c("other-host", model="other-executor")
+        self.assertEqual(len(self.provider.requests[-1]["prediction_context"]["cost_evidence"]["reference_ranges"]), 1)
+        self.predict_c("initial", existing=False)
+        self.assertEqual(self.provider.requests[-1]["prediction_context"]["cost_evidence"]["reference_ranges"], [])
         self.task["family"] = "scheduling"
         self.predict_c("other-family")
         self.assertEqual(self.provider.requests[-1]["prediction_context"]["cost_evidence"]["reference_ranges"], [])

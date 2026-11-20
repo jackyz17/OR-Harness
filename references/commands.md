@@ -134,7 +134,7 @@ If the plan has no eligible U, read its reason and the saved prediction's `failu
 
 Predict G/C/R/H+ once per candidate under one shared context. Save the scores and select the eligible candidate with highest U. Read `result.selected_prediction_id`, `result.selected_score` and `result.plan.candidates[]`. Use the selected P in `execute`. For a new attempt, get a fresh selection in the same episode.
 
-Use `--cost-scales '{"tool_calls":30}'` to declare resource scales. `--execution-context runner.json` sets the execution host, model, interface and phase, taking precedence over `OR_EXECUTION_CONTEXT`. See [score calculation](strategy_outcome.md#3-score-one-or-more-candidates).
+Use `--cost-scales '{"tool_calls":30}'` to declare resource scales. `--execution-context runner.json` sets the solver interface and modelling phase, taking precedence over `OR_EXECUTION_CONTEXT`. See [score calculation](strategy_outcome.md#3-score-one-or-more-candidates).
 
 ### `orx choose-next --decision ACTION_ID (--prediction P | --chosen spec.json | --rejected) [--note "..."]`
 

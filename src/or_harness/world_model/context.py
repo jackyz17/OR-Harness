@@ -2003,6 +2003,13 @@ class PredictionContext:
             "missing": _dedupe_lines(self.missing),
             "notes": _dedupe_lines(self.notes),
         }
+        # Older frozen contexts may still carry execution-agent metadata.
+        # Keep their stored source intact; it is no longer prediction input.
+        view["solving_context"].pop("execution_host", None)
+        if "execution_context" in view["solving_context"]:
+            from or_harness.world_model.cost_signal import normalize_execution_context
+            view["solving_context"]["execution_context"] = normalize_execution_context(
+                view["solving_context"]["execution_context"])
         if omitted:
             view["omitted"] = omitted
         from or_harness.world_model.g_signal import select_conditional_g, requested_solving_conditions
@@ -2260,11 +2267,10 @@ def build_context(
                  "never appears here"),
     }
     runner = (getattr(snapshot, "harness_state", None) or {}).get("execution_context") or {}
+    from or_harness.world_model.cost_signal import normalize_execution_context
+    runner = normalize_execution_context(runner)
     if runner:
         solving_context["execution_context"] = copy.deepcopy(runner)
-        if runner.get("host") or runner.get("model"):
-            solving_context["execution_host"] = {k: copy.deepcopy(runner[k])
-                for k in ("host", "model", "agent_id", "source", "source_ref") if k in runner}
     if recall_result is None:
         recall_result = {"recommendations": list(
             structural_recommendations or [])}

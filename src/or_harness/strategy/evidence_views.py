@@ -263,7 +263,7 @@ def _compact_pair_cost_fact(row):
     conditions = cost.get("conditions")
     if isinstance(conditions, dict):
         kept_conditions = {}
-        for key in ("family", "phase", "window_coverage", "execution_host",
+        for key in ("family", "phase", "window_coverage",
                     "structure"):
             if conditions.get(key) not in (None, {}, [], ""):
                 kept_conditions[key] = copy.deepcopy(conditions[key])
@@ -289,7 +289,7 @@ def _compact_pair_implementation(row):
     kept = {key: copy.deepcopy(observation[key]) for key in
             ("event", "comparable", "executed", "exit_code", "label",
              "observation_rule_version", "reason", "result_received", "scope",
-             "task_id", "solver_interface", "execution_agent",
+             "task_id", "solver_interface",
              "semantic_attribution")
             if observation.get(key) not in (None, {}, [], "")}
     if observation.get("reusable_script") is not None and ref:

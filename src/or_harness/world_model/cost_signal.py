@@ -123,18 +123,14 @@ def number(value):
     return float(value) if math.isfinite(value) and value >= 0 else None
 
 
-def host_key(info):
-    return {"host": info.get("host"), "model": info.get("model")}
-
-
 def normalize_execution_context(value):
-    """Known runner inputs only; no inferred model, phase or credentials."""
+    """Known solving phase and interface supplied by the caller."""
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise ValueError("execution_context must be an object")
     out = {}
-    for key in ("host", "model", "agent_id", "solver_interface", "phase", "source", "source_ref"):
+    for key in ("solver_interface", "phase", "source", "source_ref"):
         if value.get(key) is not None:
             if not isinstance(value[key], str) or not value[key].strip():
                 raise ValueError("execution_context." + key + " must be nonempty text")
@@ -174,7 +170,6 @@ def cost_conditions(context, candidate=None):
                         "frozen execution_context.phase" if runner.get("phase") else "unknown"),
         "reusable_artifacts": ([{"value": artifact_view,
             "evidence_ref": artifact.get("evidence_ref")} ] if available else []),
-        "execution_host": copy.deepcopy(solving.get("execution_host") or {}),
         "solver_conditions": requested_solving_conditions(candidate, context.execution_constraints),
         "family": (context.joint.profile or {}).get("family"),
         "structure": {k: v for k, v in (context.joint.profile or {}).items()
@@ -182,25 +177,6 @@ def cost_conditions(context, candidate=None):
                                "resource_coupling", "temporal_coupling", "route_complexity")
                       and v is not None and v != {}},
     }
-
-
-def latest_host(actions, records, *, cutoff, episode_id):
-    """Latest real report in this episode, bounded by the frozen snapshot."""
-    reports = []
-    by_execution = {r.execution_id: r for r in records}
-    for action in actions:
-        if str(action.episode_id or "") != str(episode_id or "") or action.source == "hypothetical":
-            continue
-        ended = number(action.ended_at)
-        if ended is None or ended > cutoff:
-            continue
-        info = (action.outcome or {}).get("host_usage") or {}
-        record = by_execution.get(action.linked_execution_id)
-        if record is not None:
-            info = (record.execution_features or {}).get("host_usage") or info
-        if info.get("host") and info.get("model"):
-            reports.append((ended, {**host_key(info), "source_ref": action.action_id}))
-    return max(reports, key=lambda x: x[0])[1] if reports else {}
 
 
 def _call_values(info, anchor, end):
@@ -299,7 +275,7 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
     """Read counters/full spans or a complete timed ledger for this window.
 
     Reports may be referenced from several records/actions. Full-window
-    totals are alternatives, never summands. Conflicting totals or hosts
+    totals are alternatives, never summands. Conflicting totals
     are unknown. Attempt totals are not evidence of the remaining window.
     """
     candidates = []
@@ -314,10 +290,10 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
         info = (action.outcome or {}).get("host_usage")
         if info:
             candidates.append((info, action.action_id))
-    observed, sources, facts, hosts = defaultdict(list), defaultdict(list), {}, []
+    observed, sources, facts = defaultdict(list), defaultdict(list), {}
     rejected, conflicted = [], set()
     if anchor is None:
-        return {}, {}, {}, {}, ["decision anchor unknown"]
+        return {}, {}, {}, ["decision anchor unknown"]
     for info, ref in candidates:
         info = with_output_token_dimension(info)
         identity = info.get("scope_identity") or {}
@@ -393,7 +369,6 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
         if "llm_tokens" in conflicts or "host_rounds" in conflicts:
             call_facts.pop("host_rounds", None)
         if usable:
-            hosts.append(host_key(info))
             for dim, value in usable.items():
                 observed[dim].append(value)
                 sources[dim].append(ref)
@@ -404,16 +379,13 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
             # Timestamps are part of a trusted full-span host observation.
             observed["remaining_latency_s"].append(target_end - anchor)
             sources["remaining_latency_s"].append(ref)
-    host_set = {json.dumps(h, sort_keys=True) for h in hosts}
-    if len(host_set) > 1:
-        return {}, {}, {}, {}, rejected + ["conflicting execution hosts for the same window"]
     actuals = {}
     for dim, values in observed.items():
         if len(set(values)) == 1 and dim not in conflicted:
             actuals[dim] = values[0]
         else:
             rejected.append(dim + ": conflicting reports for the same window")
-    return actuals, dict(sources), hosts[0] if hosts else {}, facts, rejected
+    return actuals, dict(sources), facts, rejected
 
 
 def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor_id,
@@ -432,16 +404,10 @@ def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor
                               "end": end, "end_basis": end_basis}
     if scope != "remaining_to_task_end":
         return
-    actual, sources, host, facts, rejected = scoped_host_observations(
+    actual, sources, facts, rejected = scoped_host_observations(
         actions, records, anchor=anchor, anchor_id=anchor_id,
         end=(end if end_basis == "finish_task" else None), cutoff=cutoff,
         task_id=prediction.candidate.task_id, episode_id=prediction.candidate.episode_id)
-    if not host:
-        recorded_hosts = {json.dumps(host_key(info), sort_keys=True)
-            for r in records if (info := (r.execution_features or {}).get("host_usage") or {})
-            and info.get("host") and info.get("model")}
-        if len(recorded_hosts) == 1:
-            host = json.loads(next(iter(recorded_hosts)))
     for dim in ("llm_tokens", "output_tokens", "tool_calls"):
         legacy = summary.cost.get(dim) or {}
         if dim not in actual and (legacy.get("comparable") or {}).get("value") is not None:
@@ -471,7 +437,6 @@ def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor
                a.ended_at is not None and (end is None or a.ended_at <= end)]
     if repairs:
         facts["repair_actions"] = repairs
-    summary.cost["execution_host"] = host
     summary.cost["work_facts"] = facts
     summary.cost["boundary_exclusions"] = rejected
     observe_remaining_retries(summary,prediction,actions,records,
@@ -487,7 +452,7 @@ def cost_observed_fact(summary, prediction):
             values[dim] = value
     info = prediction.trace.model_info or {}
     conditions = copy.deepcopy(info.get("cost_conditions") or {})
-    conditions["execution_host"] = copy.deepcopy(summary.cost.get("execution_host") or {})
+    conditions.pop("execution_host", None)
     conditions["scope"] = summary.cost.get("scope")
     conditions['retry_observation_rule_version']=retries_convention(prediction)
     conditions["window_coverage"] = ("complete" if
@@ -554,7 +519,7 @@ def conditional_cost_statistics(samples, min_samples=5):
         seen.add(identity)
         # Reusable artifact CONTENT is explanatory, not a grouping key.
         grouping = {k: conditions.get(k) for k in (
-            "execution_host", "scope", "window_coverage", "phase", "family", "structure", "solver_conditions", "actual_solving_conditions",
+            "scope", "window_coverage", "phase", "family", "structure", "solver_conditions", "actual_solving_conditions",
             'retry_observation_rule_version')}
         grouping['retry_observation_rule_version']=conditions.get('retry_observation_rule_version',RETRIES_LEGACY_VERSION)
         requested = conditions.get("solver_conditions") or {}
@@ -597,11 +562,7 @@ def select_cost_evidence(summary, context, candidate, *, max_groups=4):
     """Select applicable history BEFORE generic request-size trimming."""
     current = cost_conditions(context, candidate)
     audit = (summary or {}).get("conditional_cost") or {}
-    host = current["execution_host"]
     def applicable(conditions):
-        other_host = conditions.get("execution_host") or {}
-        if not host.get("host") or not host.get("model") or host_key(other_host) != host_key(host):
-            return False
         if current.get("phase") == "unknown":
             return False
         if conditions.get("window_coverage") != "complete":
@@ -624,6 +585,7 @@ def select_cost_evidence(summary, context, candidate, *, max_groups=4):
     groups.sort(key=lambda g: (len((g["conditions"].get("structure") or {}).keys() & current["structure"].keys()),
                                g.get("n_distinct_episodes") or 0), reverse=True)
     for group in groups:
+        group["conditions"].pop("execution_host", None)
         if group['conditions'].get('retry_observation_rule_version')!=RETRIES_FUTURE_VERSION:
             group['dimensions'].pop('retries',None)
         group["source_refs"] = group["source_refs"][:6]
@@ -641,6 +603,7 @@ def select_cost_evidence(summary, context, candidate, *, max_groups=4):
     from or_harness.world_model.episode_closeout import _compact_method_steps
     cases = cases[:3]
     for case in cases:
+        (case.get("conditions") or {}).pop("execution_host", None)
         if (case.get('conditions') or {}).get('retry_observation_rule_version')!=RETRIES_FUTURE_VERSION:
             (case.get('values') or {}).pop('retries',None)
         case["source_refs"] = (case.get("source_refs") or [])[:6]
@@ -654,9 +617,8 @@ def select_cost_evidence(summary, context, candidate, *, max_groups=4):
         "candidate_work": {"steps_ref": "candidate.method.steps",
                            "reusable_artifacts_ref": "cost_evidence.current_conditions.reusable_artifacts"},
         "reference_ranges": groups[:max_groups] if max_groups is not None else groups, "cases": cases,
-        "missing": ([] if host.get("model") else ["execution-host model identity unavailable"]) +
-                   (["decision phase unavailable"] if current.get("phase") == "unknown" else []),
-        "applicability": "same execution host/model, remaining window, phase, family and solving limits; absent structure is unknown",
+        "missing": (["decision phase unavailable"] if current.get("phase") == "unknown" else []),
+        "applicability": "same remaining window, phase, family and solving limits; absent structure is unknown",
         "note": "Totals already include the work in each reference case. Compare added/saved candidate steps; count each step once. Sparse ranges describe only the cited executions."}
 
 

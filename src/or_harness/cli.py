@@ -2286,7 +2286,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "predictions return not_configured; no other "
                              "command is affected")
     parser.add_argument("--execution-context", default=None, metavar="JSON_OR_FILE",
-                        help="runner execution host/model and known phase, frozen before prediction; "
+                        help="known solving phase and solver interface, frozen before prediction; "
                              "default: $OR_EXECUTION_CONTEXT (JSON or file). This is not --world-model")
     parser.add_argument("--wm-timeout", type=float, default=None,
                         metavar="S",

@@ -122,14 +122,7 @@ def technical_attempt_fact(record):
             and "artifacts.submitted_script" in refs \
             and set(refs).intersection(("artifacts.stderr_clip", "artifacts.workspace_result")):
         fact.update(label=1, source=audit["source"], reason=audit["assessment"], evidence_refs=list(refs))
-    host = features.get("host_usage") or {}
-    runner = features.get("execution_host") or {}
-    if not host.get("host") or not host.get("model"):
-        host = runner
-    elif all(host.get(k) == runner.get(k) for k in ("host", "model")) and runner.get("agent_id"):
-        host = {**host, "agent_id": runner["agent_id"]}
     fact.update(execution_id=record.execution_id, task_id=record.task_id,
-        execution_agent={k: host[k] for k in ("host", "model", "agent_id") if host.get(k)},
         solver_interface=(record.solver or {}).get("name"),
         interface_source="ExecutionRecord.solver.name",
         structure={"family": record.profile_snapshot.family,
@@ -175,7 +168,7 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
             scored.append({"prediction_id": prediction.prediction_id, "identity": identity,
                            "probability": p, "brier": (p - facts[identity]["label"]) ** 2})
     for identity, fact in facts.items():
-        condition = {k: fact[k] for k in ("execution_agent", "solver_interface", "structure")}
+        condition = {k: fact[k] for k in ("solver_interface", "structure")}
         key = json.dumps(condition, sort_keys=True)
         group = groups.setdefault(key, {"conditions": condition, "facts": [], "identities": set()})
         group["facts"].append(fact)
@@ -209,19 +202,14 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
 
 
 def select_r_evidence(summary, context, candidate):
-    current = context.solving_context.get("execution_host") or {}
     runner = context.solving_context.get("execution_context") or {}
     interface = getattr(candidate, "solver", None) or runner.get("solver_interface")
     missing = []
-    if not current.get("host") or not current.get("model"):
-        missing.append("execution agent host/model unknown")
     if not interface:
         missing.append("solver interface unknown")
     groups = []
     for g in ((summary or {}).get("technical_r") or {}).get("groups") or []:
-        other = (g.get("conditions") or {}).get("execution_agent") or {}
-        if missing or any(current.get(k) != other.get(k) for k in ("host", "model", "agent_id")) \
-                or g.get("observation_rule_version") != R_OBSERVATION_VERSION \
+        if missing or g.get("observation_rule_version") != R_OBSERVATION_VERSION \
                 or (g.get("conditions") or {}).get("solver_interface") != interface:
             continue
         structure = (g.get("conditions") or {}).get("structure") or {}
@@ -230,14 +218,15 @@ def select_r_evidence(summary, context, candidate):
                 and wanted_class != structure["problem_class"]:
             continue
         item = copy.deepcopy(g)
+        item["conditions"].pop("execution_agent", None)
         for diagnostic in ("mean_brier", "n_scorable", "n_reported_probabilities", "n_scored_distinct_episodes", "brier_support"):
             item.pop(diagnostic, None)  # prediction diagnostics stay in audit, not the empirical prior
         item["source_refs"] = item["source_refs"][:6]
-        item["support_note"] = "closed attempts for this agent/interface; sparse or missing structure supports these cases only"
+        item["support_note"] = "closed attempts for this solver interface; sparse or missing structure supports these cases only"
         groups.append(item)
     groups.sort(key=lambda g: (g["conditions"].get("structure") or {}).get("family") !=
                              (context.joint.profile or {}).get("family"))
-    return {**R_CONVENTION, "execution_agent": copy.deepcopy(current), "solver_interface": interface,
+    return {**R_CONVENTION, "solver_interface": interface,
             "groups": groups[:3], "missing": missing,
             "support": "applicable_facts" if groups else "insufficient_evidence",
             "note": "use applicable empirical facts; shared base rates or similar candidate probabilities are allowed when supported"}

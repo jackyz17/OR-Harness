@@ -15,8 +15,7 @@ from or_harness.api import ORHarness
 from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
 from tests.harness.c_fixtures import CCase, REUSE
 
-RUNNER = {"host": "test-host", "model": "executor-model/v1",
-          "phase": "initial_modelling", "source": "test runner configuration"}
+RUNNER = {"phase": "initial_modelling", "source": "test runner configuration"}
 
 
 class TestFirstProposal(CCase):
@@ -51,7 +50,7 @@ class TestFirstProposal(CCase):
         self.assertEqual(status, 0, output.getvalue())
         return self.provider.requests[-1]["prediction_context"]
 
-    def test_ordinary_first_cli_request_receives_history_from_runner_environment(self):
+    def test_first_cli_request_receives_cost_history_without_agent_identity(self):
         self.history_without_seed_actions()
         task = dict(self.task, task_id="brand-new-task")
         self.assertFalse(self.h.actions.query(task_id=task["task_id"]))
@@ -60,7 +59,8 @@ class TestFirstProposal(CCase):
         e = view["cost_evidence"]
         self.assertEqual((len(e["reference_ranges"]), len(e["cases"])), (1, 1))
         self.assertEqual(e["current_conditions"]["phase"], "initial_modelling")
-        self.assertEqual(e["current_conditions"]["execution_host"]["model"], RUNNER["model"])
+        self.assertNotIn("execution_host", e["current_conditions"])
+        self.assertNotIn("execution_host", view["solving_context"])
         self.assertIn("execution_context", e["current_conditions"]["phase_basis"])
         actions=self.h.actions.query(task_id=task["task_id"])
         self.assertEqual(len(actions),1)
@@ -72,7 +72,7 @@ class TestFirstProposal(CCase):
 
     def test_explicit_runner_flag_overrides_environment_and_unknown_inputs_stay_unknown(self):
         self.history_without_seed_actions()
-        with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": json.dumps(dict(RUNNER, model="other-host-model"))}):
+        with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": json.dumps(dict(RUNNER, phase="existing_model"))}):
             view = self.call_cli(dict(self.task, task_id="explicit"), explicit=RUNNER)
             self.assertEqual(len(view["cost_evidence"]["cases"]), 1)
         with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": ""}):
@@ -80,7 +80,7 @@ class TestFirstProposal(CCase):
         e = view["cost_evidence"]
         self.assertFalse(e["reference_ranges"])
         self.assertEqual(e["current_conditions"]["phase"], "unknown")
-        self.assertIn("execution-host model identity unavailable", e["missing"])
+        self.assertEqual(e["missing"], ["decision phase unavailable"])
 
     def test_file_configuration_and_frozen_context_do_not_read_future_runner_state(self):
         config = Path(self.home) / "runner.json"
@@ -90,14 +90,13 @@ class TestFirstProposal(CCase):
         self.addCleanup(h.close)
         snapshot = h.snapshot(self.task, "first")
         ctx = h.build_prediction_context(self.task, "first")
-        h.execution_context.update(model="later-model", phase="existing_model")
+        h.execution_context.update(phase="existing_model")
         p = h.predict_strategy_outcome(self.task, {"action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE},
             "first", context=h.get_prediction_context(ctx.context_id))
         e = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(e["current_conditions"]["execution_host"]["model"], RUNNER["model"])
         self.assertEqual(e["current_conditions"]["phase"], "initial_modelling")
         historical = h.build_prediction_context(self.task, "first", snapshot=snapshot)
-        self.assertEqual(historical.solving_context["execution_host"]["model"], RUNNER["model"])
+        self.assertNotIn("execution_host", historical.solving_context)
         self.assertEqual(p.trace.model_info["cost_conditions"]["phase"], "initial_modelling")
 
     def test_real_model_progress_advances_the_initial_phase(self):
@@ -107,6 +106,20 @@ class TestFirstProposal(CCase):
         self.h.report_action("model", self.task, "first", outcome={"artifact": "model.lp", "status": "available"})
         later = self.predict_g(episode="first")
         self.assertEqual(later.trace.model_info["cost_conditions"]["phase"], "existing_model")
+
+    def test_cost_history_is_not_split_by_usage_report_model(self):
+        self.history_without_seed_actions()
+        p = planned_prediction(self.h, self.task, {
+            "action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE}, "second-history")
+        r = self.run_g(p)
+        self.check_g(r)
+        self.finish_c(p, model="another-execution-model")
+        view = self.call_cli(dict(self.task, task_id="new-task"), explicit=RUNNER)
+        evidence = view["cost_evidence"]
+        self.assertEqual(len(evidence["reference_ranges"]), 1)
+        self.assertEqual(evidence["reference_ranges"][0]["n_distinct_episodes"], 2)
+        self.assertEqual(len(evidence["cases"]), 2)
+        self.assertNotIn("execution_host", evidence["reference_ranges"][0]["conditions"])
 
 
 class TestHostMeterIntegrity(CCase):
