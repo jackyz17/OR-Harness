@@ -1059,6 +1059,36 @@ class TestCalibrationGrouping(M4Case):
         h.close_episode(task_id, episode)
         return h
 
+    def test_paired_feedback_display_order_does_not_change_calibration(self):
+        """T7: the display ordering is a selection concern only.
+
+        The same evaluated window yields the same n_samples / abs / signed
+        errors before and after rebuilding the paired-feedback block, and
+        the published calibration group is byte-for-byte unchanged.
+        """
+        from or_harness.world_model import episode_closeout as ec
+        h = self._close_with_predictions(n=2)
+        key = (GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
+               + OBS_RULE)
+        before = h.calibration_summary(min_samples=1)["groups"][key]
+        self.assertEqual(before["n_samples"], 2)
+        # GOOD_PAYLOAD predicts 0.8 and the faithful run passes: 0.2 errors.
+        self.assertAlmostEqual(before["mean_benefit_abs_error"], 0.2)
+        self.assertAlmostEqual(before["mean_benefit_signed_error"], 0.2)
+        block = ec.build_paired_feedback(h)
+        self.assertEqual(block["n_pairs_included"] + block["n_pairs_omitted"],
+                         block["n_pairs_total"])
+        selected = ec.select_paired_feedback(
+            block,
+            candidate_methods=[{"method": {"name": "exact milp solve"}}],
+            task_id="t1")
+        self.assertEqual(selected["n_pairs_included"]
+                         + selected["n_pairs_omitted"],
+                         selected["n_pairs_available"])
+        ec.republish_calibration(h)
+        after = h.calibration_summary(min_samples=1)["groups"][key]
+        self.assertEqual(after, before)
+
     def test_correlated_predictions_do_not_cross_the_threshold(self):
         # FIVE predictions bound to ONE execution (one episode): the old
         # behaviour counted the predictions and reported "measured".

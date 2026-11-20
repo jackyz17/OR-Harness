@@ -5025,10 +5025,12 @@ def calibration_summary_for_context(harness, *,
 #:
 #: r12 raises the default well above the old 8000: the deployed model has a
 #: 256k context, and 8000 characters (a couple of pairs) starved the model of
-#: its OWN past accuracy. This is a CEILING, not a target — the block is only
-#: as large as the material it has, and it is reported with used/n-omitted.
-#: A smaller deployment overrides it downward.
-DEFAULT_PAIRED_FEEDBACK_CHARS = 64000
+#: its OWN past accuracy. 112000 covers a full 12-pair display with roughly
+#: 15% headroom (the 26-pair window's 8 largest pairs used 63,507 chars).
+#: This is a CEILING, not a target — the block is only as large as the
+#: material it has, and it is reported with used/n-omitted. A smaller
+#: deployment overrides it downward.
+DEFAULT_PAIRED_FEEDBACK_CHARS = 112000
 
 
 def _paired_feedback_budget() -> int:
@@ -5122,9 +5124,12 @@ def build_paired_feedback(
     r12 ORDERING and SHARING (so a small budget shows the most useful
     material, and the block does not repeat itself):
 
-    - rows are ordered MOST-RELEVANT-FIRST: failures and repairs, then the
-      most RECENT history, then the rest — never a raw oldest-first scan
-      that lets one early long record hold the budget forever;
+    - rows are ordered LABELS FIRST, EXECUTION ERRORS LAST: a pair with an
+      observed G label (a real failure or success) comes before an unlabeled
+      one; among labeled rows a failure precedes a success; execution-error
+      rows (whose G label is unobserved) are shown last, then the most RECENT
+      history — never a raw oldest-first scan that lets one early long record
+      hold the budget forever, and never a crash ahead of labeled material;
     - the model identity and the observation-rule version are stated ONCE
       at the block level instead of on every row (they are the same for the
       whole block), and each row carries only its ``evaluation_id``;
@@ -5183,18 +5188,14 @@ def build_paired_feedback(
         n_total += 1
         rows.append((stored_evaluation, evaluation, row))
 
-    # RELEVANCE-FIRST ordering. The plan's priority: cases relevant to the
-    # current candidate, recent failures and repairs, then successes and
-    # different-condition cases. Since the block is global (not per
-    # candidate), the order is: failures/repairs first, then most RECENT.
-    # This stops an early long record from holding the budget forever.
-    def _is_failure(row: Dict[str, Any]) -> bool:
-        return bool(row.get("failure_classes")) \
-            or row.get("execution_status") in ("error", "timeout") \
-            or row.get("risk_actual") is not None \
-            and any((e.get("label") == "occurred")
-                    for e in row.get("risk_actual") or [])
-
+    # LABELS-FIRST ordering. A pair with an OBSERVED G label (a real failure
+    # or a real success) is the calibration material a prediction needs; an
+    # execution error has an UNOBSERVED label for G (benefit.observed is
+    # null) and only speaks to R. Order:
+    #   labeled first, labeled failures before labeled successes,
+    #   then unlabeled/execution-error rows, then most RECENT.
+    # This stops an early long record from holding the budget forever, and
+    # stops crashes from filling the block ahead of labeled cases.
     def _recency(stored_evaluation) -> float:
         return float(getattr(stored_evaluation, "created_at", 0.0) or 0.0)
 
@@ -5202,8 +5203,8 @@ def build_paired_feedback(
 
     def _sort_key(item):
         index, (stored_evaluation, _evaluation, row) = item
-        return (0 if _is_failure(row) else 1,
-                -_recency(stored_evaluation), index)
+        return _paired_feedback_order_key(
+            row, _recency(stored_evaluation), index)
 
     indexed.sort(key=_sort_key)
 
@@ -5249,9 +5250,11 @@ def build_paired_feedback(
         "n_pairs_unreadable": 0,
         "budget_chars": budget,
         "used_chars": used,
-        "ordering": ("failures/repairs first, then most recent: the budget "
-                     "shows the most useful material rather than an "
-                     "oldest-first scan"),
+        "ordering": ("labels first, execution errors last: a labeled failure "
+                     "or labeled success is calibration material, while an "
+                     "execution error is UNOBSERVED for G and is shown only "
+                     "after labeled cases; within each group, most recent "
+                     "first"),
         "risk_reason_legend": dict(RISK_REASON_LEGEND),
         "basis": ("derived from CLOSED episodes' stored evaluations in the "
                   "current window; no model call, no re-scoring, no new "
@@ -5266,9 +5269,10 @@ def build_paired_feedback(
     if omitted:
         out["omission_note"] = (
             f"{omitted} pair(s) were omitted to stay within the character "
-            "budget after {len(included)} were included (failures/recent "
-            "first); they remain available through `orx calibration` and the "
-            "evaluation store — the omission is reported, never silent")
+            f"budget after {len(included)} were included (labeled cases "
+            "first, execution errors last, then most recent); they remain "
+            "available through `orx calibration` and the evaluation store — "
+            "the omission is reported, never silent")
     if not rows:
         out["note"] = ("no closed-episode prediction-execution pairs exist "
                        "in the window yet: a cold start carries no paired "
@@ -5300,10 +5304,13 @@ def _selection_meta(indexed_rows: Sequence[Tuple[int, Dict[str, Any]]]
     """The lightweight per-row index a later relevance selection reads.
 
     Deliberately SMALL: it names the candidate/method, the condition handle
-    (task/cell/family/strategy), the executions the pair covers and whether
-    it failed — never the methods' steps or the prediction's numbers, which
-    live in the full row. It is a DERIVED field of the published block, so
-    the read path never has to scan the bank to know what is available.
+    (task/cell/family/strategy), the executions the pair covers, whether it
+    carries an observed G label, whether it failed and whether that failure
+    was an execution error — never the methods' steps or the prediction's
+    numbers, which live in the full row. It is a DERIVED field of the
+    published block, so the read path never has to scan the bank to know what
+    is available. A block published before this index carried ``has_label`` /
+    ``is_execution_error`` reads them as ``False`` (the legacy default).
 
     ``pair_ref`` is the BODY's identity. ``index`` is only a stable
     tiebreak within the block that produced this meta; it is never used to
@@ -5329,7 +5336,9 @@ def _selection_meta(indexed_rows: Sequence[Tuple[int, Dict[str, Any]]]
                 [method.get("name")] + list(method.get("steps") or [])),
             "action_id": row.get("action_id"),
             "execution_ids": list(row.get("execution_ids") or []),
-            "is_failure": _is_genuine_failure(row),
+            "has_label": _has_g_label(row),
+            "is_failure": _is_g_failure(row),
+            "is_execution_error": _is_execution_error(row),
         })
     return meta
 
@@ -5493,16 +5502,20 @@ def select_paired_feedback(
     ``pairs`` now holds only the SELECTED rows, each carrying
     ``selected_reason``, ``relevance`` and ``background``. The counts
     distinguish what was AVAILABLE (after the model/scope filter) from what
-    was SELECTED (the display ceiling) from what was OMITTED (relevance or
-    ceiling), so a reader can never mistake the 6 shown for the calibration
-    population.
+    was SELECTED (the display ceiling) from what was OMITTED (labels,
+    relevance, quota or ceiling), so a reader can never mistake the shown
+    set for the calibration population.
 
-    The bounded set is chosen by ``_row_relevance``: pairs tied to the
-    current retrieval or to a candidate's declared method first, then the
-    same task/cell, then a weak strategy-id match; among equal rank, failures
-    and repairs are kept BEFORE successes and the most recent come first.
-    Background material (score 0) is added ONLY when nothing relevant exists,
-    and is marked as such. An empty pool yields an EMPTY selection with a
+    The bounded set is ordered LABELS FIRST, EXECUTION ERRORS LAST: a pair
+    with an observed G label (a real success/failure) outranks an unlabeled
+    one, a labeled failure outranks a labeled success, and an execution error
+    is UNOBSERVED for G so it never displaces labeled material. Execution
+    errors hold at most :data:`EXECUTION_ERROR_PAIR_LIMIT` display slots, and
+    the rest are counted in ``n_pairs_omitted``. Within a group the order is
+    ``_row_relevance`` (retrieval/method/task/cell/strategy match), then
+    recency. Background material (score 0) is added ONLY when nothing
+    relevant exists, and is marked as such. An empty pool yields an EMPTY
+    selection with a
     ``missing`` note — a cold start never invents history.
     """
     raw_pairs = [pair for pair in (block.get("pairs") or [])
@@ -5581,6 +5594,7 @@ def select_paired_feedback(
         out["n_pairs_available"] = 0
         out["n_pairs_included"] = 0
         out["n_pairs_omitted"] = 0
+        out["n_pairs_execution_error"] = 0
         out["n_pairs_unreadable"] = unreadable
         if stale_index:
             out["n_pairs_index_without_body"] = stale_index
@@ -5623,6 +5637,7 @@ def select_paired_feedback(
             scope_omitted += 1
             continue
         scored.append((score,
+                       0 if entry.get("has_label") else 1,
                        0 if entry.get("is_failure") else 1,
                        # Directory ORDER, not the stale original position:
                        # the ordering stays total and stable without
@@ -5630,11 +5645,13 @@ def select_paired_feedback(
                        position,
                        entry, reasons))
     out["n_pairs_available"] = len(scored)
+    out["n_pairs_execution_error"] = sum(
+        1 for item in scored if item[4].get("is_execution_error"))
     out["n_pairs_unreadable"] = unreadable
     out["n_pairs_readable"] = len(pairs)
     # The published block's OWN budget counts are not this selection's
-    # counts: keep them apart so "43 in the window, 6 carried, 6 readable,
-    # 6 displayed" can never be collapsed into one misleading number.
+    # counts: keep them apart so "43 in the window, 12 carried, 12 readable,
+    # 12 displayed" can never be collapsed into one misleading number.
     out["n_pairs_publish_total"] = block.get("n_pairs_total")
     out["n_pairs_publish_included"] = block.get("n_pairs_included")
     out["n_pairs_publish_omitted"] = block.get("n_pairs_omitted")
@@ -5655,21 +5672,25 @@ def select_paired_feedback(
         "n_pairs_total is the calibration window; n_pairs_publish_included / "
         "n_pairs_publish_omitted are how many bodies the published block kept "
         "or left out for its size budget; n_pairs_readable / n_pairs_available "
-        "are what THIS block can actually offer; n_pairs_included is what was "
-        "selected for display and n_pairs_omitted is what the display ceiling "
-        "or relevance left out")
+        "are what THIS block can actually offer; n_pairs_execution_error "
+        "counts the execution-error pairs among those available (unobserved "
+        "for G, never a failure label); n_pairs_included is what was selected "
+        "for display and n_pairs_omitted is what the label order, relevance, "
+        "execution-error quota or display ceiling left out, so the two always "
+        "add up to n_pairs_available")
     if scope_omitted:
         out["selection"]["scope_omitted"] = scope_omitted
         out["selection"]["scope_filter"] = str(scope)
-    # HIGHEST relevance first, then genuine FAILURES before successes (a
-    # lesson needs the failures), then the block's own order.
-    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+    # LABELED FIRST, then highest relevance, then labeled FAILURES before
+    # labeled successes (a calibration lesson needs the failures), then the
+    # block's own order; execution errors are unlabeled and fall last.
+    scored.sort(key=lambda t: (t[1], -t[0], t[2], t[3]))
 
     selected: List[Dict[str, Any]] = []
-    omitted = 0
     background = 0
     missing_body = 0
     used_per_strategy: Dict[str, int] = {}
+    execution_errors_shown = 0
 
     def _append(score: int, entry: Dict[str, Any],
                 reasons: List[str]) -> bool:
@@ -5688,46 +5709,59 @@ def select_paired_feedback(
         selected.append(row)
         return True
 
-    # Pass 1: the genuinely RELEVANT pairs, in relevance order but with
-    # failures before successes WITHIN each relevance rank, so the bounded
-    # set never becomes all-success or all-failure. Repeated retries of one
-    # (task, strategy) may hold at most two slots, so one candidate cannot
-    # crowd the others out.
-    for score, _fail, _position, entry, reasons in scored:
+    def _over_execution_error_quota(entry: Dict[str, Any]) -> bool:
+        return (bool(entry.get("is_execution_error"))
+                and execution_errors_shown >= EXECUTION_ERROR_PAIR_LIMIT)
+
+    # Pass 1: the genuinely RELEVANT pairs, LABELED cases first. A labeled
+    # failure precedes a labeled success within the same relevance group, so
+    # the bounded set carries both. Execution-error pairs (unobserved for G)
+    # hold at most EXECUTION_ERROR_PAIR_LIMIT display slots and never
+    # displace labeled material; the rest are counted in n_pairs_omitted.
+    # Repeated retries of one (task, strategy) may hold at most two slots, so
+    # one candidate cannot crowd the others out.
+    for score, _has_label, _fail, _position, entry, reasons in scored:
         if score == 0:
             continue
         if len(selected) >= cap:
-            omitted += 1
             continue
         bucket = f"{entry.get('task_id')}|{entry.get('strategy_id')}"
         if used_per_strategy.get(bucket, 0) >= 2:
-            omitted += 1
+            continue
+        if _over_execution_error_quota(entry):
             continue
         if not _append(score, entry, reasons):
             missing_body += 1
             continue
         used_per_strategy[bucket] = used_per_strategy.get(bucket, 0) + 1
+        if entry.get("is_execution_error"):
+            execution_errors_shown += 1
     # Pass 2: BACKGROUND material (no direct relevance signal). Added ONLY
     # when the relevant set is EMPTY, in a SMALL bounded number, and every
     # row is MARKED background — a cold-ish pool points at representative
-    # recent history without passing it off as relevance.
+    # recent history without passing it off as relevance. The execution-error
+    # quota still applies here: a pool of crashes stays small and reported.
     if not selected:
-        for score, _fail, _position, entry, reasons in scored:
+        for _score, _has_label, _fail, _position, entry, reasons in scored:
             if len(selected) >= min(cap, BACKGROUND_PAIR_LIMIT):
-                omitted += 1
                 continue
-            if not _append(score, entry, reasons):
+            if _over_execution_error_quota(entry):
+                continue
+            if not _append(_score, entry, reasons):
                 missing_body += 1
                 continue
             background += 1
-    else:
-        omitted += sum(1 for t in scored if t[0] == 0)
+            if entry.get("is_execution_error"):
+                execution_errors_shown += 1
 
     out["pairs"] = selected
     out.update(case_comparisons_for_rows(
         block.get("same_task_comparisons") or same_task_comparisons(pairs), selected, cap))
     out["n_pairs_included"] = len(selected)
-    out["n_pairs_omitted"] = omitted
+    # Every AVAILABLE pair is either shown or omitted: the two counts cannot
+    # drift apart (an execution-error quota drop, a per-candidate cap, a
+    # background drop, or a missing body are all reported omissions).
+    out["n_pairs_omitted"] = len(scored) - len(selected)
     out["n_background"] = background
     if missing_body:
         out["n_pairs_missing_body"] = missing_body
@@ -5735,15 +5769,18 @@ def select_paired_feedback(
             (out.get("integrity_note", "") + " ").strip()
             + f"{missing_body} selected directory entr(ies) had no readable "
               "body at lookup time; they were skipped, not shown as cases")
-    out["ordering"] = ("by relevance to THIS decision (recall link, declared "
-                       "method, same task/cell, strategy hint); within a "
-                       "relevance rank, genuine failures and repairs before "
-                       "successes, then the most recent")
+    out["ordering"] = ("labeled cases first, execution errors last: a labeled "
+                       "failure precedes a labeled success within a relevance "
+                       "group, execution-error pairs (unobserved for G) hold "
+                       f"at most {EXECUTION_ERROR_PAIR_LIMIT} display slots "
+                       "and never displace labeled material; then by "
+                       "relevance and the block's own order")
     out["basis"] = block.get("basis")
-    out["note"] = ("relevance ranks failures/repairs before successes and "
-                   "the most recent first within a rank; a low relevance is "
-                   "a LOW RELEVANCE, never a claim that two methods are the "
-                   "same")
+    out["note"] = ("labels rank before relevance: a crash is UNOBSERVED for G "
+                   "(never a zero) and is shown only after labeled cases; "
+                   "among labeled cases a failure precedes a success; a low "
+                   "relevance is a LOW RELEVANCE, never a claim that two "
+                   "methods are the same")
     if background:
         out["background_note"] = (
             f"{background} pair(s) are BACKGROUND material (no direct "
@@ -5852,14 +5889,59 @@ def paired_feedback_selection_from_block(
 
 #: Default ceiling on the number of SELECTED pairs a request shows. NOT a
 #: calibration window: it bounds the display, while the full published
-#: window stays the calibration population. Overridable by
+#: window stays the calibration population. 12 leaves room for labeled
+#: failures AND labeled successes after the execution-error pairs are
+#: demoted (see :func:`select_paired_feedback`). Overridable by
 #: ``OR_HARNESS_PAIRED_FEEDBACK_MAX``.
-DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS = 6
+DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS = 12
 
 #: How many BACKGROUND pairs (no direct relevance signal) may stand in when
 #: NOTHING relevant exists. Deliberately small: background material is a
 #: pointer at representative history, not a substitute for relevance.
 BACKGROUND_PAIR_LIMIT = 3
+
+#: How many EXECUTION-ERROR pairs (crashed / timed out) may hold DISPLAY
+#: slots. Their G label is unobserved, so they must not crowd out labeled
+#: successes and failures; the rest are counted in ``n_pairs_omitted``.
+EXECUTION_ERROR_PAIR_LIMIT = 2
+
+
+def _is_execution_error(row: Dict[str, Any]) -> bool:
+    """Whether the pair's execution CRASHED or TIMED OUT.
+
+    Such a pair's G label is UNOBSERVED (``benefit.observed`` is None), never
+    a failure and never a zero. Kept SEPARATE from
+    :func:`_is_genuine_failure`: the R/technical side still needs the broader
+    "an execution failed" fact, while this helper only classifies the G
+    display. It never relabels the R event.
+    """
+    return row.get("execution_status") in ("error", "timeout")
+
+
+def _has_g_label(row: Dict[str, Any]) -> bool:
+    """Whether the pair carries an OBSERVED G label (current or legacy row).
+
+    ``benefit.observed`` is the current home; a legacy pair may carry the
+    same fact under ``g_observed_fact.observed``. Both absent means the pair
+    is UNLABELED (an execution error, a pending check, ...), which must never
+    outrank a labeled case in the calibration display.
+    """
+    benefit = row.get("benefit")
+    if isinstance(benefit, dict) and benefit.get("observed") is not None:
+        return True
+    fact = row.get("g_observed_fact")
+    return isinstance(fact, dict) and fact.get("observed") is not None
+
+
+def _is_g_failure(row: Dict[str, Any]) -> bool:
+    """Whether the pair is a LABELED failure FOR G ordering/display.
+
+    An execution error is unobserved for G (its label is ``None``), so it is
+    NOT a failure here even though :func:`_is_genuine_failure` reports the
+    execution failure for the R/technical side. This function decides
+    ordering and display only: it changes no label and no calibration number.
+    """
+    return _is_genuine_failure(row) and not _is_execution_error(row)
 
 
 def _is_genuine_failure(row: Dict[str, Any]) -> bool:
@@ -5875,6 +5957,22 @@ def _is_genuine_failure(row: Dict[str, Any]) -> bool:
         return True
     return any((e.get("label") == "occurred")
                for e in row.get("risk_actual") or [])
+
+
+def _paired_feedback_order_key(row: Dict[str, Any], recency: float,
+                               index: int) -> Tuple[int, int, float, int]:
+    """Publish-time ordering of one pair: LABELS FIRST, execution errors last.
+
+    The G calibration material is a pair with an observed label (a real
+    failure or a real success). An execution error is UNOBSERVED for G
+    (``benefit.observed`` is null), so it is ordered after every labeled row;
+    a labeled failure is ordered before a labeled success; ties fall back to
+    recency (newest first) and the window order. This decides the order in
+    which the character budget is spent — it never drops or relabels a row.
+    """
+    return (0 if _has_g_label(row) else 1,
+            0 if _is_g_failure(row) else 1,
+            -float(recency or 0.0), int(index))
 
 
 def _paired_feedback_max_pairs() -> int:

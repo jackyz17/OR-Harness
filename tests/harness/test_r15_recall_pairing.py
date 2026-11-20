@@ -44,6 +44,11 @@ from or_harness.world_model.context import (  # noqa: E402
     evidence_identity,
 )
 from or_harness.world_model.episode_closeout import (  # noqa: E402
+    DEFAULT_PAIRED_FEEDBACK_CHARS,
+    DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS,
+    _paired_feedback_budget,
+    _paired_feedback_max_pairs,
+    _paired_feedback_order_key,
     select_paired_feedback,
     selection_signature,
 )
@@ -280,8 +285,9 @@ class TestProjectionIsSendTime(unittest.TestCase):
 
 
 def _pair(index, *, task_id, strategy_id, executions, failure_classes=None,
-          method_name=None, cell=None, scope="attempt", status=None):
-    return {
+          method_name=None, cell=None, scope="attempt", status=None,
+          observed=None, eligibility=None, g_observed=None):
+    row = {
         "evaluation_id": f"ev_{index}",
         "prediction_id": f"sp_{index}",
         "task_id": task_id,
@@ -298,6 +304,41 @@ def _pair(index, *, task_id, strategy_id, executions, failure_classes=None,
         "failure_classes": list(failure_classes or []),
         "execution_status": status,
     }
+    if observed is not None or eligibility is not None:
+        benefit = {"metric": "task_check_passed_given_faithful_execution"}
+        if observed is not None:
+            benefit["observed"] = observed
+        if eligibility is not None:
+            benefit["eligibility"] = eligibility
+        row["benefit"] = benefit
+    if g_observed is not None:
+        # A legacy row keeps the SAME label under g_observed_fact.
+        row["g_observed_fact"] = {
+            "metric": "task_check_passed_given_faithful_execution",
+            "observed": g_observed}
+    return row
+
+
+def _row_is_execution_error(row):
+    return row.get("execution_status") in ("error", "timeout")
+
+
+def _row_has_label(row):
+    benefit = row.get("benefit") or {}
+    fact = row.get("g_observed_fact") or {}
+    return ((isinstance(benefit, dict) and benefit.get("observed") is not None)
+            or (isinstance(fact, dict)
+                and fact.get("observed") is not None))
+
+
+def _row_is_g_failure(row):
+    if _row_is_execution_error(row):
+        # A crash is unobserved for G: not a labeled failure, not a zero.
+        return False
+    if row.get("failure_classes"):
+        return True
+    return any(e.get("label") == "occurred"
+               for e in row.get("risk_actual") or [])
 
 
 def _block(pairs):
@@ -317,8 +358,9 @@ def _block(pairs):
                                   .lower().split() if len(w) > 3],
             "action_id": row.get("action_id"),
             "execution_ids": list(row.get("execution_ids") or []),
-            "is_failure": bool(row.get("failure_classes"))
-            or row.get("execution_status") in ("error", "timeout"),
+            "has_label": _row_has_label(row),
+            "is_failure": _row_is_g_failure(row),
+            "is_execution_error": _row_is_execution_error(row),
         })
     return {"pairs": pairs, "selection_meta": meta,
             "n_pairs_total": len(pairs), "model_identity": "m@1",
@@ -416,6 +458,250 @@ class TestHistoricalPairSelection(unittest.TestCase):
         c = selection_signature([{"name": "random search"}],
                                 ["family:routing"])
         self.assertNotEqual(a, c)
+
+
+class TestLabelFirstPairedDisplay(unittest.TestCase):
+    """G calibration material shows LABELED cases first, crashes last.
+
+    A crash has ``benefit.observed = null`` (unobserved, never 0). It must
+    not outrank a labeled failure/success, and may hold only two display
+    slots; the label semantics and the counts are unchanged.
+    """
+
+    _CANDIDATE = [{"method": {"name": "exact milp solve",
+                              "steps": ["step one", "step two"]}}]
+
+    def _mixed_pool(self):
+        # Directory order deliberately puts the two CRASHES first and the
+        # labeled failures LAST: position must not decide the display.
+        return _block([
+            _pair(0, task_id="t_cur", strategy_id="S00", executions=["ex_e0"],
+                  failure_classes=["implementation"],
+                  method_name="exact milp solve", status="error",
+                  eligibility="unobserved"),
+            _pair(1, task_id="t_cur", strategy_id="S01", executions=["ex_e1"],
+                  failure_classes=["implementation"],
+                  method_name="exact milp solve", status="error",
+                  eligibility="unobserved"),
+            _pair(2, task_id="t_cur", strategy_id="S02", executions=["ex_ok0"],
+                  method_name="exact milp solve", observed=1.0,
+                  eligibility="evaluable"),
+            _pair(3, task_id="t_cur", strategy_id="S03", executions=["ex_ok1"],
+                  method_name="exact milp solve", observed=1.0,
+                  eligibility="evaluable"),
+            _pair(4, task_id="t_cur", strategy_id="S04", executions=["ex_f0"],
+                  failure_classes=["model"],
+                  method_name="exact milp solve", observed=0.0,
+                  eligibility="evaluable"),
+            _pair(5, task_id="t_cur", strategy_id="S05", executions=["ex_f1"],
+                  failure_classes=["model"],
+                  method_name="exact milp solve", observed=0.0,
+                  eligibility="evaluable"),
+        ])
+
+    # T1 ------------------------------------------------------------------
+    def test_labeled_failures_and_successes_come_before_crashes(self):
+        sel = select_paired_feedback(
+            self._mixed_pool(), candidate_methods=self._CANDIDATE,
+            task_id="t_cur")
+        ids = [p["evaluation_id"] for p in sel["pairs"]]
+        # Four labeled rows first (failures before successes), then crashes.
+        self.assertEqual(ids, ["ev_4", "ev_5", "ev_2", "ev_3",
+                               "ev_0", "ev_1"])
+        self.assertEqual([_row_has_label(p) for p in sel["pairs"]],
+                         [True, True, True, True, False, False])
+        self.assertEqual([p["benefit"]["observed"] for p in sel["pairs"][:4]],
+                         [0.0, 0.0, 1.0, 1.0])
+        self.assertTrue(all(p.get("execution_status") == "error"
+                            for p in sel["pairs"][4:]))
+        self.assertEqual(sel["n_pairs_available"], 6)
+        self.assertEqual(sel["n_pairs_execution_error"], 2)
+        self.assertEqual(sel["n_pairs_included"] + sel["n_pairs_omitted"],
+                         sel["n_pairs_available"])
+        # The crash rows keep observed=None: they are never turned into 0.
+        for p in sel["pairs"][4:]:
+            self.assertIsNone(p.get("benefit", {}).get("observed"))
+
+    # T2 ------------------------------------------------------------------
+    def test_a_pool_of_only_crashes_is_small_but_not_empty(self):
+        pairs = [_pair(i, task_id="t_cur", strategy_id=f"S{i:02d}",
+                       executions=[f"ex_{i}"],
+                       failure_classes=["implementation"],
+                       method_name="exact milp solve", status="error",
+                       eligibility="unobserved")
+                 for i in range(6)]
+        sel = select_paired_feedback(_block(pairs),
+                                     candidate_methods=self._CANDIDATE,
+                                     task_id="t_cur")
+        self.assertGreater(sel["n_pairs_included"], 0)
+        # The execution-error quota: two slots, rest counted as omitted.
+        self.assertEqual(sel["n_pairs_included"], 2)
+        self.assertEqual(sel["n_pairs_omitted"], 4)
+        self.assertEqual([p["evaluation_id"] for p in sel["pairs"]],
+                         ["ev_0", "ev_1"])
+        self.assertEqual(sel["n_pairs_execution_error"], 6)
+
+    # T3 ------------------------------------------------------------------
+    def test_legacy_directory_without_label_flags_is_readable(self):
+        block = self._mixed_pool()
+        for entry in block["selection_meta"]:
+            entry.pop("has_label", None)
+            entry.pop("is_execution_error", None)
+        sel = select_paired_feedback(block,
+                                     candidate_methods=self._CANDIDATE,
+                                     task_id="t_cur")
+        # Missing flags default to False: no exception, and no crash is
+        # counted as an execution error by the new quota.
+        self.assertEqual(sel["n_pairs_execution_error"], 0)
+        self.assertEqual(sel["n_pairs_included"], 6)
+        self.assertEqual(sel["n_pairs_included"] + sel["n_pairs_omitted"],
+                         sel["n_pairs_available"])
+
+    # T4 ------------------------------------------------------------------
+    def test_display_ceiling_and_defaults(self):
+        self.assertEqual(DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS, 12)
+        self.assertEqual(DEFAULT_PAIRED_FEEDBACK_CHARS, 112000)
+        pairs = [_pair(i, task_id="t_cur", strategy_id=f"S{i:02d}",
+                       executions=[f"ex_{i}"],
+                       method_name="exact milp solve", observed=1.0,
+                       eligibility="evaluable")
+                 for i in range(20)]
+        sel = select_paired_feedback(_block(pairs),
+                                     candidate_methods=self._CANDIDATE,
+                                     task_id="t_cur", limit=12)
+        self.assertEqual(sel["n_pairs_included"], 12)
+        self.assertLessEqual(sel["n_pairs_included"],
+                             sel["n_pairs_available"])
+        self.assertEqual(sel["n_pairs_available"], 20)
+        self.assertEqual(sel["n_pairs_omitted"], 8)
+        # The environment overrides keep working.
+        old_max = os.environ.get("OR_HARNESS_PAIRED_FEEDBACK_MAX")
+        old_chars = os.environ.get("OR_HARNESS_PAIRED_FEEDBACK_CHARS")
+        try:
+            os.environ["OR_HARNESS_PAIRED_FEEDBACK_MAX"] = "7"
+            os.environ["OR_HARNESS_PAIRED_FEEDBACK_CHARS"] = "9000"
+            self.assertEqual(_paired_feedback_max_pairs(), 7)
+            self.assertEqual(_paired_feedback_budget(), 9000)
+        finally:
+            if old_max is None:
+                os.environ.pop("OR_HARNESS_PAIRED_FEEDBACK_MAX", None)
+            else:
+                os.environ["OR_HARNESS_PAIRED_FEEDBACK_MAX"] = old_max
+            if old_chars is None:
+                os.environ.pop("OR_HARNESS_PAIRED_FEEDBACK_CHARS", None)
+            else:
+                os.environ["OR_HARNESS_PAIRED_FEEDBACK_CHARS"] = old_chars
+
+    # T5 ------------------------------------------------------------------
+    def test_execution_errors_are_capped_at_two_display_slots(self):
+        pairs = [
+            _pair(0, task_id="t_cur", strategy_id="S00",
+                  executions=["ex_f0"], failure_classes=["model"],
+                  method_name="exact milp solve", observed=0.0,
+                  eligibility="evaluable"),
+            _pair(1, task_id="t_cur", strategy_id="S01",
+                  executions=["ex_f1"], failure_classes=["model"],
+                  method_name="exact milp solve", observed=0.0,
+                  eligibility="evaluable"),
+            _pair(2, task_id="t_cur", strategy_id="S02",
+                  executions=["ex_ok0"], method_name="exact milp solve",
+                  observed=1.0, eligibility="evaluable"),
+            _pair(3, task_id="t_cur", strategy_id="S03",
+                  executions=["ex_ok1"], method_name="exact milp solve",
+                  observed=1.0, eligibility="evaluable"),
+        ] + [
+            _pair(10 + i, task_id="t_cur", strategy_id=f"E{i:02d}",
+                  executions=[f"ex_e{i}"], failure_classes=["implementation"],
+                  method_name="exact milp solve", status="error",
+                  eligibility="unobserved")
+            for i in range(5)
+        ]
+        sel = select_paired_feedback(_block(pairs),
+                                     candidate_methods=self._CANDIDATE,
+                                     task_id="t_cur")
+        crashes = [p for p in sel["pairs"]
+                   if p.get("execution_status") == "error"]
+        self.assertEqual(len(crashes), 2)
+        self.assertEqual(sel["n_pairs_available"], 9)
+        self.assertEqual(sel["n_pairs_included"], 6)
+        self.assertEqual(sel["n_pairs_omitted"], 3)
+        self.assertEqual(sel["n_pairs_execution_error"], 5)
+        self.assertEqual(sel["n_pairs_included"] + sel["n_pairs_omitted"],
+                         sel["n_pairs_available"])
+
+    # T6 ------------------------------------------------------------------
+    def test_the_per_candidate_retry_cap_still_applies(self):
+        same = [_pair(i, task_id="t_cur", strategy_id="SAME",
+                      executions=[f"ex_{i}"], method_name="exact milp solve",
+                      observed=1.0, eligibility="evaluable")
+                for i in range(5)]
+        others = [_pair(10 + i, task_id="t_cur", strategy_id=f"O{i:02d}",
+                        executions=[f"ex_o{i}"],
+                        method_name="exact milp solve", observed=1.0,
+                        eligibility="evaluable")
+                  for i in range(3)]
+        sel = select_paired_feedback(_block(same + others),
+                                     candidate_methods=self._CANDIDATE,
+                                     task_id="t_cur")
+        same_bucket = [p for p in sel["pairs"]
+                       if (p.get("task_id"), p.get("strategy_id"))
+                       == ("t_cur", "SAME")]
+        self.assertLessEqual(len(same_bucket), 2)
+        self.assertEqual(sel["n_pairs_included"] + sel["n_pairs_omitted"],
+                         sel["n_pairs_available"])
+
+    # A1: publish-time ordering -------------------------------------------
+    def test_publish_order_is_labels_first_and_crashes_last(self):
+        rows = [
+            ("ev_err_new", 100.0, _pair(0, task_id="t_cur",
+                                        strategy_id="E0",
+                                        executions=["ex_e0"],
+                                        status="error",
+                                        eligibility="unobserved")),
+            ("ev_err_old", 90.0, _pair(1, task_id="t_cur",
+                                       strategy_id="E1",
+                                       executions=["ex_e1"],
+                                       status="error",
+                                       eligibility="unobserved")),
+            ("ev_success", 5.0, _pair(2, task_id="t_cur",
+                                      strategy_id="S0",
+                                      executions=["ex_ok"],
+                                      observed=1.0,
+                                      eligibility="evaluable")),
+            ("ev_failure", 10.0, _pair(3, task_id="t_cur",
+                                       strategy_id="F0",
+                                       executions=["ex_f"],
+                                       failure_classes=["model"],
+                                       observed=0.0,
+                                       eligibility="evaluable")),
+        ]
+        ordered = sorted(
+            rows, key=lambda t: _paired_feedback_order_key(t[2], t[1],
+                                                           rows.index(t)))
+        self.assertEqual([row[0] for row in ordered],
+                         ["ev_failure", "ev_success",
+                          "ev_err_new", "ev_err_old"])
+
+    def test_a_legacy_g_observed_fact_is_a_label(self):
+        # An old row keeps the same label under g_observed_fact.
+        legacy_failure = _pair(0, task_id="t_cur", strategy_id="S00",
+                               executions=["ex_l"], failure_classes=["model"],
+                               method_name="exact milp solve",
+                               g_observed=0.0)
+        modern_success = _pair(1, task_id="t_cur", strategy_id="S01",
+                               executions=["ex_m"],
+                               method_name="exact milp solve",
+                               observed=1.0, eligibility="evaluable")
+        crash = _pair(2, task_id="t_cur", strategy_id="S02",
+                      executions=["ex_c"], status="error",
+                      eligibility="unobserved")
+        sel = select_paired_feedback(
+            _block([crash, legacy_failure, modern_success]),
+            candidate_methods=self._CANDIDATE, task_id="t_cur")
+        self.assertEqual([p["evaluation_id"] for p in sel["pairs"]],
+                         ["ev_0", "ev_1", "ev_2"])
+        self.assertTrue(_row_has_label(sel["pairs"][0]))
+        self.assertFalse(_row_has_label(sel["pairs"][2]))
 
 
 class TestPairDirectoryAlwaysNamesItsBody(unittest.TestCase):
