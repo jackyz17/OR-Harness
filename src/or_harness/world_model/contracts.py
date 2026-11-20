@@ -300,6 +300,51 @@ def new_prediction_id(prefix: str = "cp") -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def normalize_text_list(value: Any, *, field: str = "value") -> List[str]:
+    """Normalize ONE free-text list field; a bare string is ONE entry.
+
+    Models routinely answer a ``[text, ...]`` field with a single string
+    (``"basis": "standard method"``). Iterating that string silently
+    produced one entry PER CHARACTER and stored the nonsense as if the
+    model had stated a list. This is the ONE normalization used by the
+    contract's text-list fields, so a single string means one complete
+    element everywhere.
+
+    - ``None`` is an empty list (an absent field, not an empty claim);
+    - a single string is kept whole, never split into characters;
+    - list entries keep their content and order; blank entries are dropped
+      (an empty string already means "nothing stated", so it never becomes
+      an empty element);
+    - a JSON object or number is NOT a text list: it is refused with the
+      field named, never iterated (a dict would become its keys) and never
+      flattened into one prose string.
+
+    Structured lists (``verification_conditions``, evidence objects,
+    ``risk.events``, cost dimensions) are deliberately NOT passed through
+    here: they carry objects/identifiers, not free text, and their own
+    parsers own their shape.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        items: List[str] = []
+        for index, item in enumerate(value):
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"{field}[{index}] must be text, got "
+                    f"{type(item).__name__}; structured or numeric entries "
+                    "are not converted to text")
+            if item.strip():
+                items.append(item)
+        return items
+    raise ValueError(
+        f"{field} must be text (a string or a list of strings), got "
+        f"{type(value).__name__}; a single string is one entry, and an "
+        "object or number is not a text list")
+
+
 # ---------------------------------------------------------------------------
 # shared traceability
 # ---------------------------------------------------------------------------
@@ -423,9 +468,9 @@ class PredictionTrace:
             call_cost=call_cost,
             model_info=copy.deepcopy(dict(data.get("model_info") or {})),
             comparable=bool(data.get("comparable", False)),
-            not_comparable_reasons=[str(r) for r in
-                                    (data.get("not_comparable_reasons")
-                                     or [])],
+            not_comparable_reasons=normalize_text_list(
+                data.get("not_comparable_reasons"),
+                field="PredictionTrace.not_comparable_reasons"),
         )
 
 
@@ -618,7 +663,8 @@ class CapabilitySourceEvidence:
             evidence=[EvidenceRef.from_dict(e)
                       for e in (data.get("evidence") or [])],
             detail=copy.deepcopy(dict(data.get("detail") or {})),
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(data.get("notes"),
+                                      field="CapabilitySourceEvidence.notes"),
         )
 
 
@@ -684,7 +730,8 @@ class HarnessCapabilityEvidence:
             version=(str(data["version"]) if data.get("version") else None),
             sources={str(k): CapabilitySourceEvidence.from_dict(v)
                      for k, v in raw.items()},
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(data.get("notes"),
+                                      field="HarnessCapabilityEvidence.notes"),
             score_scheme=str(data.get("score_scheme", "no_composite_score")),
         )
 
@@ -889,7 +936,8 @@ def _method_identity(method: Dict[str, Any]) -> str:
     """
     payload = json.dumps({
         "name": str(method.get("name") or ""),
-        "steps": [str(s) for s in (method.get("steps") or [])],
+        "steps": normalize_text_list(method.get("steps"),
+                                     field="method.steps"),
         "why": str(method.get("why") or ""),
         "fallback": str(method.get("fallback") or ""),
     }, sort_keys=True, ensure_ascii=False)
@@ -1233,11 +1281,15 @@ class CandidateRef:
             solver=(str(data["solver"]) if data.get("solver") else None),
             method=copy.deepcopy(data.get("method")),
             config=copy.deepcopy(dict(data.get("config") or {})),
-            preconditions=[str(p) for p in (data.get("preconditions") or [])],
-            expected_scope=[str(s) for s in (data.get("expected_scope")
-                                             or [])],
-            stop_conditions=[str(s) for s in (data.get("stop_conditions")
-                                              or [])],
+            preconditions=normalize_text_list(
+                data.get("preconditions"),
+                field="CandidateRef.preconditions"),
+            expected_scope=normalize_text_list(
+                data.get("expected_scope"),
+                field="CandidateRef.expected_scope"),
+            stop_conditions=normalize_text_list(
+                data.get("stop_conditions"),
+                field="CandidateRef.stop_conditions"),
             task_id=str(data.get("task_id", "")),
             episode_id=(str(data["episode_id"])
                         if data.get("episode_id") else None),
@@ -1407,7 +1459,8 @@ class BenefitEstimate:
                       if isinstance(raw_baseline, dict) else None),
             feasible=data.get("feasible"),
             progress_shape=copy.deepcopy(data.get("progress_shape")),
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(data.get("notes"),
+                                      field="BenefitEstimate.notes"),
             observation_rule_version=data.get("observation_rule_version"),
         )
 
@@ -1475,7 +1528,8 @@ class ExpectedCost:
             # one: it is kept as-is so the close-out refuses to compare it.
             scope = str(data.get("scope") or "")
         return cls(expected=vector, measured=measured, scope=scope,
-                   notes=[str(n) for n in (data.get("notes") or [])])
+                   notes=normalize_text_list(data.get("notes"),
+                                             field="ExpectedCost.notes"))
 
 
 @dataclass
@@ -1515,7 +1569,8 @@ class RiskEvent:
                       if data.get("severity") is not None else None),
             severity_unit=str(data.get("severity_unit", "")),
             basis=(str(data["basis"]) if data.get("basis") else None),
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(data.get("notes"),
+                                      field="RiskEvent.notes"),
         )
 
 
@@ -1535,7 +1590,8 @@ class RiskStatement:
         data = data or {}
         return cls(events=[RiskEvent.from_dict(e)
                            for e in (data.get("events") or [])],
-                   notes=[str(n) for n in (data.get("notes") or [])])
+                   notes=normalize_text_list(data.get("notes"),
+                                             field="RiskStatement.notes"))
 
 
 @dataclass
@@ -1588,10 +1644,12 @@ class UncertaintyStatement:
             knowledge_gap=(float(data["knowledge_gap"])
                            if data.get("knowledge_gap") is not None
                            else None),
-            basis=[str(b) for b in (data.get("basis") or [])],
+            basis=normalize_text_list(
+                data.get("basis"), field="UncertaintyStatement.basis"),
             missing={str(k): str(v) for k, v in
                      (data.get("missing") or {}).items()},
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(
+                data.get("notes"), field="UncertaintyStatement.notes"),
         )
 
 
@@ -1684,7 +1742,8 @@ class ExpectedChange:
             beneficial_direction=str(data.get("beneficial_direction",
                                               "increase")),
             value_kind=str(data.get("value_kind", "absolute")),
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(data.get("notes"),
+                                      field="ExpectedChange.notes"),
         )
 
 
@@ -1734,7 +1793,8 @@ class VerificationCondition:
             prediction_made=bool(data.get("prediction_made", True)),
             fact_bound=bool(data.get("fact_bound", False)),
             effect_verified=bool(data.get("effect_verified", False)),
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(data.get("notes"),
+                                      field="VerificationCondition.notes"),
         )
 
 
@@ -1860,16 +1920,21 @@ class CapabilityGain:
             decision=(int(data["decision"]) if type(data.get("decision")) in (int, float)
                       and data["decision"] in (0, 1) else None),
             claim=str(data.get("claim") or ""),
-            applies_to=[str(a) for a in (data.get("applies_to") or [])],
+            applies_to=normalize_text_list(
+                data.get("applies_to"), field="CapabilityGain.applies_to"),
             expected_changes=changes,
-            evidence_required=[str(e) for e in
-                               (data.get("evidence_required") or [])],
+            evidence_required=normalize_text_list(
+                data.get("evidence_required"),
+                field="CapabilityGain.evidence_required"),
             verification_conditions=conditions,
             degradation_risk=(RiskStatement.from_dict(raw_risk)
                               if isinstance(raw_risk, dict) else None),
-            uncertainty=[str(u) for u in (data.get("uncertainty") or [])],
-            basis=[str(b) for b in (data.get("basis") or [])],
-            notes=[str(n) for n in (data.get("notes") or [])],
+            uncertainty=normalize_text_list(
+                data.get("uncertainty"), field="CapabilityGain.uncertainty"),
+            basis=normalize_text_list(data.get("basis"),
+                                      field="CapabilityGain.basis"),
+            notes=normalize_text_list(data.get("notes"),
+                                      field="CapabilityGain.notes"),
         )
 
 
@@ -2040,7 +2105,9 @@ class StrategyOutcomePrediction:
             service_available=bool(data.get("service_available", False)),
             provider_configured=bool(data.get("provider_configured", False)),
             service_implemented=bool(data.get("service_implemented", False)),
-            notes=[str(n) for n in (data.get("notes") or [])],
+            notes=normalize_text_list(
+                data.get("notes"),
+                field="StrategyOutcomePrediction.notes"),
         )
 
 

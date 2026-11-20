@@ -4,7 +4,7 @@ Compare recorded executions to extract a method, test its scope, and submit the 
 
 ## When to start induction
 
-`plan-next` freezes `capability_gain.decision` as the JSON number `0` or `1` (`wm-hplus-binary/1`). G, C and R determine U. For H+ = 1, use `claim` to state what could improve or extend the prediction-time library, and `verification_conditions` to name a concrete fact to check. For 0, give the basis.
+`plan-next` freezes `capability_gain.decision` as the JSON number `0` or `1` (`wm-hplus-binary/1`). G, C and R determine U. For H+ = 1, use `claim` to state what could improve or extend the prediction-time library, and `verification_conditions` to name a concrete fact to check. For 0, give the basis. The increment can be modelling knowledge as well: how the task statement is translated into decision variables, objective and constraints, together with the assumptions and applicability boundaries of that translation. A standard solving algorithm can still support 1 when this run and its review can test such an increment or boundary that the published strategy library does not cover.
 
 ### Predict H+ at cold start
 

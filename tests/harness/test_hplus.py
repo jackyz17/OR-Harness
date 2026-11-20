@@ -150,6 +150,28 @@ class TestSameCallAndShape(HPlusCase):
             reloaded.capability_gain.verification_conditions[0].condition,
             "a later task shows a >=10% runtime drop")
 
+    def test_a_single_string_basis_survives_storage_round_trip(self):
+        # A model may answer a text-list field with ONE string. Parsing and
+        # storing must keep it as one entry (never one entry per character),
+        # and the frozen H+ decision must not change.
+        self.provider.payload = dict(BASE_PAYLOAD, capability_gain=dict(
+            GAIN_PAYLOAD, decision=1,
+            basis="standard method",
+            applies_to="routing with high resource_coupling"))
+        prediction = planned_prediction(self.h,
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
+        self.assertEqual(prediction.capability_gain.basis,
+                         ["standard method"])
+        self.assertEqual(prediction.capability_gain.decision, 1)
+        reloaded = self.h.get_strategy_outcome_prediction(
+            prediction.prediction_id)
+        self.assertEqual(reloaded.capability_gain.basis,
+                         ["standard method"])
+        self.assertEqual(reloaded.capability_gain.applies_to,
+                         ["routing with high resource_coupling"])
+        self.assertEqual(reloaded.capability_gain.decision, 1)
+
 
 # ---------------------------------------------------------------------------
 # 2. explanatory, never the utility

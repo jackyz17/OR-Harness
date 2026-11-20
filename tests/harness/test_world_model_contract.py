@@ -36,6 +36,7 @@ from or_harness.world_model.contracts import (
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
+    CapabilityGain,
     CapabilitySourceEvidence,
     EvidenceRef,
     ExpectedChange,
@@ -1090,6 +1091,166 @@ class TestDocumentationMatchesCode(unittest.TestCase):
         # The example's whole point: an empty bank, a method nobody listed.
         self.assertIn("NO MEMORY", completed.stdout)
         self.assertIn("custom:two-phase-milp", completed.stdout)
+
+
+class TestTextListFields(HarnessTestCase):
+    """A text-list field accepts ONE string as ONE entry, never characters.
+
+    A model that answers ``"basis": "standard method"`` must not become a
+    list of single characters, and a structured field (verification
+    conditions, risk events, the uncertainty ``missing`` mapping) must keep
+    its object shape instead of being coerced to prose.
+    """
+
+    def test_a_single_string_is_one_entry_for_the_gain_text_fields(self):
+        gain = CapabilityGain.from_dict({
+            "assessment": "expected",
+            "claim": "a reusable lower-endpoint rule",
+            "applies_to": "fixed Y, finite integer X intervals",
+            "evidence_required": "a later task reuses the rule at least as well",
+            "uncertainty": "may not generalize to nonmonotone objectives",
+            "basis": "standard method",
+            "notes": "review after this run",
+        })
+        self.assertEqual(gain.applies_to,
+                         ["fixed Y, finite integer X intervals"])
+        self.assertEqual(gain.evidence_required,
+                         ["a later task reuses the rule at least as well"])
+        self.assertEqual(gain.uncertainty,
+                         ["may not generalize to nonmonotone objectives"])
+        self.assertEqual(gain.basis, ["standard method"])
+        self.assertEqual(gain.notes, ["review after this run"])
+
+    def test_candidate_scope_text_fields_take_a_complete_string(self):
+        candidate = CandidateRef.from_dict({
+            "action_type": "execute_strategy",
+            "preconditions": "the task bounds every integer variable",
+            "expected_scope": "one solve attempt",
+            "stop_conditions": "stop once the gap is below 1e-4",
+        })
+        self.assertEqual(candidate.preconditions,
+                         ["the task bounds every integer variable"])
+        self.assertEqual(candidate.expected_scope, ["one solve attempt"])
+        self.assertEqual(candidate.stop_conditions,
+                         ["stop once the gap is below 1e-4"])
+
+    def test_none_and_blank_entries_follow_the_empty_value_convention(self):
+        gain = CapabilityGain.from_dict({"basis": None, "applies_to": ""})
+        self.assertEqual(gain.basis, [])
+        self.assertEqual(gain.applies_to, [])
+        uncertainty = UncertaintyStatement.from_dict({
+            "basis": ["conditional statistics", "", "   ", "one execution"],
+            "notes": ["the model stated a range", ""],
+        })
+        self.assertEqual(uncertainty.basis,
+                         ["conditional statistics", "one execution"])
+        self.assertEqual(uncertainty.notes,
+                         ["the model stated a range"])
+        benefit = BenefitEstimate.from_dict({
+            "kind": "solution_quality", "metric": "q",
+            "notes": "one evidence-grounded sentence"})
+        self.assertEqual(benefit.notes,
+                         ["one evidence-grounded sentence"])
+        trace = PredictionTrace.from_dict({
+            "prediction_kind": "strategy_outcome",
+            "not_comparable_reasons": "the candidate has not run"})
+        self.assertEqual(trace.not_comparable_reasons,
+                         ["the candidate has not run"])
+
+    def test_a_legitimate_list_keeps_content_and_order(self):
+        gain = CapabilityGain.from_dict({
+            "basis": ["published rule 12@3", "the frozen task bounds",
+                      "the candidate's endpoint step"]})
+        self.assertEqual(gain.basis,
+                         ["published rule 12@3", "the frozen task bounds",
+                          "the candidate's endpoint step"])
+
+    def test_invalid_top_level_types_are_named_and_not_iterated(self):
+        for bad, type_name in (({"cell": "routing"}, "dict"),
+                               (3, "int"), (0.5, "float")):
+            with self.assertRaises(ValueError) as raised:
+                CapabilityGain.from_dict({"basis": bad})
+            message = str(raised.exception)
+            self.assertIn("CapabilityGain.basis", message)
+            self.assertIn(type_name, message)
+            # A dict is NEVER read as its key list, and a number is not
+            # flattened into a prose entry.
+            self.assertNotIn("'cell'", message)
+            self.assertNotIn("cell", message)
+        with self.assertRaises(ValueError) as raised:
+            UncertaintyStatement.from_dict({"basis": [{"k": "v"}]})
+        self.assertIn("UncertaintyStatement.basis[0]", str(raised.exception))
+
+    def test_structured_lists_keep_their_object_shape(self):
+        gain = CapabilityGain.from_dict({
+            "assessment": "expected",
+            "claim": "a reusable rule",
+            "verification_conditions": [
+                {"condition": "a later task shows the same gap drop",
+                 "check_basis": "the later task's task check"}],
+            "expected_changes": [
+                {"metric": "solver_runtime_s", "direction": "decrease"}],
+            "degradation_risk": {
+                "events": [{"event": "timeout", "probability": 0.1}]},
+        })
+        self.assertEqual(gain.verification_conditions[0].condition,
+                         "a later task shows the same gap drop")
+        self.assertEqual(gain.expected_changes[0].metric,
+                         "solver_runtime_s")
+        self.assertEqual(gain.degradation_risk.events[0].event, "timeout")
+        uncertainty = UncertaintyStatement.from_dict({
+            "missing": {"knowledge_gap": "no historical evidence"}})
+        self.assertEqual(uncertainty.missing,
+                         {"knowledge_gap": "no historical evidence"})
+
+    def test_parse_save_read_keeps_text_basis_and_hplus_decision(self):
+        from or_harness.world_model.strategy_prediction import (
+            parse_strategy_outcome_payload)
+        payload = {
+            "benefit": {
+                "kind": "solution_quality",
+                "metric": "normalized_objective_gap", "unit": "1-gap",
+                "value": 0.8,
+                "baseline": {"kind": "conditional_stats", "value": 0.7},
+                "notes": "one evidence-grounded sentence",
+            },
+            "capability_gain": {
+                "decision": 1,
+                "claim": "lower-endpoint selection replaces full X enumeration",
+                "basis": "standard method",
+                "applies_to": "fixed Y and finite integer X intervals",
+                "uncertainty": "nonmonotone objectives need the fallback",
+                "notes": "review after the bound attempt",
+                "verification_conditions": [
+                    {"condition": "a later task shows the same gap drop"}],
+            },
+        }
+        candidate = CandidateRef(action_type="execute_strategy",
+                                 strategy_id="S01", task_id="t1")
+        from types import SimpleNamespace
+        context = SimpleNamespace(snapshot_id="snap_t1",
+                                  effective_input_digest="digest_t1",
+                                  task_digest="digest_t1")
+        prediction = parse_strategy_outcome_payload(payload, candidate,
+                                                    context=context)
+        self.assertEqual(prediction.status, "valid")
+        self.assertEqual(prediction.capability_gain.basis,
+                         ["standard method"])
+        self.assertEqual(prediction.capability_gain.decision, 1)
+        self.assertEqual(prediction.benefit.notes,
+                         ["one evidence-grounded sentence"])
+
+        # Persist exactly as the store does, then read the payload back.
+        saved = json.loads(json.dumps(prediction.to_dict(),
+                                      ensure_ascii=False))
+        reloaded = load_contract_payload(saved)
+        self.assertEqual(reloaded.capability_gain.basis,
+                         ["standard method"])
+        self.assertEqual(reloaded.capability_gain.decision, 1)
+        self.assertEqual(reloaded.capability_gain.applies_to,
+                         ["fixed Y and finite integer X intervals"])
+        self.assertEqual(reloaded.benefit.notes,
+                         ["one evidence-grounded sentence"])
 
 
 if __name__ == "__main__":

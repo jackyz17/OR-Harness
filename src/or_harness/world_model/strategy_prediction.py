@@ -57,6 +57,7 @@ from or_harness.world_model.contracts import (
     ExpectedCost,
     INTERVAL_KINDS,
     PredictionTrace,
+    normalize_text_list,
     RiskEvent,
     RiskStatement,
     StrategyOutcomePrediction,
@@ -402,6 +403,11 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "At cold start, the task requirements, candidate steps and evidence obtainable during THIS run "
     "can ground a hypothesis even with no historical executions or review receipts. "
     "A known method may still add a reusable step or applicability boundary to the current library. "
+    "Reusable modelling knowledge also includes translating the task statement into decision "
+    "variables, objectives and constraints, together with the assumptions and applicability "
+    "boundaries of that translation. A standard solving algorithm can still justify 1 when this "
+    "run and its review are expected to test such a reusable increment or boundary not covered "
+    "by the published strategy library. "
     "Use 1 for a concrete reusable increment and ONE check feasible during this run. Include one sentence in claim "
     "and ONE concrete check in verification_conditions:[{condition: text, check_basis: text}]. "
     "Use basis for the evidence references, applies_to for future premises/structures, and reuse "
@@ -851,6 +857,7 @@ def parse_strategy_outcome_payload(
     # -- benefit -----------------------------------------------------------
     benefit_problem_start = len(problems)
     benefit: Optional[BenefitEstimate] = None
+    benefit_notes: List[str] = []
     raw_benefit = payload.get("benefit")
     if raw_benefit is None:
         unsupported["benefit"] = "not predicted by the model"
@@ -964,6 +971,14 @@ def parse_strategy_outcome_payload(
             problems.append("benefit.feasible must be a boolean")
             feasible = None
         try:
+            benefit_notes = normalize_text_list(
+                raw_benefit.get("notes"), field="benefit.notes")
+        except ValueError as exc:
+            # A malformed annotation field is a PROBLEM about the payload,
+            # not a reason to discard the forecast's numeric content.
+            problems.append(str(exc))
+            benefit_notes = []
+        try:
             benefit = BenefitEstimate(
                 kind=kind, metric=metric or "(unnamed metric)",
                 unit=str(raw_benefit.get("unit") or ""),
@@ -973,7 +988,7 @@ def parse_strategy_outcome_payload(
                 baseline=baseline, feasible=feasible,
                 observation_rule_version=(FAITHFUL_G_OBSERVATION_VERSION
                                           if metric == FAITHFUL_G_METRIC else None),
-                notes=[str(n) for n in (raw_benefit.get("notes") or [])])
+                notes=list(benefit_notes))
         except ValueError as exc:
             problems.append(f"benefit: {exc}")
             benefit = None
@@ -990,7 +1005,7 @@ def parse_strategy_outcome_payload(
             benefit = BenefitEstimate(
                 kind=expected["kind"], metric=expected["metric"], unit=expected["unit"],
                 observation_rule_version=expected.get("observation_rule_version"),
-                notes=[str(n) for n in (raw_benefit.get("notes") or [])])
+                notes=list(benefit_notes))
         if benefit is not None:
             benefit.value = None
             benefit.interval = None
@@ -1083,6 +1098,13 @@ def parse_strategy_outcome_payload(
                     problems.append(f"risk.events[{index}].severity must be "
                                     "finite")
                     severity = None
+                try:
+                    event_notes = normalize_text_list(
+                        raw.get("notes"),
+                        field=f"risk.events[{index}].notes")
+                except ValueError as exc:
+                    problems.append(str(exc))
+                    event_notes = []
                 events.append(RiskEvent(
                     event=str(raw["event"]),
                     probability=(float(probability)
@@ -1091,7 +1113,7 @@ def parse_strategy_outcome_payload(
                               if severity is not None else None),
                     severity_unit=str(raw.get("severity_unit") or ""),
                     basis=(str(raw["basis"]) if raw.get("basis") else None),
-                    notes=[str(n) for n in (raw.get("notes") or [])]))
+                    notes=event_notes))
             impl = [e for e in events if e.event == "implementation_failure"]
             if len(impl) > 1:
                 unsupported["risk.implementation_failure"] = "duplicate implementation_failure events are ambiguous"
@@ -1099,10 +1121,13 @@ def parse_strategy_outcome_payload(
                     event.probability = None
             if events:
                 try:
-                    risk = RiskStatement(
-                        events=events,
-                        notes=[str(n) for n in
-                               (raw_risk.get("notes") or [])])
+                    risk_notes = normalize_text_list(
+                        raw_risk.get("notes"), field="risk.notes")
+                except ValueError as exc:
+                    problems.append(str(exc))
+                    risk_notes = []
+                try:
+                    risk = RiskStatement(events=events, notes=risk_notes)
                 except ValueError as exc:
                     problems.append(f"risk: {exc}")
                     risk = None
@@ -1135,12 +1160,20 @@ def parse_strategy_outcome_payload(
             # in the notes and missing blocks instead of the numeric
             # fields, which a reader could mistake for calibrated values.
             try:
+                unc_basis = normalize_text_list(
+                    raw_unc.get("basis"), field="uncertainty.basis")
+                unc_notes = normalize_text_list(
+                    raw_unc.get("notes"), field="uncertainty.notes")
+            except ValueError as exc:
+                problems.append(str(exc))
+                unc_basis, unc_notes = [], []
+            try:
                 uncertainty = UncertaintyStatement(
                     source="model_self_report",
-                    basis=[str(b) for b in (raw_unc.get("basis") or [])],
+                    basis=unc_basis,
                     missing={str(k): str(v) for k, v in
                              (raw_unc.get("missing") or {}).items()},
-                    notes=[str(n) for n in (raw_unc.get("notes") or [])]
+                    notes=unc_notes
                     + [f"execution_randomness (self-reported, uncalibrated): "
                        f"{components.get('execution_randomness')}"
                        if "execution_randomness" in components else ""]
