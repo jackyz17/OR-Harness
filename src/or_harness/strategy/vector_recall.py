@@ -46,8 +46,8 @@ from or_harness.core.schema import (
     ProblemProfile,
     group_key,
     task_check_state,
-    unsupported_predicate_keys,
 )
+from or_harness.strategy.applicability import applicability_annotations
 from or_harness.strategy.embedding_index import (
     LAYER_EXECUTION,
     LAYER_STRATEGIC,
@@ -85,69 +85,31 @@ def excerpt(text: str, limit: int = EXCERPT_CHARS) -> str:
 def classify_applicability(profile: Optional[ProblemProfile],
                            predicates: Dict[str, Any]
                            ) -> Tuple[str, bool, Optional[str]]:
-    """``(structural_match, reusable, reason)`` for one entry's predicates.
+    """``(machine_state, machine_compatible, reason)`` for a predicate set.
 
-    - ``applies``: every predicate is satisfied — the claim covers this
-      structure and may be reused.
-    - ``conflicts``: at least one predicate is contradicted BY A KNOWN value
-      (family mismatch, value outside the interval, or a measured value
-      against an unknown-bucket claim). Not reusable, with the exact
-      conflict stated.
-    - ``unknown``: nothing is contradicted, but a predicate needs a value the
-      profile does not supply — undecidable. NOT reusable ("we could not
-      check" is not "it applies"), with the missing dimension named.
+    This is ONLY the deterministic machine check; it is never a full
+    applicability verdict.
 
-    When every predicate is decidable, ``applies`` coincides exactly with
-    :func:`or_harness.core.schema.profile_matches` — this function refines
-    that boolean by separating contradiction from missing information.
+    - ``compatible``: every machine-checkable structural condition is
+      satisfied. NECESSARY, not sufficient — the rule's ``when`` still has to
+      be assessed by the agent.
+    - ``not_specified``: the rule records NO machine-checkable structural
+      condition. That is NOT unconditional applicability; it means the
+      framework has nothing deterministic to check.
+    - ``partial`` / ``unknown``: some or all machine-checkable values are
+      missing (or the predicate set carries keys only an agent can judge).
+      Never defaulted to applicable.
+    - ``conflict``: a MEASURED structural value contradicts the rule's
+      claimed cell. A different ``family`` LABEL alone is NOT a conflict: a
+      shared mathematical mechanism can transfer across scenario labels.
+
+    The third element is the readable reason; a compatible result with a
+    family-label difference names that difference.
     """
-    if profile is None:
-        return "unknown", False, "no profile available to evaluate predicates"
-    if not predicates:
-        return "applies", True, None
-    family_pred = predicates.get("family")
-    if family_pred is not None and profile.family != family_pred:
-        return ("conflicts", False,
-                f"family mismatch: claim covers family {family_pred}, task is "
-                f"family {profile.family}")
-    undecided: List[str] = []
-    # A key the framework cannot EVALUATE is never assumed satisfied. It may
-    # be a semantic condition only an agent can judge, so it makes the claim
-    # UNDECIDABLE (``unknown``) rather than applicable — reported with the
-    # exact keys so a reader knows what the code could not check.
-    semantic = unsupported_predicate_keys(predicates)
-    if semantic:
-        undecided.append(
-            "unsupported predicate key(s) this framework cannot evaluate: "
-            + ", ".join(semantic))
-    for dim in GROUPING_FEATURES:
-        if dim not in predicates:
-            continue
-        pred = predicates[dim]
-        value = getattr(profile, dim)
-        if isinstance(pred, str):
-            # A claim that covers only the unknown bucket says nothing about
-            # a measured task.
-            if value is not None:
-                return ("conflicts", False,
-                        f"{dim}={value} is measured but the claim only covers "
-                        f"the '{UNKNOWN_BUCKET}' cell")
-            continue
-        try:
-            lo, hi = (float(x) for x in pred)
-        except (TypeError, ValueError):
-            continue
-        if value is None:
-            undecided.append(f"{dim} (claim covers [{lo:.2f}, {hi:.2f}], task "
-                             f"value unmeasured)")
-            continue
-        if not (lo <= float(value) <= hi):
-            return ("conflicts", False,
-                    f"{dim}={value} outside the claim's [{lo:.2f}, {hi:.2f}]")
-    if undecided:
-        return ("unknown", False,
-                "cannot decide applicability: " + "; ".join(undecided))
-    return "applies", True, None
+    from or_harness.strategy.applicability import machine_applicability
+    result = machine_applicability(profile, predicates)
+    return (str(result["state"]), bool(result["machine_compatible"]),
+            result.get("reason"))
 
 
 def _first_error_line(error: str) -> str:
@@ -370,8 +332,8 @@ def _knowledge_entry(harness, item: Dict[str, Any], score: float,
     if document_digest(claim_text) != item.get("doc_digest"):
         return None  # the claim text changed; the vector is stale
     display_text = claim_text if len(claim_text)<=3000 else f"Complete rule by ID: orx inspect --bank strategic --entry {entry.entry_id} ({len(claim_text)} characters)"
-    structural, reusable, reason = classify_applicability(task_profile,
-                                                          entry.predicates)
+    annotations = applicability_annotations(task_profile, entry)
+    machine = annotations["machine_applicability"]
     out = {
         "entry_id": entry.entry_id,
         "strategy_id": entry.strategy_id,
@@ -389,9 +351,21 @@ def _knowledge_entry(harness, item: Dict[str, Any], score: float,
         "applicability": list(entry.applicability),
         "risk_conditions": list(entry.risk_conditions),
         "predicates": entry.predicates,
-        "structural_match": structural,
-        "reusable": reusable,
+        # ``structural_match`` / ``reusable`` are kept for old readers but
+        # now carry the STRICT machine check: ``not_specified`` and
+        # ``unknown`` are not matches, and a family-label difference is not
+        # a conflict unless a measured cell contradicts the rule.
+        "structural_match": machine["state"],
+        "reusable": bool(machine["machine_compatible"]),
+        "rule_body": annotations["rule_body"],
+        "machine_applicability": machine,
+        "semantic_applicability": annotations["semantic_applicability"],
+        "requires_agent_assessment": True,
+        "adoption_state": annotations["adoption_state"],
+        "adoption_note": annotations["adoption_note"],
     }
+    if machine.get("reason"):
+        out["reason"] = machine["reason"]
     if entry.rule:
         from or_harness.strategy.evidence_views import short_rule
         out.pop('claim_text',None)
@@ -406,8 +380,6 @@ def _knowledge_entry(harness, item: Dict[str, Any], score: float,
                 out['cost_measured']=(sorted(entry.expected_cost_hat.measured)
                                       if entry.expected_cost_hat.measured is not None else None)
             if entry.failure_prob!=0.5:out['failure_prob']=entry.failure_prob
-    if reason:
-        out["reason"] = reason
     return out
 
 

@@ -189,21 +189,30 @@ class TestDiscoveryVsReuse(VectorCase):
         self.assertEqual(hit["status"], "error")
         self.assertFalse(hit["observed_quality"]["feasible"])
 
-    def test_applicability_applies_conflicts_and_unknown(self):
-        """Case 2: three distinguishable verdicts; missing information is
-        never treated as applicability."""
+    def test_applicability_machine_states_are_not_semantic_verdicts(self):
+        """Case 2: the machine check distinguishes compatible / unknown /
+        conflict, and a family LABEL difference is not a conflict."""
         profile = self.h.profile(_task("t_q", description=REQ_A,
                                        resource_coupling=0.9))
-        applies, reusable, reason = classify_applicability(profile, {
+        compatible, matched, reason = classify_applicability(profile, {
             "family": "routing", "resource_coupling": [0.75, 1.0]})
-        self.assertEqual(applies, "applies")
-        self.assertTrue(reusable)
+        self.assertEqual(compatible, "compatible")
+        self.assertTrue(matched)
         self.assertIsNone(reason)
-        conflicts, reusable2, reason2 = classify_applicability(profile, {
+        # The same structural claim under a DIFFERENT family label: the
+        # labels differ, but that alone is not a contradiction (a shared
+        # mechanism may transfer). The agent still assesses `when`.
+        cross, cross_ok, cross_reason = classify_applicability(profile, {
             "family": "vrp", "resource_coupling": [0.75, 1.0]})
-        self.assertEqual(conflicts, "conflicts")
+        self.assertEqual(cross, "compatible")
+        self.assertTrue(cross_ok)
+        self.assertIn("LABELS differ", cross_reason)
+        # A MEASURED structural contradiction IS a conflict.
+        conflicts, reusable2, reason2 = classify_applicability(profile, {
+            "family": "routing", "resource_coupling": [0.0, 0.25]})
+        self.assertEqual(conflicts, "conflict")
         self.assertFalse(reusable2)
-        self.assertIn("family mismatch", reason2)
+        self.assertIn("OUTSIDE", reason2)
         # A family-free claim with an unmeasured dimension on the task side:
         # nothing is contradicted, but nothing decides it either.
         bare = ProblemProfile(problem_id="p", family="routing")
@@ -212,6 +221,12 @@ class TestDiscoveryVsReuse(VectorCase):
         self.assertEqual(unknown, "unknown")
         self.assertFalse(reusable3, "unknown must not default to reusable")
         self.assertIn("unmeasured", reason3)
+        # Empty predicates: no machine-checkable condition, NOT unconditional
+        # applicability.
+        empty, empty_ok, empty_reason = classify_applicability(profile, {})
+        self.assertEqual(empty, "not_specified")
+        self.assertFalse(empty_ok)
+        self.assertIn("NOT unconditional", empty_reason)
 
     def test_knowledge_hit_carries_claim_text_and_expected_values(self):
         """Case 6 (return payload): the surfaced knowledge carries its text,
@@ -226,8 +241,13 @@ class TestDiscoveryVsReuse(VectorCase):
         hit = next(k for k in out["vector_recall"]["strategic_knowledge"]
                    if k["entry_id"] == eid)
         self.assertEqual(hit["expected_quality_hat"], 0.83)
-        self.assertEqual(hit["structural_match"], "applies")
+        self.assertEqual(hit["structural_match"], "compatible")
         self.assertTrue(hit["reusable"])
+        self.assertTrue(hit["requires_agent_assessment"])
+        self.assertEqual(hit["adoption_state"], "not_adopted")
+        # This legacy fixture states no claim/when paragraph: an ABSENT
+        # body is reported as absent, never fabricated from the notes.
+        self.assertEqual(hit["rule_body"]["source"], "absent")
         self.assertIn("capacity binds early", hit["claim_text"])
         self.assertIn("resource coupling in [0.25, 0.50]", hit["claim_text"])
 
@@ -236,14 +256,14 @@ class TestDiscoveryVsReuse(VectorCase):
         eid = self.h.sbank.add(_entry(
             strategy_id="S01",
             predicates={"family": "scheduling",
-                        "resource_coupling": [0.25, 0.50]}))
+                        "resource_coupling": [0.75, 1.00]}))
         self.h.index_sync.sync_entries([eid])
         out = self.h.recall(_task("t_q", description=REQ_A))
         hit = next(k for k in out["vector_recall"]["strategic_knowledge"]
                    if k["entry_id"] == eid)
-        self.assertEqual(hit["structural_match"], "conflicts")
+        self.assertEqual(hit["structural_match"], "conflict")
         self.assertFalse(hit["reusable"])
-        self.assertIn("family mismatch", hit["reason"])
+        self.assertIn("OUTSIDE", hit["reason"])
 
 
 class TestStatisticsNotContaminated(VectorCase):

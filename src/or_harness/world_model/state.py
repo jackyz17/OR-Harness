@@ -205,10 +205,13 @@ def task_text_digest(task: Dict[str, Any]) -> str:
 class KnowledgeRef:
     """A value copy of one strategic entry's decision-relevant fields.
 
-    Future prediction needs the knowledge AS IT WAS: applicability
-    (predicates), the expected quality/cost with intervals, and the
-    admission state — not just an id and a status token. Copied by value at
-    snapshot time; later revisions of the entry never rewrite this."""
+    Future prediction needs the knowledge AS IT WAS: the MACHINE structural
+    predicates (``predicates``; empty means no machine-checkable structural
+    condition, never unconditional applicability), the expected quality/cost
+    with intervals, and the admission state — not just an id and a status
+    token. The rule's full semantic condition is its ``when`` body and is
+    only assessed by the agent. Copied by value at snapshot time; later
+    revisions of the entry never rewrite this."""
 
     entry_id: str
     strategy_id: str

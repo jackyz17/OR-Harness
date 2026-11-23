@@ -205,10 +205,13 @@ class TestPredicateHonesty(HarnessTestCase):
             profile, {"family": "sched", "resource_coupling": [0.0, 0.25]}))
         state, reusable, reason = classify_applicability(
             profile, {"family": "sched", "resource_coupling": [0.0, 0.25]})
-        self.assertEqual((state, reusable), ("applies", True))
-        # A KNOWN contradiction is 'conflicts', distinct from 'unknown'.
-        self.assertEqual(classify_applicability(profile, {"family": "other"})[0],
-                         "conflicts")
+        self.assertEqual((state, reusable), ("compatible", True))
+        # A family LABEL difference alone is not a conflict; a measured
+        # structural contradiction is.
+        cross, cross_ok, cross_reason = classify_applicability(
+            profile, {"family": "other"})
+        self.assertEqual(cross, "compatible")
+        self.assertIn("LABELS differ", cross_reason)
 
 
 class TestRelationCheckSyntax(HarnessTestCase):

@@ -621,8 +621,17 @@ def _merge_existing_knowledge(harness, records: Sequence[Any],
             "similarity": ref.get("similarity"),
             "structural_match": ref.get("structural_match"),
             "reusable": ref.get("reusable"),
+            "machine_applicability": copy.deepcopy(
+                ref.get("machine_applicability") or {}),
+            "semantic_applicability": copy.deepcopy(
+                ref.get("semantic_applicability") or {}),
+            "requires_agent_assessment": ref.get(
+                "requires_agent_assessment"),
+            "adoption_state": ref.get("adoption_state"),
             "note": ("semantic discovery: a similarity hit is a DISCOVERY "
-                     "signal, not support strength"),
+                     "signal, not support strength; machine compatibility "
+                     "is not semantic applicability and a hit is not an "
+                     "adoption"),
         }
         entry = harness.sbank.get(entry_id)
         if entry is None:
@@ -1451,6 +1460,13 @@ def _related_history(harness, records: Sequence[Any], *,
             "similarity": hit.get("similarity"),
             "structural_match": hit.get("structural_match"),
             "reusable": hit.get("reusable"),
+            "machine_applicability": copy.deepcopy(
+                hit.get("machine_applicability") or {}),
+            "semantic_applicability": copy.deepcopy(
+                hit.get("semantic_applicability") or {}),
+            "requires_agent_assessment": hit.get(
+                "requires_agent_assessment"),
+            "adoption_state": hit.get("adoption_state"),
             "status": hit.get("status"),
             "verification_state": hit.get("verification_state"),
             "support_n": hit.get("support_n"),

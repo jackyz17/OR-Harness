@@ -517,15 +517,18 @@ def apply_provider_block_budgets(view: Dict[str, Any]) -> Dict[str, Any]:
         limits["gcr_evidence"] = _fit_blocks(
             view, evidence_keys, gcr_evidence_budget_chars(),
             kind_for=lambda key: key)
+    # Retrieval evidence is EVIDENCE, not "other non-core material": it is
+    # governed by the whole-request budget, never squeezed by the non-core
+    # ceiling (which could otherwise empty the very rule body the agent must
+    # read). It is reduced only when the WHOLE request is over budget.
     noncore_keys = tuple(key for key in (
-        "harness_capability", "capability_version", "retrieval_evidence",
+        "harness_capability", "capability_version",
         "hplus_feedback", "prediction_reminders", "notes") if key in view)
     if noncore_keys:
         limits["noncore"] = _fit_blocks(
             view, noncore_keys, noncore_budget_chars(),
             kind_for=lambda key: ("capability" if key == "harness_capability"
-                                  else "retrieval_evidence"
-                                  if key == "retrieval_evidence" else "generic"))
+                                  else "generic"))
     view["budget_limits"] = limits
     return view
 

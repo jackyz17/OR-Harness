@@ -235,7 +235,18 @@ def _body(raw, prior=None):
             raise ValueError('short rule paragraphs exceed 6000 characters; keep complete supporting detail by reference')
         if any(x in body["do"].lower() for x in ("no new knowledge", "nothing to add")):
             raise ValueError("do must describe executable actions, not an empty review")
-        body["predicates"] = copy.deepcopy(raw.get("predicates") or (raw.get("conditions") or {}).get("predicates") or {})
+        # ``predicates`` is OPTIONAL for a new rule: the full applicability
+        # is the ``when`` paragraph. When a revision omits the field, the
+        # PRIOR machine conditions are carried over (historical predicates
+        # stay readable); a new rule simply gets an empty set, which means
+        # "no machine-checkable structural condition", never "applies to
+        # everything".
+        declared_predicates = (raw.get("predicates")
+                               or (raw.get("conditions") or {}).get(
+                                   "predicates"))
+        if declared_predicates is None and prior is not None:
+            declared_predicates = prior.get("predicates")
+        body["predicates"] = copy.deepcopy(declared_predicates or {})
         body["effect_scope"] = raw.get("effect_scope", "task_check")
         return body
     # The old --relation grammar is a compatibility input, not a grant of

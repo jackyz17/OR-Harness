@@ -31,7 +31,7 @@ Structural classes and coupling cells group observations for conditional estimat
 | Memory layer | Content | Use |
 |---|---|---|
 | **Execution Evidence** | Actual methods, attempt chains, outputs, checks, failures, and measured costs | Examine how a previous attempt worked, failed, or was repaired |
-| **Strategic Knowledge** | Reusable steps, applicability conditions, reasons, and supported effects | Apply a method within its scope |
+| **Strategic Knowledge** | Reusable **when / do / expect** rule, with optional machine-checkable structural predicates and recorded verification | Read **when** and decide whether to adopt; a retrieval hit or a machine-compatible cell is not adoption |
 
 Keep the proposed method with its prediction and the performed method with the execution receipt and artifacts. A new rule version records **when / do / expect**. The agent uses evidence to decide what to record, whether to revise an existing rule, and whether to keep a candidate or publish it within a supported scope. A sound derivation or a small executable check can support a scoped rule during cold start. Adoption links a specific version to an execution. [Induction and rule use](induction.md)
 

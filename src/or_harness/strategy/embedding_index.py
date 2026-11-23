@@ -5,10 +5,11 @@ Split of responsibilities (the design rule this module exists to serve):
 - Embedding decides WHICH memories are SEEN. It is a discovery signal and
   nothing else: a cosine similarity is never a quality estimate, never a
   cost, never a failure probability, and never widens a claim's applicability.
-- Profile predicates and applicability conditions decide whether a seen
-  memory may be REUSED. That judgment lives in
-  :mod:`or_harness.core.schema` (``group_key`` / ``profile_matches``) and is
-  untouched by this module.
+- The deterministic structural predicates only prove MACHINE compatibility
+  (a necessary check), never full applicability: a rule's semantic
+  condition is its ``when`` paragraph, judged by the agent. The machine
+  check lives in :mod:`or_harness.strategy.applicability` and is untouched
+  by this module.
 
 So this module is deliberately narrow: backend adapters, an atomic
 sidecar-JSON vector index, and the two document builders that turn an

@@ -223,16 +223,32 @@ class StrategicBank:
         return [(self.get(row[4]),row[5]) for row in candidates[:limit]], len(candidates)
 
     def matching(self, profile, *,
-                 include_dormant: bool = False) -> List[StrategicEntry]:
-        """Entries whose predicates match the profile.
+                 include_dormant: bool = False,
+                 compatible_only: bool = False) -> List[StrategicEntry]:
+        """Entries that are not CONFIRMED structurally contradictory.
+
+        Applicability is layered (see ``strategy.applicability``): a
+        predicate set is only ever a MACHINE check. ``compatible_only=True``
+        keeps entries whose machine conditions are confirmed compatible (the
+        strict mode used when a cost estimate is taken from the entry).
+        The default keeps every entry without a confirmed structural
+        conflict, so ``not_specified`` / ``unknown`` rules stay discoverable
+        — with their explicit machine state and their ``when`` — rather than
+        being silently treated as applicable.
 
         ``include_dormant=False`` (default) is the RETRIEVAL view: dormant
         entries are not consulted. ``include_dormant=True`` is the EVIDENCE
-        view used when recording: a matching execution is a fact about the
-        pattern regardless of whether the entry is currently consulted, and
-        waking it back up is an offline induction decision."""
-        return [e for e in self.list(include_dormant=include_dormant)
-                if e.matches(profile)]
+        view used when recording."""
+        from or_harness.strategy.applicability import (
+            machine_applicability, possibly_applicable,
+        )
+        entries = self.list(include_dormant=include_dormant)
+        if compatible_only:
+            return [e for e in entries
+                    if machine_applicability(
+                        profile, e.predicates)["machine_compatible"]]
+        return [e for e in entries
+                if possibly_applicable(profile, e.predicates)]
 
     def mark_consulted(self, entry_ids: List[str], at: Optional[float] = None) -> None:
         at = time.time() if at is None else at

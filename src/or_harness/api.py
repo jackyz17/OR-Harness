@@ -4140,7 +4140,8 @@ class ORHarness:
         # the snapshot then falls back to the statistics ladder below, which
         # is exactly what "we have no verified knowledge yet" should look
         # like.
-        entry = next((e for e in self.sbank.matching(profile)
+        entry = next((e for e in self.sbank.matching(
+                          profile, compatible_only=True)
                       if e.strategy_id == strategy_id
                       and is_publishable(e)), None)
         if entry is not None:

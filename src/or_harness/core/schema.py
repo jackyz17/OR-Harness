@@ -988,7 +988,16 @@ def profile_matches(profile: ProblemProfile, predicates: Dict[str, Any]) -> bool
     A predicate set carrying a key the framework cannot EVALUATE returns
     False: an unverifiable condition is never defaulted to satisfied. The
     refined callers use :func:`classify_applicability` to separate "this
-    conflicts" from "this cannot be decided"."""
+    conflicts" from "this cannot be decided".
+
+    This is a MACHINE structural check, never semantic applicability: a
+    rule's full condition is its ``when`` paragraph, which only the agent
+    can judge. An EMPTY predicate set is vacuously true HERE because it
+    states no machine constraint (the evidence-window filters in
+    ``api._newer_evidence_count`` / ``conditions.available_entry_ids`` rely
+    on that); applicability code must use
+    :func:`or_harness.strategy.applicability.machine_applicability`, where
+    empty means ``not_specified`` and never "applies"."""
     if unsupported_predicate_keys(predicates):
         return False
     family_pred = predicates.get("family")
@@ -1724,7 +1733,13 @@ class StrategicEntry:
         return dict(self.pattern.get("predicates") or {})
 
     def matches(self, profile: ProblemProfile) -> bool:
-        return profile_matches(profile, self.predicates)
+        """Whether the MACHINE-checkable structural conditions are satisfied.
+
+        This is not semantic applicability: a rule's full condition is its
+        ``when`` paragraph, which the agent assesses. An empty predicate set
+        is NOT a match (no machine condition was recorded)."""
+        from or_harness.strategy.applicability import machine_matched
+        return machine_matched(profile, self.predicates)
 
     def to_dict(self) -> Dict[str, Any]:
         raw = {

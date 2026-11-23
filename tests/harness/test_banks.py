@@ -242,9 +242,10 @@ class TestStrategicBank(HarnessTestCase):
         with self.assertRaises(StorageError):
             self.sbank.add(entry)
 
-    def test_matching_respects_scope(self):
-        # A family-scoped claim and a family-free one; the latter matches
-        # every family (it is cross-family by construction, not by a label).
+    def test_matching_keeps_non_conflicting_entries(self):
+        # A family label is a weak scope signal, not a veto: a different
+        # label stays discoverable (the agent assesses `when`), while a
+        # MEASURED structural contradiction is excluded.
         l1 = self.sbank.add(self.make_entry())
         l2 = self.sbank.add(self.make_entry(
             predicates={"resource_coupling": [0.75, 1.0]}))
@@ -253,7 +254,11 @@ class TestStrategicBank(HarnessTestCase):
                          {l1, l2})
         other_family = self.make_profile(problem_id="q2", family="scheduling")
         self.assertEqual([e.entry_id for e in self.sbank.matching(other_family)],
-                         [l2])
+                         [l1, l2])
+        conflict = self.sbank.add(self.make_entry(
+            predicates={"resource_coupling": [0.0, 0.25]}))
+        self.assertNotIn(conflict, [e.entry_id for e in
+                                    self.sbank.matching(profile)])
 
     def test_calibration_does_not_promote(self):
         """r21: a DECLARED prediction's hit rate is a DIAGNOSTIC. Five hits

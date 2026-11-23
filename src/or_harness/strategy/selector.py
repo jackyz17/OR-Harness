@@ -97,6 +97,21 @@ class Recommendation:
     #: field means the memory does not record it, which is stated rather
     #: than filled in from somewhere else.
     knowledge: Dict[str, Any] = field(default_factory=dict)
+    #: The rule's own ``when`` / ``do`` / ``expect`` (read as recorded; a
+    #: legacy claim is rendered from its own fields). Always present on the
+    #: entry path, because applicability cannot be judged from a similarity
+    #: or a predicate set alone.
+    rule_body: Dict[str, Any] = field(default_factory=dict)
+    #: Deterministic machine check of the STRUCTURAL conditions only.
+    machine_applicability: Dict[str, Any] = field(default_factory=dict)
+    #: The rule's semantic applicability surface (its ``when``). The
+    #: framework does not judge it; the agent does.
+    semantic_applicability: Dict[str, Any] = field(default_factory=dict)
+    requires_agent_assessment: bool = False
+    #: A recall/structural row is NOT adoption. Adoption is recorded by the
+    #: agent's used-entry facts in its normal solving flow.
+    adoption_state: Optional[str] = None
+    adoption_note: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -118,6 +133,17 @@ class Recommendation:
                       if self.claim is not None else None),
             "knowledge": copy.deepcopy(self.knowledge),
         }
+        for key in ("rule_body", "machine_applicability",
+                    "semantic_applicability"):
+            value = getattr(self, key)
+            if value:
+                out[key] = copy.deepcopy(value)
+        if self.requires_agent_assessment:
+            out["requires_agent_assessment"] = True
+        if self.adoption_state:
+            out["adoption_state"] = self.adoption_state
+            out["adoption_note"] = self.adoption_note
+
         if self.knowledge.get('rule'):
             estimate=self.knowledge.get('estimate') or {}
             expected={}
@@ -361,13 +387,15 @@ class Selector:
         return min(1.0, entry.support_n / PROMOTE_REFERENCE_N)
 
     @staticmethod
-    def _is_cross_family(entry: StrategicEntry,
-                         profile: ProblemProfile) -> bool:
-        """True when the claim does not itself name this family — i.e. it is
-        being applied outside the family it was induced from. Entries produced
-        by induction carry a family predicate, so this only bites on
-        harness-authored family-free patterns."""
-        return "family" not in entry.predicates and bool(entry.predicates)
+    def _is_cross_family(annotations: Dict[str, Any]) -> bool:
+        """True when the family LABELS differ (a weak scope signal).
+
+        A different label never vetoes the rule: the structural mechanism may
+        transfer, and the agent assesses ``when``.
+        """
+        family = (annotations.get("machine_applicability") or {}).get(
+            "family_label") or {}
+        return family.get("relation") == "different"
 
     def _from_entry(self, strategy_id: str, profile: ProblemProfile,
                     entry: StrategicEntry,
@@ -384,7 +412,10 @@ class Selector:
         fill any of it in from a directory.
         """
         confidence = self._entry_confidence(entry, profile)
-        cross_family = self._is_cross_family(entry, profile)
+        from or_harness.strategy.applicability import applicability_annotations
+        annotations = applicability_annotations(profile, entry)
+        machine = annotations["machine_applicability"]
+        cross_family = self._is_cross_family(annotations)
         cost = entry.expected_cost_hat
         warnings: List[str] = []
         if entry.verification_state != "verified":
@@ -397,11 +428,22 @@ class Selector:
             warnings.append(
                 f"entry {entry.entry_id} is suspect (3 consecutive prediction "
                 "misses); its estimate is unreliable until re-verified")
+        machine_state = machine.get("state")
+        if machine_state == "not_specified":
+            warnings.append(
+                "no machine-checkable structural condition is recorded for "
+                "this rule: this is NOT unconditional applicability — read "
+                "its `when` and decide whether it applies")
+        elif machine_state in ("unknown", "partial"):
+            warnings.append(
+                "machine applicability is INCOMPLETE: "
+                + str(machine.get("reason") or "unmeasured structural "
+                      "values"))
         if cross_family:
             warnings.append(
-                f"cross-family generalization: entry {entry.entry_id} states no "
-                "family predicate, so it is applied outside the family it "
-                "was induced from")
+                "the family LABELS differ; that alone is not a contradiction "
+                "— a shared mathematical mechanism may transfer. Read "
+                "`when` and decide")
         warnings.extend(self._cost_basis_warnings(cost_basis))
         warnings.extend(entry.risk_conditions)
         # HONEST BASIS: the prediction track's ``hit_rate`` is a MEAN over
@@ -429,7 +471,13 @@ class Selector:
             cost_known_dims=sorted(cost.measured_dims()),
             cost_basis_dims=list(cost_basis or []),
             claim=(atomic(entry.claim,f'orx inspect --bank strategic --entry {entry.entry_id}') if entry.claim is not None else None),
-            knowledge=self._entry_knowledge(entry))
+            knowledge=self._entry_knowledge(entry),
+            rule_body=annotations["rule_body"],
+            machine_applicability=machine,
+            semantic_applicability=annotations["semantic_applicability"],
+            requires_agent_assessment=True,
+            adoption_state=annotations["adoption_state"],
+            adoption_note=annotations["adoption_note"])
 
     @staticmethod
     def _entry_knowledge(entry: StrategicEntry) -> Dict[str, Any]:

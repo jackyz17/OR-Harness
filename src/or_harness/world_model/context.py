@@ -811,10 +811,16 @@ def classify_evidence(layer: str, row: Dict[str, Any]) -> str:
     if layer == "execution_evidence":
         return "execution_fact"
     if layer == "strategic_knowledge":
-        if row.get("reusable") and str(row.get("verification_state")
-                                       or "") == "verified":
+        state = str(row.get("verification_state") or "")
+        if state == "verified":
             return "verified_knowledge"
-        if not row.get("reusable"):
+        if state == "legacy":
+            return "legacy_knowledge"
+        # Machine compatibility is NOT verification: a hit that requires the
+        # agent's semantic assessment is unverified knowledge even when its
+        # structural conditions happen to be compatible.
+        if row.get("requires_agent_assessment") or \
+                row.get("reusable") is False:
             return "unverified_knowledge"
         return "legacy_knowledge"
     return "structural_recommendation"
@@ -888,7 +894,24 @@ def _structural_hits(recommendations: Sequence[Dict[str, Any]]
                                       rec.get("risk_warnings") or []),
                                   "relations": copy.deepcopy(
                                       rec.get("relations") or []),
-                                  "reusable": True}))
+                                  # The rule's own when/do/expect and the
+                                  # layered applicability annotations travel
+                                  # with the structural row too: a caller
+                                  # must never see only similarity/statistics
+                                  # and treat the rule as applicable.
+                                  "rule_body": copy.deepcopy(
+                                      rec.get("rule_body") or {}),
+                                  "machine_applicability": copy.deepcopy(
+                                      rec.get("machine_applicability") or {}),
+                                  "semantic_applicability": copy.deepcopy(
+                                      rec.get("semantic_applicability") or {}),
+                                  "requires_agent_assessment": bool(
+                                      rec.get("requires_agent_assessment")),
+                                  "adoption_state": rec.get("adoption_state"),
+                                  "adoption_note": rec.get("adoption_note"),
+                                  "reusable": bool(
+                                      (rec.get("machine_applicability") or {}
+                                       ).get("machine_compatible"))}))
         else:
             hits.append(_hit(
                 "recommendation", str(rec.get("strategy_id") or "unknown"),
@@ -1341,7 +1364,11 @@ def _project_retrieval_for_provider(view: "RetrievalView") -> Dict[str, Any]:
         if hit.get("layer") == "strategic_knowledge":
             rec = recs_by_entry.get(str(hit.get("evidence_id")))
             if isinstance(rec, dict):
-                for key in ("claim", "knowledge"):
+                for key in ("claim", "knowledge", "rule_body",
+                            "machine_applicability",
+                            "semantic_applicability",
+                            "requires_agent_assessment", "adoption_state",
+                            "adoption_note"):
                     if rec.get(key) is not None:
                         content = _merge_content(content, {key: rec[key]})
         content = _dedupe_content_text(content)
@@ -1558,9 +1585,10 @@ def build_retrieval_view(recall_result: Dict[str, Any], *,
             result.get("available_solver_families") or []),
         "solver_advisories": list(result.get("solver_advisories") or []),
         "coupling_warnings": list(result.get("coupling_warnings") or []),
-        "note": ("the structural channel decides APPLICABILITY from the "
-                 "profile; its scores are evidence-based estimates, not "
-                 "measurements"),
+        "note": ("the structural channel reports MACHINE structural "
+                 "compatibility against the profile; that is not semantic "
+                 "applicability — the rule's `when` still requires the "
+                 "agent's assessment"),
     }
     view.channels_run.append("structural")
 
