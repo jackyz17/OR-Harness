@@ -1957,7 +1957,9 @@ class PredictionContext:
         from or_harness.world_model.conditions import (
             calibration_projection, filter_prediction_reminders,
         )
-        from or_harness.strategy.evidence_views import paired_feedback_view
+        from or_harness.strategy.evidence_views import (
+            provider_paired_feedback,
+        )
         joint = self.joint.to_dict()
         joint, omitted = _dedupe_joint(joint)
         # CIR is INTERNAL. The model reads the task text, the math
@@ -1994,7 +1996,8 @@ class PredictionContext:
             "execution_constraints": copy.deepcopy(self.execution_constraints),
             "strategy_outcome_calibration": calibration_projection(
                 self.strategy_calibration),
-            "prediction_execution_pairs": paired_feedback_view(self.paired_feedback),
+            "prediction_execution_pairs": provider_paired_feedback(
+                self.paired_feedback),
             "prediction_reminders": filter_prediction_reminders(
                 self.prediction_reminders),
             "hplus_feedback": copy.deepcopy(self.hplus_feedback),
@@ -2028,6 +2031,14 @@ class PredictionContext:
         # small applicable selection above, made before volume trimming.
         view["strategy_outcome_calibration"].pop("conditional_cost", None)
         view["strategy_outcome_calibration"].pop("technical_r", None)
+        # Independent provider-only ceilings for the history feedback, the
+        # G/C/R evidence and the other non-core material. They are applied
+        # BEFORE the fragment bound so the history is reduced per-row first
+        # rather than the current-task evidence being dropped first.
+        from or_harness.world_model.request_budget import (
+            apply_provider_block_budgets,
+        )
+        view = apply_provider_block_budgets(view)
         return _bound_request(view)
 
 
@@ -2712,86 +2723,116 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-#: Blocks that may be TRIMMED when the request is oversized, in order. The
-#: problem statement, the candidate and the calibration are never in this
-#: list: they are what the prediction is FOR, and dropping them would make
-#: the answer meaningless rather than cheaper. r12 adds the FEEDBACK blocks
-#: (paired feedback, reminders, H+ feedback) after the capability blocks:
-#: they are evidence, and under budget pressure evidence before the task is
-#: the right thing to shed — but the block-level count and the omission are
-#: always reported, never silent. The names are the PROVIDER-VIEW keys
-#: (``prediction_execution_pairs`` etc.), not the stored-context keys
-#: (``paired_feedback``): trimming the stored name found nothing and left the
-#: real block in place.
+#: Blocks that may be TRIMMED when the request fragment is oversized, in
+#: order. The problem statement, the candidate, the execution constraints and
+#: the calibration selection are never in this list: they are what the
+#: prediction is FOR. HISTORY FEEDBACK comes FIRST now: it is the largest and
+#: most compressible material, and the old order (retrieval/solving context
+#: before the history) threw away CURRENT-task evidence while keeping old
+#: cases. Each block is reduced per-item (rows/hits/groups) before it is
+#: dropped, and every omission is named. The names are the PROVIDER-VIEW keys
+#: (``prediction_execution_pairs`` etc.), not the stored-context keys.
 _TRIMMABLE_BLOCKS = (
+    "prediction_execution_pairs",
     "harness_capability",
     "capability_version",
     "retrieval_evidence",
-    "solving_context",
-    "prediction_execution_pairs",
     "hplus_feedback",
     "prediction_reminders",
     "cost_evidence",
     "implementation_r_evidence",
+    "notes",
+)
+
+#: Options that ARE the current problem/candidate/constraints and must never
+#: be dropped by the fragment bound. Reported (not silently cut) when they
+#: alone exceed it; the full-request check turns that into a refusal to send.
+_PROTECTED_VIEW_BLOCKS = (
+    "joint_problem",
+    "solving_context",
+    "execution_constraints",
+    "strategy_outcome_calibration",
 )
 
 
 def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
-    """Report the request size and, when oversized, trim the optional blocks.
+    """Report the fragment size; trim NON-CORE blocks when it is oversized.
 
-    The trim is DESCENDING and NAMED: each dropped or shortened block is
-    recorded under ``omissions`` with its reason and the source, so an
-    agent can tell "the model was not given this" from "this did not
-    exist". Nothing is removed silently, and the problem, the candidate and
-    the calibration block are never touched. The size bound is a
+    The trim is DESCENDING and NAMED: every shortened block records what was
+    removed under ``omissions`` with a reference to the full value, so an
+    agent can tell "the model was not given this" from "this did not exist".
+    History feedback is reduced FIRST (per-row, then per-case); the task, the
+    constraints and the calibration are never touched. The size bound is a
     DEPLOYMENT-CONFIGURED token budget converted to a labeled character
-    estimate (see :func:`_input_budget_chars`).
+    estimate (see :func:`_input_budget_chars`); the WHOLE request is enforced
+    separately by
+    :func:`or_harness.world_model.request_budget.enforce_full_request_budget`.
     """
+    from or_harness.world_model import request_budget as budget_module
+    from or_harness.strategy.evidence_views import (
+        history_feedback_budget_chars,
+    )
     max_chars, budget_basis = _input_budget_chars()
     size = len(json.dumps(view, ensure_ascii=False, default=str))
     omissions: List[Dict[str, Any]] = []
-    for block in _TRIMMABLE_BLOCKS:
-        if size <= max_chars:
-            break
-        if block not in view:
-            continue
-        before = len(json.dumps(view[block], ensure_ascii=False,
-                                default=str))
-        if block == "harness_capability":
-            # Keep the ORDINAL status of every source; drop only the bulky
-            # per-source detail. ``no_evidence`` is a finding about the
-            # harness, not noise, so the statuses survive.
-            trimmed = _compact_capability(view[block])
-        elif block in ("prediction_execution_pairs", "hplus_feedback"):
-            # Feedback blocks carry their own counts; replace with a report
-            # of what was dropped rather than dropping silently.
-            block_dict = view[block] if isinstance(view[block], dict) else {}
-            trimmed = {
-                "omitted_for_size": True,
-                "prior_counts": {
-                    k: block_dict.get(k)
-                    for k in ("n_pairs_total", "n_pairs_included",
-                              "n_pairs_omitted", "n_gains_total",
-                              "n_included")
-                    if k in block_dict},
-                "note": ("this evidence block was dropped to keep the "
-                         "request within its size bound; its counts above "
-                         "record that it existed and how much was withheld"),
-            }
-        else:
-            trimmed = {"omitted_for_size": True,
-                       "note": ("this block was dropped to keep the request "
-                                "within its size bound; the full value is in "
-                                "the stored context")}
-        view[block] = trimmed
-        after = len(json.dumps(trimmed, ensure_ascii=False, default=str))
-        omissions.append({
-            "block": block,
-            "reason": f"request exceeded {max_chars} characters (an ESTIMATE "
-                      "from the deployment's token budget, not a token count)",
-            "chars_removed": max(0, before - after),
-        })
-        size = len(json.dumps(view, ensure_ascii=False, default=str))
+    if size > max_chars:
+        for block in _TRIMMABLE_BLOCKS:
+            if size <= max_chars:
+                break
+            if block not in view:
+                continue
+            before = budget_module._size(view[block])
+            if block == "prediction_execution_pairs":
+                budget = history_feedback_budget_chars()
+                # The provider-only history budget was already applied; the
+                # fragment bound is a FURTHER reduction, so it must be able
+                # to cut below that budget.
+                cut = max(200, size - max_chars)
+                target = max(1200, before - cut)
+                target = min(before, target)
+                trimmed, info = budget_module.trim_history_block(
+                    view[block], target, stage="context_fragment")
+                action = ("history rows reduced, then dropped from the tail "
+                          f"({info.get('dropped_pairs', 0)} pair(s) "
+                          "omitted)")
+            elif block == "harness_capability":
+                trimmed, info = budget_module.trim_evidence_block(
+                    view[block], max(200, before - (size - max_chars)),
+                    kind="capability")
+                action = "capability detail compacted; statuses kept"
+            elif block == "retrieval_evidence":
+                trimmed, info = budget_module.trim_evidence_block(
+                    view[block], max(200, before - (size - max_chars)),
+                    kind="retrieval_evidence")
+                action = "retrieval hits reduced from the tail"
+            elif block in ("cost_evidence", "implementation_r_evidence"):
+                trimmed, info = budget_module.trim_evidence_block(
+                    view[block], max(200, before - (size - max_chars)),
+                    kind=block)
+                action = ("evidence reduced to its own selection; the full "
+                          "population stays in the stored context")
+            else:
+                trimmed = {
+                    "omitted_for_size": True,
+                    "detail_ref": "the stored prediction context",
+                    "note": ("this optional block was dropped to keep the "
+                             "request fragment within its size bound; the "
+                             "full value is in the stored context"),
+                }
+                action = "optional block replaced by a reference"
+            view[block] = trimmed
+            after = budget_module._size(trimmed)
+            omissions.append({
+                "block": block,
+                "reason": (f"request fragment exceeded {max_chars} "
+                           "characters (an ESTIMATE from the deployment's "
+                           "token budget, not a token count)"),
+                "action": action,
+                "chars_removed": max(0, before - after),
+            })
+            size = len(json.dumps(view, ensure_ascii=False, default=str))
+    protected = {key: budget_module._size(view[key])
+                 for key in _PROTECTED_VIEW_BLOCKS if key in view}
     view["request_size"] = {
         "chars": size,
         "estimator": ("characters (not tokens; a token count needs the "
@@ -2804,9 +2845,21 @@ def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
         "budget": budget_basis,
         "within_bound": size <= max_chars,
         "n_blocks_trimmed": len(omissions),
+        "protected_chars": protected,
+        "block_budgets": copy.deepcopy(view.get("budget_limits") or {}),
     }
     if omissions:
         view["omissions"] = omissions
+    if size > max_chars:
+        view["request_size"]["over_budget"] = {
+            "excess_chars": size - max_chars,
+            "protected_chars": protected,
+            "note": ("the context fragment is over its own bound even after "
+                     "the non-core blocks were reduced; the protected "
+                     "current-task blocks were NOT truncated. The "
+                     "whole-request budget check reports whether the request "
+                     "can be sent"),
+        }
     return view
 
 

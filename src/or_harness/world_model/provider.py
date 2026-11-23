@@ -218,6 +218,17 @@ class WorldModelProvider:
     def describe(self) -> Dict[str, Any]:
         return {"provider": self.name}
 
+    def count_tokens(self, text: str) -> Optional[int]:
+        """The provider's OWN token count for ``text``, or ``None``.
+
+        The request budget measures the WHOLE request with a real tokenizer
+        when the endpoint exposes one. A provider that cannot tokenize its
+        model's input honestly returns ``None`` (the base contract) and the
+        budget falls back to a labelled conservative estimate — it never
+        presents an estimate as a tokenizer count.
+        """
+        return None
+
 
 class NotConfiguredProvider(WorldModelProvider):
     """The default: predictions are not enabled. Every call returns the

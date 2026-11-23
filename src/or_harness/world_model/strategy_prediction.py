@@ -589,7 +589,8 @@ COST_SCOPE_CONVENTION: Dict[str, Any] = {
 def build_strategy_outcome_request(
         context: Any, candidate: CandidateRef,
         *, benefit_baseline_hint: Optional[Dict[str, Any]] = None,
-        benefit_convention: Optional[Dict[str, Any]] = None
+        benefit_convention: Optional[Dict[str, Any]] = None,
+        provider: Any = None
         ) -> Dict[str, Any]:
     """Assemble the provider request for one candidate under one context.
 
@@ -731,7 +732,8 @@ def build_strategy_outcome_request(
     if benefit_baseline_hint:
         request["benefit_baseline_hint"] = copy.deepcopy(
             benefit_baseline_hint)
-    return _finalize_request_size(request, STRATEGY_OUTCOME_SYSTEM_PROMPT)
+    return _finalize_request_size(request, STRATEGY_OUTCOME_SYSTEM_PROMPT,
+                                  provider=provider)
 
 
 def _cap_displayed_pairs(request: Dict[str, Any]) -> None:
@@ -775,53 +777,31 @@ def _cap_displayed_pairs(request: Dict[str, Any]) -> None:
 
 
 def _finalize_request_size(request: Dict[str, Any],
-                           system_prompt: str) -> Dict[str, Any]:
-    """Report the WHOLE request size (system prompt + the assembled body).
+                           system_prompt: str,
+                           *, provider: Any = None) -> Dict[str, Any]:
+    """Measure the WHOLE request and enforce the deployment's input bound.
 
     The context's own ``_bound_request`` measures only the ``prediction_context``
     fragment, so a request could stay "within bound" while the CANDIDATE, the
-    system prompt and the output contract pushed the real total far over: the
-    budget has to be checked AFTER the full request is assembled, once.
-    Returns the request unchanged apart from a ``request_size`` block that
-    reflects the true total, and — when the total is STILL over the bound
-    after the block-level trim — an explicit ``over_budget`` diagnostic rather
-    than a silent send.
+    system prompt and the output contract pushed the real total far over.
+    This final check measures system prompt + full JSON body (with the
+    provider's real tokenizer when it exposes one, otherwise an explicitly
+    labelled conservative estimate that counts CJK/JSON-dense text more
+    heavily than ``chars / 4``).
+
+    When over budget it reduces the HISTORY FEEDBACK first (per-row, then
+    per-case), then the G/C/R evidence and the other non-core blocks. The
+    current task, the candidate, the execution constraints and the prediction
+    contract are never truncated: if the protected core alone still exceeds
+    the budget, ``sendable`` is false and the service refuses to send the
+    request instead of issuing an uncontrolled one.
     """
-    from or_harness.world_model.context import _input_budget_chars
+    from or_harness.world_model.request_budget import (
+        enforce_full_request_budget,
+    )
     _cap_displayed_pairs(request)
-    max_chars, budget_basis = _input_budget_chars()
-    body_chars = len(json.dumps(request, ensure_ascii=False, default=str))
-    prompt_chars = len(system_prompt or "")
-    total = body_chars + prompt_chars
-    # The context fragment reports its own size; fold it into the total so a
-    # reader sees both the fragment and the whole request.
-    fragment = (request.get("prediction_context") or {}).get("request_size")
-    block: Dict[str, Any] = {
-        "chars": total,
-        "body_chars": body_chars,
-        "system_prompt_chars": prompt_chars,
-        "context_fragment_chars": (fragment or {}).get("chars"),
-        "estimator": ("characters = system prompt + JSON body string length; "
-                      "an ESTIMATE, never a tokenizer count"),
-        "bound_chars": max_chars,
-        "budget": budget_basis,
-        "within_bound": total <= max_chars,
-    }
-    if total > max_chars:
-        # The full request is over budget even after the context's
-        # block-level trim. This is a CONDITION to report, not a silent send:
-        # the model would be given evidence beyond the deployment's declared
-        # bound.
-        block["over_budget"] = {
-            "excess_chars": total - max_chars,
-            "note": ("the FULL request (system prompt + candidate + context) "
-                     "exceeds the configured input bound even after the "
-                     "context's optional blocks were trimmed; the deployment's "
-                     "bound is not guaranteed and the caller should raise "
-                     "OR_HARNESS_INPUT_BUDGET_TOKENS, shorten the candidate/ "
-                     "system prompt, or narrow the context"),
-        }
-    request["request_size"] = block
+    request["request_size"] = enforce_full_request_budget(
+        request, system_prompt, provider=provider)
     return request
 
 
@@ -1487,7 +1467,8 @@ class StrategyOutcomeService:
         with lease_context(self.store, context):
             request = build_strategy_outcome_request(
                 context, candidate, benefit_baseline_hint=benefit_baseline_hint,
-                benefit_convention=benefit_convention)
+                benefit_convention=benefit_convention,
+                provider=self.provider)
             pending = self._failed(context, candidate, "invalid",
                 "provider call started; result and usage are unknown until a response is saved",
                 failure={"kind": "in_flight", "state": "pending"})
@@ -1498,6 +1479,37 @@ class StrategyOutcomeService:
                 prediction.prediction_id = pending.prediction_id
                 prediction.trace.model_info["call_state"] = "returned"
                 self._save_with_conditions(prediction, context, request)
+
+            size = request.get("request_size") or {}
+            if size.get("sendable") is False:
+                # The FULL request is over the deployment's input bound even
+                # after the history feedback and other non-core blocks were
+                # reduced, and the protected core alone is over. Sending it
+                # would be an uncontrolled request: refuse, record WHY and
+                # keep the diagnostic sizes instead.
+                over = size.get("over_budget") or {}
+                prediction = self._failed(
+                    context, candidate, "invalid",
+                    "input request exceeds the configured bound: "
+                    f"{size.get('tokens')} estimated token(s) vs "
+                    f"{size.get('bound_tokens')} input tokens; the request "
+                    "was NOT sent",
+                    failure={
+                        "kind": "request_over_budget",
+                        "tokens": size.get("tokens"),
+                        "bound_tokens": size.get("bound_tokens"),
+                        "token_basis": size.get("token_basis"),
+                        "core_chars": (size.get("core") or {}).get(
+                            "core_chars"),
+                        "over_budget": copy.deepcopy(over),
+                        "trimming": copy.deepcopy(
+                            size.get("trimming") or []),
+                    })
+                prediction.trace.model_info["request_size"] = copy.deepcopy(
+                    size)
+                prediction.trace.model_info["request_trimming"] =                     copy.deepcopy(size.get("trimming") or [])
+                save_result(prediction)
+                return prediction
 
             try:
                 try:
