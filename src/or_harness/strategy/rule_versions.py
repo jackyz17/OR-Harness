@@ -222,6 +222,59 @@ def append_check(store, entry_id, version, kind, state, data):
     return value, True
 
 
+_OMITTED = object()
+
+
+def _declared_predicates(raw):
+    """The predicate declaration as written, distinguishing omission from {}.
+
+    ``None`` is treated like omission (a JSON null is not a machine
+    condition), while an explicitly supplied ``{}`` is a real declaration
+    that clears the previous machine conditions on a revision.
+    """
+    if "predicates" in raw and raw.get("predicates") is not None:
+        return raw.get("predicates")
+    conditions = raw.get("conditions")
+    if (isinstance(conditions, dict)
+            and conditions.get("predicates") is not None):
+        return conditions.get("predicates")
+    if "predicates" in raw:
+        return raw.get("predicates")
+    if isinstance(conditions, dict) and "predicates" in conditions:
+        return conditions.get("predicates")
+    return _OMITTED
+
+
+def _resolved_predicates(raw, prior):
+    declared = _declared_predicates(raw)
+    if declared is _OMITTED or declared is None:
+        if prior is not None:
+            return copy.deepcopy(prior.get("predicates") or {})
+        return {}
+    if not isinstance(declared, dict):
+        raise ValueError("predicates must be a JSON object")
+    return copy.deepcopy(declared)
+
+
+def _resolved_effect_scope(raw, prior):
+    """Explicit value wins; omission on a revision inherits the prior body.
+
+    A new rule has no prior body and therefore gets the historical default
+    ``task_check``. An explicitly supplied empty/non-text scope is refused
+    rather than silently defaulted.
+    """
+    if "effect_scope" in raw and raw.get("effect_scope") is not None:
+        value = raw.get("effect_scope")
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("effect_scope must be nonempty text")
+        return value.strip()
+    if prior is not None:
+        inherited = prior.get("effect_scope")
+        if isinstance(inherited, str) and inherited.strip():
+            return inherited.strip()
+    return "task_check"
+
+
 def _body(raw, prior=None):
     fields = ("when", "do", "expect")
     if not any(k in raw for k in fields) and prior is not None and not any(k in raw for k in ('claim','text','method','conditions')):
@@ -236,18 +289,12 @@ def _body(raw, prior=None):
         if any(x in body["do"].lower() for x in ("no new knowledge", "nothing to add")):
             raise ValueError("do must describe executable actions, not an empty review")
         # ``predicates`` is OPTIONAL for a new rule: the full applicability
-        # is the ``when`` paragraph. When a revision omits the field, the
-        # PRIOR machine conditions are carried over (historical predicates
-        # stay readable); a new rule simply gets an empty set, which means
-        # "no machine-checkable structural condition", never "applies to
-        # everything".
-        declared_predicates = (raw.get("predicates")
-                               or (raw.get("conditions") or {}).get(
-                                   "predicates"))
-        if declared_predicates is None and prior is not None:
-            declared_predicates = prior.get("predicates")
-        body["predicates"] = copy.deepcopy(declared_predicates or {})
-        body["effect_scope"] = raw.get("effect_scope", "task_check")
+        # is the ``when`` paragraph. Omission on a revision inherits the
+        # prior machine conditions; an explicit ``{}`` CLEARS them. A new
+        # rule simply gets an empty set, which means "no machine-checkable
+        # structural condition", never "applies to everything".
+        body["predicates"] = _resolved_predicates(raw, prior)
+        body["effect_scope"] = _resolved_effect_scope(raw, prior)
         return body
     # The old --relation grammar is a compatibility input, not a grant of
     # v2 publication. Retain its exact text/conditions and declared checks.
@@ -264,8 +311,8 @@ def _body(raw, prior=None):
         raise ValueError("placeholder claim; submit an empty review instead")
     return {"when": (claim.get("conditions") or {}).get("note") or "Review the stated premises before use.",
             "do": action, "expect": claim["text"], "_legacy_input": claim,
-            "predicates": copy.deepcopy((claim.get("conditions") or {}).get("predicates") or {}),
-            "effect_scope": raw.get("effect_scope", "task_check")}
+            "predicates": _resolved_predicates(raw, prior),
+            "effect_scope": _resolved_effect_scope(raw, prior)}
 
 
 def _resolve(engine, evidence):

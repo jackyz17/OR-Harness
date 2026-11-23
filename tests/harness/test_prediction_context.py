@@ -356,6 +356,16 @@ class TestRetrievalEvidence(ContextCase):
         self.assertEqual(classify_evidence("recommendation", {}),
                          "structural_recommendation")
 
+    def test_structural_omission_count_is_carried_into_the_context(self):
+        view = build_retrieval_view({
+            "recommendations": [],
+            "recall_budget": {"omitted_without_machine_support": 3},
+        })
+        self.assertEqual(
+            view.structural["omitted_without_machine_support"], 3)
+        self.assertIn("semantic-only", view.structural["note"])
+        self.assertIn("text channel", view.structural["note"])
+
     def test_no_composite_retrieval_score_is_invented(self):
         self.solve(_task("t1"))
         ctx = self.h.build_prediction_context(_task("t2"), "ep1")

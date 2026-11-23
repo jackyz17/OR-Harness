@@ -662,6 +662,65 @@ class TestRuleLifecycle(RuleCase):
         self.assertEqual(check['scope']['acceptance']['observation_rule_version'],'wm-r-technical/1')
         self.assertEqual(check['technical_fact']['label'],0)
 
+    def test_technical_revision_inherits_scope_and_predicates_can_be_cleared(self):
+        task, training = self.solve()
+        entry_id = self.h.induce(relations=[{
+            **SHORT_RULE, 'effect_scope': 'technical',
+            'predicates': {'family': 'assignment'},
+            'expect': 'Deliver a readable protocol-valid result from this implementation.',
+            'evidence': [training.execution_id]}])['relations'][0]['saved']
+
+        def body(version):
+            return inspect_versions(self.h, entry_id)['versions'][version - 1]['body']
+
+        self.assertEqual(body(1)['effect_scope'], 'technical')
+        self.assertEqual(body(1)['predicates'], {'family': 'assignment'})
+
+        # Omitted scope and predicates on a revision: both inherit v1.
+        revised = self.h.induce(relations=[{
+            'entry_id': entry_id, 'operation': 'revise', **SHORT_RULE,
+            'expect': 'Deliver a readable protocol-valid result and record the chosen endpoint.'}])
+        self.assertEqual(revised['relations'][0]['version'], 2)
+        self.assertEqual(body(2)['effect_scope'], 'technical')
+        self.assertEqual(body(2)['predicates'], {'family': 'assignment'})
+
+        # A technical revision still uses the technical validation branch.
+        task, case = self.solve('technical-revision-holdout', do_check=False)
+        assessment = {
+            'entry_id': entry_id, 'version': 2, 'applicability': 'applies',
+            'method_fidelity': 'faithful', 'effect_coverage': 'complete',
+            'source': 'fixture auditor inspected captured script and protocol receipt',
+            'assessment': 'The recorded result supplies all required fields for optimal status.',
+            'evidence_refs': ['artifacts.submitted_script', 'artifacts.workspace_result']}
+        checked = self.h.induce(relations=[{
+            'entry_id': entry_id, 'version': 2, 'operation': 'add_evidence',
+            'validation': [{'execution_id': case.execution_id,
+                            'kind': 'transfer', 'assessment': assessment}]}])
+        check = checked['relations'][0]['validation'][0]
+        self.assertEqual(check['scope']['acceptance']['observation_rule_version'],
+                         'wm-r-technical/1')
+        self.assertEqual(check['technical_fact']['label'], 0)
+
+        # An explicitly supplied empty predicate set CLEARS the old machine
+        # conditions; omission above inherited them.
+        cleared = self.h.induce(relations=[{
+            'entry_id': entry_id, 'operation': 'revise', **SHORT_RULE,
+            'expect': 'Deliver a readable protocol-valid result, record the endpoint, and keep the protocol fields explicit.',
+            'predicates': {}}])
+        self.assertEqual(cleared['relations'][0]['version'], 3)
+        self.assertEqual(body(3)['predicates'], {})
+        self.assertEqual(body(3)['effect_scope'], 'technical')
+
+        # An explicit effect_scope still wins over the inherited value.
+        changed = self.h.induce(relations=[{
+            'entry_id': entry_id, 'operation': 'revise', **SHORT_RULE,
+            'expect': 'Deliver a readable protocol-valid result, record the endpoint, and keep the protocol fields explicit and readable.',
+            'predicates': {'family': 'assignment'},
+            'effect_scope': 'task_check'}])
+        self.assertEqual(changed['relations'][0]['version'], 4)
+        self.assertEqual(body(4)['predicates'], {'family': 'assignment'})
+        self.assertEqual(body(4)['effect_scope'], 'task_check')
+
     def test_cost_comparison_is_selected_by_agent_and_never_certifies_an_advantage(self):
         t,training=self.solve()
         entry=self.h.induce(relations=[{**SHORT_RULE,'effect_scope':'cost','expect':'Use fewer tool_calls.',

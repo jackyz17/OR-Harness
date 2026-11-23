@@ -24,7 +24,14 @@ and unknown-condition rules by their text. A rule can therefore be absent from
 Recall now reports `recall_budget.omitted_without_machine_support` and
 `recommendations_basis.omitted_without_machine_support`. When no structural
 row survives, the basis text names those entries and points at the semantic
-channel instead of claiming "no memory".
+channel instead of claiming "no memory". The retrieval view also carries the
+count and the semantic-only note into the frozen context/provider view.
+
+Runtime boundary: if the embedding backend or index is unavailable, these
+semantic-only rules cannot enter ordinary recall. The result reports
+`degraded.path=profile_only`, the omission count and the semantic-only note;
+it does not silently let empty predicates back into structural slots. Restore
+the backend/index or read the entry directly.
 
 ## P1.2 · verification state is independent of current applicability
 

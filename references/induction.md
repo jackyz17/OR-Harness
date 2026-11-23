@@ -134,6 +134,13 @@ orx induce --induction-id J \
   }'
 ```
 
+When a revision omits `effect_scope` or machine `predicates`, both inherit
+the selected prior version; an explicit `predicates:{}` in the legacy
+advanced form clears the old machine conditions, and an explicit
+`effect_scope` replaces it. A new rule with no prior version still gets the
+`task_check` default. The compact interface does not expose predicates, so its
+revisions inherit them from the version being revised.
+
 When the existing rule already covers the executed method, cite the frozen
 rule/scope and the actual fact, and write no rule:
 

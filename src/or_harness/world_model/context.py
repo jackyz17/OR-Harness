@@ -1593,18 +1593,30 @@ def build_retrieval_view(recall_result: Dict[str, Any], *,
     notes: List[str] = []
 
     recommendations = list(result.get("recommendations") or [])
+    omitted_structural = int(
+        (result.get("recall_budget") or {}).get(
+            "omitted_without_machine_support", 0) or 0)
+    structural_note = (
+        "the structural channel reports MACHINE structural compatibility "
+        "against the profile; that is not semantic applicability — the "
+        "rule's `when` still requires the agent's assessment")
+    if omitted_structural:
+        structural_note += (
+            f"; {omitted_structural} knowledge entr"
+            f"{'y was' if omitted_structural == 1 else 'ies were'} withheld "
+            "from structural recommendation because it has empty or "
+            "unmeasured machine support. Such rules are semantic-only and "
+            "require the text channel")
     view.structural = {
         "status": "ok",
         "recommendations": _bounded(recommendations, top_k, notes,
                                     "structural recommendations"),
+        "omitted_without_machine_support": omitted_structural,
         "available_solver_families": list(
             result.get("available_solver_families") or []),
         "solver_advisories": list(result.get("solver_advisories") or []),
         "coupling_warnings": list(result.get("coupling_warnings") or []),
-        "note": ("the structural channel reports MACHINE structural "
-                 "compatibility against the profile; that is not semantic "
-                 "applicability — the rule's `when` still requires the "
-                 "agent's assessment"),
+        "note": structural_note,
     }
     view.channels_run.append("structural")
 

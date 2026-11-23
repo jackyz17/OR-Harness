@@ -69,6 +69,7 @@ class TestCompactSubmission(CompactCase):
         self.assertEqual(body(self.h, entry)['do'], SHORT_RULE['do'])
         self.assertEqual(body(self.h, entry)['expect'], SHORT_RULE['expect'])
         self.assertEqual(entry.predicates, {})
+        self.assertEqual(body(self.h, entry)['effect_scope'], 'task_check')
         self.assertEqual(entry.rule['candidate_version'], 1)
         self.assertFalse(entry.is_published)
         receipt = result['induction_receipt']
@@ -101,6 +102,31 @@ class TestCompactSubmission(CompactCase):
                                  closed['induction_schedule']['pending_ids'][0])])
         self.assertEqual(result['results'][0]['saved'], 1)
         self.assertEqual(self.h.sbank.count(), 1)
+
+    def test_compact_revision_inherits_technical_effect_scope(self):
+        _, first, closed = self.closed('compact-technical-a')
+        job1 = closed['induction_schedule']['pending_ids'][0]
+        self.material(job1)
+        created = self.h.induce_submission(
+            self.compact(job1, first,
+                         rule={**SHORT_RULE, 'effect_scope': 'technical'}),
+            induction_id=job1)
+        entry_id = created['relations'][0]['saved']
+        versions = inspect_versions(self.h, entry_id)['versions']
+        self.assertEqual(versions[0]['body']['effect_scope'], 'technical')
+
+        _, second, closed2 = self.closed('compact-technical-b')
+        job2 = closed2['induction_schedule']['pending_ids'][0]
+        self.material(job2)
+        revised = self.h.induce_submission(
+            self.compact(job2, second, result='revision',
+                         rule={**SHORT_RULE,
+                               'do': SHORT_RULE['do'] + ' Record the chosen endpoint.'},
+                         entry_id=entry_id, version=1),
+            induction_id=job2)
+        versions = inspect_versions(self.h, entry_id)['versions']
+        self.assertEqual(revised['relations'][0]['version'], 2)
+        self.assertEqual(versions[1]['body']['effect_scope'], 'technical')
 
     def test_artifact_reference_binds_to_the_job_trigger_execution(self):
         p, record, closed = self.closed('compact-artifact')

@@ -30,8 +30,10 @@ compact entry is a normaliser in front of `induce(relations=..., review=...)`.
 }
 ```
 
-For a revision add `"entry_id"` (and optionally `"version"`). For
-`evidence_added` add `"entry_id"`/`"version"` and omit `rule`. For
+For a revision add `"entry_id"` (and optionally `"version"`). A revision
+that omits `effect_scope` inherits the selected prior version's value;
+machine predicates are inherited too (the compact interface does not expose
+them). For `evidence_added` add `"entry_id"`/`"version"` and omit `rule`. For
 `already_covered` / `no_new_knowledge` only `result` and `basis` are needed.
 For `insufficient_evidence` the basis may be omitted. Optional
 `hypothesis_outcome` and `deviation_reason` remain separate from `result`.

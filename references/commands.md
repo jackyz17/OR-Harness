@@ -61,6 +61,8 @@ Set relation evidence to `structural` for co-occurrence, `semantic` for a suppor
 
 Find text matches and related structural evidence. `--top` caps returned hits and `--candidate` filters by strategy ID. `--memory-mode` controls the structural channel. `none` leaves it empty, `cases` returns statistics, and `strategic` or `cost-aware` adds knowledge. Structural recommendations include only rules with confirmed or partial machine conditions; a rule with empty predicates (`not_specified`) or unmeasured conditions (`unknown`) is not a structural match and is reachable only through vector retrieval. Vector retrieval remains available in all modes. Use `--include-unverified` to inspect unpublished candidates.
 
+Runtime boundary: when no embedding backend or usable index exists, semantic-only rules cannot enter `recommendations`. `degraded.path=profile_only` explains the missing channel, and `recall_budget.omitted_without_machine_support` reports how many such rules were withheld. Restore the backend/index (`rebuild-index`) or read the entry directly with `inspect --bank strategic`; this is not a reason to let empty predicates occupy structural slots.
+
 | Result field | What to read |
 |---|---|
 | `profile` | Task structure |

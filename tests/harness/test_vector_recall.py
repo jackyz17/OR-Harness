@@ -1027,6 +1027,28 @@ class TestVectorRecallCLI(HarnessTestCase):
         self.assertEqual(out["result"]["degraded"]["path"], "profile_only")
         self.assertIn("no embedding backend", out["result"]["degraded"]["reason"])
 
+    def test_empty_predicate_rule_is_not_reachable_structurally_without_backend(self):
+        h = ORHarness(home=self.home)
+        try:
+            h.sbank.add(_entry(strategy_id="empty-only", predicates={}))
+        finally:
+            h.close()
+        proc = run_orx_without_backend(self.home, "recall", "--task",
+                                       str(self.task_path))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = json.loads(proc.stdout)["result"]
+        # The structural channel does not borrow a slot for an empty-predicate
+        # rule; the report makes the reason explicit and the missing text
+        # channel is labelled degraded rather than "nothing exists".
+        self.assertEqual(out["recommendations"], [])
+        self.assertEqual(
+            out["recall_budget"]["omitted_without_machine_support"], 1)
+        self.assertIn("no confirmed machine structural support",
+                      out["recommendations_basis"]["reason"])
+        self.assertNotIn("vector_recall", out)
+        self.assertEqual(out["degraded"]["path"], "profile_only")
+        self.assertIn("no embedding backend", out["degraded"]["reason"])
+
     def test_rebuild_index_dry_run_then_real(self):
         self._execute_and_record()
         index_path = index_dir_for(self.home) / f"{LAYER_EXECUTION}.embedding.json"
