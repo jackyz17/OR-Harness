@@ -318,11 +318,28 @@ Read material for an H+ review J. Choose `--purpose modelling` for constraint re
 
 Read `material[]`, `related_history.executions[]`, `existing_knowledge`, `comparison_table` and `budget.next_cursor`. Use `--cursor` for more cases. For full case details from an H+ material pack, follow the case's `inspect_hint`. See [choosing material](induction.md#read-material-and-choose-comparisons).
 
-### `orx induce [--induction-id J] [--review JSON_OR_FILE] [--strategy S] [--relation JSON] [--dry-run] [--force] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
+### `orx induce --induction-id J --submission JSON_OR_FILE [--dry-run] [--force]`
 
-Submit the review for J with `--review`. Include `--relation` when proposing a new or revised rule. Read `induction_receipt`, `relations[].publication`, `committed` and `index_sync`. Later predictions can use the completed receipt as H+ feedback.
+Submit the whole review as one compact JSON: `result`
+(`new_rule|revision|evidence_added|already_covered|no_new_knowledge|insufficient_evidence`),
+`rule` in **when / do / expect** when a rule is written, one `basis`
+(`kind`, `refs`, `analysis`), and an optional `publication` choice. The
+framework resolves the cited evidence identities, writes through the existing
+versioned rule path and completes the H+ receipt. Read
+`induction_receipt`, `relations[].publication`, `committed` and `index_sync`.
+Later predictions can use the completed receipt as H+ feedback.
 
-Use `--dry-run` to preview and `--force` to override the cold-archive veto when conditions have changed. Assertions in `--verify` take precedence over assertions embedded in `--relation`. Use `--attribute-effect` for a sourced judgment about an adopted rule. See [review examples](induction.md#complete-review-submissions) and [version use and utility](induction.md#existing-entry-use-and-utility).
+Use `--dry-run` to preview and `--force` to override the cold-archive veto
+when conditions have changed. See [minimal submissions](induction.md#minimal-submissions)
+for the field table.
+
+The legacy advanced form
+`orx induce [--induction-id J] [--review JSON_OR_FILE] [--relation JSON] [--strategy S] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
+remains accepted for compatibility (merge, assertion audits and existing-entry
+utility management) but cannot be mixed with `--submission` in one call.
+Assertions in `--verify` take precedence over assertions embedded in
+`--relation`; `--attribute-effect` records a sourced judgment about an adopted
+rule. See [version use and utility](induction.md#existing-entry-use-and-utility).
 
 ### `orx induction-status [--task T] [--episode E]`
 

@@ -6,7 +6,7 @@ counts and let a claim cite a bundle. That generator is gone — the outer
 agent reads a BATCH of completed tasks (``induction-material``, no candidate,
 no sample-count gate) and submits the strategy itself. These tests pin the
 converged chain: record -> material (a batch, never a candidate verdict) ->
-``induce --relation`` -> a maintenance action with a real knowledge delta.
+``induce --submission`` / legacy ``--relation`` -> a maintenance action with a real knowledge delta.
 """
 import io
 import json
@@ -141,7 +141,7 @@ class TestInductionMaterialEntry(HarnessTestCase):
         finally:
             sys.stdout = old
         self.assertEqual(code, 0)
-        self.assertIn("induce --relation", buffer.getvalue())
+        self.assertIn("induce --submission", buffer.getvalue())
 
 
 class TestRetainedFactsReachable(unittest.TestCase):

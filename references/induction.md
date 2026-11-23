@@ -52,60 +52,152 @@ orx induction-material --induction-id J
 
 Compare cases, form a supported conclusion, then submit it with the same J.
 J comes from `close-episode` under `result.induction_schedule.pending_ids`.
-Replace EX below with an actual `execution_id` from the material you read;
-evidence references must resolve in this memory. Use the short rule only when
-the execution and your derivation support its stated conditions.
+One JSON object carries the whole review: the learning result, the rule, one
+evidence-and-argument basis, and the publication intention.
 
 ```bash
 orx induce --induction-id J \
-  --relation '{
-    "when":"Y is finitely enumerable; at fixed Y, feasible integer X forms a finite interval and the objective is monotone in X.",
-    "do":"Skip empty intervals. Choose the lower or upper X endpoint according to objective direction and coefficient sign, then compare all Y. Enumerate X fully when the objective is not monotone.",
-    "expect":"Preserve the optimum under these conditions while reducing X enumeration.",
-    "evidence":["EX"],
-    "publication":{"state":"published","reason":"The recorded enumeration and the endpoint derivation support this monotone finite-interval scope."}
-  }' \
-  --review '{
-    "outcome":"new_rule",
-    "conclusion":"Endpoint choice by objective direction is reusable within the stated monotonicity boundary.",
-    "comparison":{
-      "sufficient":true,"substantive":true,"basis":"derivation",
-      "source":"The recorded task inputs, executed enumeration and endpoint derivation.",
-      "assessment":"For each feasible fixed Y, monotonicity puts the best X at the selected endpoint; comparing all Y preserves the optimum.",
-      "evidence_refs":["EX"]
+  --submission '{
+    "result":"new_rule",
+    "rule":{
+      "when":"Y is finitely enumerable; at fixed Y, feasible integer X forms a finite interval and the objective is monotone in X.",
+      "do":"Skip empty intervals. Choose the lower or upper X endpoint according to objective direction and coefficient sign, then compare all Y. Enumerate X fully when the objective is not monotone.",
+      "expect":"Preserve the optimum under these conditions while reducing X enumeration."
+    },
+    "basis":{
+      "kind":"derivation",
+      "refs":["EX","SOURCE_FACT_REF"],
+      "analysis":"For each feasible fixed Y, monotonicity puts the best X at the selected endpoint; comparing all Y preserves the optimum."
+    },
+    "publication":{
+      "state":"published",
+      "reason":"The recorded enumeration and the endpoint derivation support this monotone finite-interval scope."
     }
   }'
 ```
 
-One rule can use one `review.comparison`; there is no need to repeat it as a
-`mechanism_comparison` inside the relation. A relation may supply its own
-`mechanism_comparison` when its learning assessment differs. Choose `basis`
-from the evidence actually used: `derivation` for an argument tied to real
-execution inputs, `recorded_checks` for sourced checker results, or
-`artifact_inspection` for inspected captured artifacts. Publication is the
-agent's scoped usage decision; the learning label depends on the substantive
-increment and its supported comparison.
+`rule` is still **when / do / expect**. `when` is the one semantic
+applicability statement; do not resubmit `predicates` or duplicate the rule
+under another field. The framework stores an empty machine-predicate set, the
+same short-rule body and version metadata as the existing writer.
 
-When material is insufficient, settle J with only a short review:
+`basis` is the single place actual evidence is named. `kind` is the evidence
+type: `derivation` (an argument over real inputs/outcomes), `recorded_checks`
+(a sourced checker result) or `artifact_inspection` (a captured artifact).
+`refs` must name real references from the material or this memory. An
+execution id, a fact such as `SOURCE_FACT_REF`, and a captured
+`artifacts.*`/`task_check.*` reference all resolve to the recorded execution
+identity; the existing H+ validation still checks that the reference exists,
+belongs to a real executed fact, is time-valid and still supports the
+conclusion. `analysis` is the short substantive reason, not a second summary
+of the rule.
+
+`result` is the only learning-result field:
+
+| `result` | What is written | Receipt outcome | Learning label |
+|---|---|---|---|
+| `new_rule` | a new candidate version from `rule` | `new_rule` | 1 when the basis is supported and the version is a real increment |
+| `revision` | a candidate version of `entry_id` (`version` optional) from `rule` | `revised` | 1 when the basis is supported and the new version is a real increment |
+| `evidence_added` | evidence on an unchanged `entry_id` version; no `rule` | `evidence_added` | 0 when the basis is supported and no substantive increment is claimed |
+| `already_covered` | no rule; a supported conclusion over the frozen rule/scope | `already_covered` | 0 when the basis is supported |
+| `no_new_knowledge` | no rule; a supported no-increment conclusion | `no_increment` | 0 when the basis is supported |
+| `insufficient_evidence` | no rule; the review is recorded with unknown learning | `insufficient_material` | unknown |
+
+`new_rule` and `revision` are the only results that write a rule.
+`evidence_added`, `already_covered` and `no_new_knowledge` require `basis`;
+`insufficient_evidence` may omit it. Do not write a rule to say there is no
+new knowledge: use the matching no-write result.
+
+`publication` is the agent's scoped usage choice, not a verification claim.
+Omit it to leave the new body as a candidate. `state` is
+`published` or `candidate`; `reason` is required. Publishing does not make the
+rule verified, and verification is whatever the existing writer actually
+checked; a candidate version can still be adopted and later revised.
+
+To revise an existing rule, add the real `entry_id` (and optionally the
+`version` being revised):
 
 ```bash
 orx induce --induction-id J \
-  --review '{"outcome":"insufficient_material","conclusion":"The captured run does not establish the proposed boundary; a comparable checked case is missing."}'
+  --submission '{
+    "result":"revision",
+    "entry_id":"ENTRY",
+    "version":1,
+    "rule":{
+      "when":"The objective is monotone in X at fixed Y and the feasible X set is a finite interval.",
+      "do":"Choose the endpoint from the objective direction and coefficient sign; disable the reduction when monotonicity fails.",
+      "expect":"Preserve the optimum within this sign-aware scope."
+    },
+    "basis":{"kind":"derivation","refs":["EX","SOURCE_FACT_REF"],
+             "analysis":"The earlier body only covered maximization; the checked minimization case selects the opposite endpoint."},
+    "publication":{"state":"candidate","reason":"Keep the active version until independent use checks the revision."}
+  }'
 ```
 
-This writes a receipt without a rule; its learning label remains unknown.
-It requires neither `comparison` nor `--note`.
+When the existing rule already covers the executed method, cite the frozen
+rule/scope and the actual fact, and write no rule:
 
-Optionally add `--dry-run` to either submission command when unsure about its
-input. It checks the review fields, evidence references, optional per-rule
-comparison, and publication choice without writing rules, receipts, events or
-index entries. Fix a reported field or use a real reference from the material,
-then remove `--dry-run` to submit with the same J. A passing preview leaves J
-pending. `would_create`, `would_update` and `would_complete` describe expected
-work; `saved` and `published` count actual writes and remain zero in a preview.
+```bash
+orx induce --induction-id J \
+  --submission '{
+    "result":"already_covered",
+    "basis":{"kind":"recorded_checks",
+             "refs":["SOURCE_FACT_REF","BASELINE_SNAPSHOT_REF"],
+             "analysis":"The executed steps and assumptions match the rule version present in the prediction-time snapshot."}
+  }'
+```
+
+Use `no_new_knowledge` for a supported review that finds no reusable
+addition. Use `insufficient_evidence` when the material cannot support either
+a rule or a no-increment conclusion:
+
+```bash
+orx induce --induction-id J \
+  --submission '{"result":"insufficient_evidence",
+    "deviation_reason":"The objective is available, but the record lacks resource-level flows needed to check the activation constraints."}'
+```
+
+An optional `hypothesis_outcome` (`supported`, `refuted` or `unknown`) and
+`deviation_reason` can be added when the H+ hypothesis itself was tested; they
+are separate from `result`, which records what knowledge was written.
+
+Optionally add `--dry-run` to the same submission command when unsure about
+its input. It checks the result/rule/entry selection, evidence references and
+publication choice without writing rules, receipts, events or index entries.
+Fix a reported field or use a real reference from the material, then remove
+`--dry-run` to submit with the same J. A passing preview leaves J pending.
+`would_create`, `would_update` and `would_complete` describe expected work;
+`saved` and `published` count actual writes and remain zero in a preview.
 Insufficient learning support is reported separately from invalid input and
-does not prevent a factual review from completing. After submission, read
-`result.induction_receipt` and use `induction-status` to confirm completion.
+does not prevent a factual review from completing. Repeating the same compact
+submission returns the same receipt; a conflicting payload is refused. After
+submission, read `result.induction_receipt` and use `induction-status` to
+confirm completion.
+
+### Legacy advanced interface
+
+`--relation` and `--review` remain accepted for compatibility and advanced
+operations that the compact interface deliberately does not expose, such as
+merge and explicit assertion audits. Do not combine them with `--submission`
+in one call.
+
+```bash
+orx induce --induction-id J \
+  --relation '{"when":"...","do":"...","expect":"...","evidence":["EX"],
+               "publication":{"state":"candidate","reason":"..."}}' \
+  --review '{"outcome":"new_rule",
+             "comparison":{"sufficient":true,"substantive":true,
+                           "basis":"derivation","source":"...",
+                           "assessment":"...","evidence_refs":["EX"]}}'
+```
+
+The legacy spelling uses `review.outcome` instead of `result`, separate
+`relation.evidence` and `comparison.evidence_refs`, and explicit
+`sufficient`/`substantive` booleans. Those are exactly the fields the compact
+interface translates; use one interface consistently. For merge use
+`operation:"merge"` with `merge_entry_ids` and `merge_reason`; for assertion
+audits use `--verify` or an embedded `check`. Existing-entry use and utility
+judgements still use `--attribute-effect` (no compact equivalent).
 
 ## Read material and choose comparisons
 
@@ -172,7 +264,7 @@ The shared result writer can be a short rule.
 - **do** Map the solver's actual status and available solution in one place. Write a fresh `result.json`. For `optimal` or `feasible`, include a finite numeric `objective_value`. When the solver establishes infeasibility, deliver `{"status":"infeasible"}` and any available diagnostics.
 - **expect** The executor can read both the solution and infeasibility branches under the result protocol.
 
-For this claim, use `effect_scope:"technical"` in the relation. For the learning comparison, use `basis:"artifact_inspection"` with the actual before/after executions and their captured artifacts.
+For this claim, use `"effect_scope":"technical"` inside the compact `rule`. For the learning basis, use `"kind":"artifact_inspection"` with the actual before/after executions and their captured artifacts.
 
 ### Modeling example · Fixed setup costs in SIRL IndustryOR
 
@@ -241,64 +333,70 @@ This submission uses the fixed-setup-cost modeling example.
 
 ```bash
 orx induce --induction-id J \
-  --relation '{
-    "when":"In a cost minimization model, a resource incurs a positive one-time fee when used. Its total use is bounded and nonnegative, and the setup flag governs that use and fee.",
-    "do":"Use a binary activation variable y_j for each optional resource j. Charge F_j*y_j once and constrain its total use q_j by q_j <= U_j*y_j. Set U_j from capacity or reachable demand. Check total use, original flow balances, and assignment constraints. Fix y_j to one and keep F_j as a constant when the original constraints force positive use in every feasible plan.",
-    "expect":"Choose resource use jointly with variable cost and account for each setup fee once. Fixing a mandatory activation preserves feasibility and total cost.",
-    "evidence":["EX_CONTAINERS","EX_TRANSFER","EX_PARTS"],
+  --submission '{
+    "result":"new_rule",
+    "rule":{
+      "when":"In a cost minimization model, a resource incurs a positive one-time fee when used. Its total use is bounded and nonnegative, and the setup flag governs that use and fee.",
+      "do":"Use a binary activation variable y_j for each optional resource j. Charge F_j*y_j once and constrain its total use q_j by q_j <= U_j*y_j. Set U_j from capacity or reachable demand. Check total use, original flow balances, and assignment constraints. Fix y_j to one and keep F_j as a constant when the original constraints force positive use in every feasible plan.",
+      "expect":"Choose resource use jointly with variable cost and account for each setup fee once. Fixing a mandatory activation preserves feasibility and total cost."
+    },
+    "basis":{
+      "kind":"derivation",
+      "refs":["EX_CONTAINERS","EX_TRANSFER","EX_PARTS"],
+      "analysis":"The container comparison isolates the effect of joint setup and variable costs. Transshipment maps total use to throughput. Capacity in transshipment and designated parts in assignment independently show how original constraints can force activation."
+    },
     "publication":{
       "state":"published",
       "reason":"Substitution and station flow support the use-to-activation link. Capacity bounds and mandatory assignments show how to prove a flag can be fixed.",
       "scope":["Positive fixed charges on bounded resource use; forced activation only when implied by the original constraints"]
     }
-  }' \
-  --review '{
-    "outcome":"new_rule",
-    "conclusion":"Use a setup flag for each optional resource. Fix the flag only when the original constraints imply it.",
-    "comparison":{
-      "sufficient":true,
-      "substantive":true,
-      "basis":"derivation",
-      "source":"Checked container allocations, station flows and part assignments, together with the activation constraints.",
-      "assessment":"The container comparison isolates the effect of joint setup and variable costs. Transshipment maps total use to throughput. Capacity in transshipment and designated parts in assignment independently show how original constraints can force activation.",
-      "evidence_refs":["EX_CONTAINERS","EX_TRANSFER","EX_PARTS"]
-    }
   }'
 ```
 
-`--relation` saves **when / do / expect**, evidence and publication choice. `--review` saves the comparison and the learning conclusion. Omit `publication` to leave a new body as a candidate.
-
-To revise, add `"entry_id":"ENTRY","operation":"revise"` and use `outcome:"revised"`. The active version stays available while the revision is a candidate. To merge, set `operation:"merge"` with a target, `merge_entry_ids`, and `merge_reason`. Source rules stay available until the target version is published. Identical bodies reuse their version.
+`--submission` writes **when / do / expect**, the evidence identities, the
+learning comparison and the publication choice. Omit `publication` to leave a
+new body as a candidate. To revise, use `"result":"revision"` with the real
+`entry_id` (and optional `version`); the active version stays available while
+the revision is a candidate. `merge` is a legacy advanced operation: use
+`--relation` with `operation:"merge"`, `merge_entry_ids` and `merge_reason`.
+Source rules stay available until the target version is published. Identical
+bodies reuse their version.
 
 ### Already covered or no reusable increment
 
-Inspect `source_fact_ref` and `baseline_snapshot_ref` from `result.induction_gate`. For `already_covered`, identify the rule version in the prediction-time snapshot that covers the executed method and cite both references. If the available evidence leaves prior coverage unresolved, complete the review as `insufficient_material`.
+Inspect `source_fact_ref` and `baseline_snapshot_ref` from
+`result.induction_gate`. For `already_covered`, identify the rule version in
+the prediction-time snapshot that covers the executed method and cite both
+references. If the available evidence leaves prior coverage unresolved,
+submit `insufficient_evidence`.
 
 ```bash
 orx induce --induction-id J \
-  --review '{
-    "outcome":"already_covered",
-    "conclusion":"The prediction-time rule already covers bounded activation and the mandatory-activation case.",
-    "comparison":{
-      "sufficient":true,
-      "substantive":false,
-      "source":"The checked execution and the rule version in the frozen snapshot.",
-      "assessment":"The executed steps and assumptions match that version.",
-      "evidence_refs":["SOURCE_FACT_REF","BASELINE_SNAPSHOT_REF"]
+  --submission '{
+    "result":"already_covered",
+    "basis":{
+      "kind":"recorded_checks",
+      "refs":["SOURCE_FACT_REF","BASELINE_SNAPSHOT_REF"],
+      "analysis":"The executed steps and assumptions match the rule version in the frozen snapshot."
     }
   }'
 ```
 
-Use `no_increment` for a supported review that finds no reusable addition. To attach evidence to an unchanged rule in the same J, add `--relation '{"entry_id":"ENTRY","operation":"add_evidence","evidence":["EX_TRANSFER"]}'`.
+Use `no_new_knowledge` for a supported review that finds no reusable
+addition. To attach evidence to an unchanged rule in the same J, use
+`"result":"evidence_added","entry_id":"ENTRY","version":VERSION` with the new
+execution in `basis.refs`.
 
 ### Insufficient material
 
 ```bash
 orx induce --induction-id J \
-  --review '{"outcome":"insufficient_material","conclusion":"The objective is available, but the execution record lacks resource-level flows needed to check the activation constraints."}'
+  --submission '{"result":"insufficient_evidence",
+    "deviation_reason":"The objective is available, but the execution record lacks resource-level flows needed to check the activation constraints."}'
 ```
 
-This completes the review with an unknown learning label. Use it when evidence is insufficient for either a rule or a no-increment conclusion.
+This completes the review with an unknown learning label. Use it when
+evidence is insufficient for either a rule or a no-increment conclusion.
 
 ### Read publication, completion and learning separately
 
@@ -310,7 +408,7 @@ This completes the review with an unknown learning label. Use it when evidence i
 | Prediction-time decisions and diagnostics | `induction-status` → `result.signal_counts` |
 | Learning observations | `induction-status` → `result.observation_counts` |
 
-A `wm-hplus-review/2` receipt supports label 1 for an actual new version with a substantive, sourced comparison. Label 0 requires a supported no-increment conclusion. Source your comparison with `source`, `assessment` and `evidence_refs`. Use recorded checks, `basis:"derivation"` for reasoning over actual inputs, or `basis:"artifact_inspection"` for captured artifacts. A refuted hypothesis can support a new boundary rule.
+A `wm-hplus-review/2` receipt supports label 1 for an actual new version with a substantive, sourced comparison. Label 0 requires a supported no-increment conclusion. In a compact submission the comparison is built from `basis.kind`, `basis.refs` and `basis.analysis`; `source` is derived from the associated execution identities. Use `recorded_checks` for sourced checker results, `derivation` for reasoning over actual inputs, or `artifact_inspection` for captured artifacts. The legacy path spells out `source`, `assessment` and `evidence_refs` directly. A refuted hypothesis can support a new boundary rule.
 
 Read material for J before submitting. If `index_sync.state` is `deferred`, retry the identical submission to resume indexing with the saved receipt. A completed J accepts only the same submission on retry.
 
@@ -363,7 +461,7 @@ entry — your decision, not an automatic threshold.
 
 Add a sourced transfer, boundary or counterexample observation in `check-task` through `rule_assessments`. Each item identifies the `entry_id`, `version`, `purpose`, `verdict`, `source`, `assessment` and `evidence_refs`.
 
-To add evidence, validate, or change publication for an existing body, select its entry and version with `induce --relation`. For utility judgments use the actual adoption execution.
+To add evidence or change publication for an existing body, use the compact `evidence_added` result (or `revision` when the body changes) with its real `entry_id` and `version`. Explicit assertion audits and merge remain available through the legacy `--relation`/`--verify` path. For utility judgments use the actual adoption execution.
 
 ```bash
 orx induce --attribute-effect '{"entry_id":"ENTRY","execution_id":"EX_USED","verdict":"helped","lifecycle_action":"keep","note":"The adopted activation rule matched the recorded constraints and checks."}'

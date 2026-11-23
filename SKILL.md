@@ -208,7 +208,19 @@ Compare the actual methods, task constraints, checked outcomes, and relevant exi
 
 Compare the frozen prediction with the actual execution and identify the affected premise, step, or execution condition when evidence supports it. Separate confirmed causes from hypotheses and unknowns. Keep attribution brief and sourced; see [G attribution evidence](references/episode_closeout.md#g-attribution-evidence). Post-answer reference feedback supports this review, not a return to solving or changing the committed answer.
 
-Submit that conclusion with `orx induce --induction-id J --review ...`. For a new or revised rule, include **when / do / expect**, real evidence IDs, and a publication choice in `--relation` in the same command. If material is insufficient, a short `insufficient_material` review can settle J without a rule. See [minimal submissions](references/induction.md#minimal-submissions) for both commands and [detailed comparisons](references/induction.md#complete-review-submissions) for broader examples.
+Submit that conclusion as ONE compact JSON object with
+`orx induce --induction-id J --submission ...`. It contains `result`, the
+`rule` in **when / do / expect** (no separate predicates needed), one `basis`
+with `kind`, real evidence `refs` and a short `analysis`, plus an optional
+`publication` choice. Choose `result` as `new_rule`, `revision`,
+`evidence_added`, `already_covered`, `no_new_knowledge` or
+`insufficient_evidence`; use that single field instead of restating the
+conclusion under several names. If material is insufficient, a short
+`insufficient_evidence` submission can settle J without a rule. See
+[minimal submissions](references/induction.md#minimal-submissions) for the
+field table and [detailed comparisons](references/induction.md#complete-review-submissions)
+for examples. The legacy `--relation`/`--review` spelling remains only for
+advanced compatibility and cannot be mixed with `--submission`.
 
 When unsure about the input, optionally add `--dry-run` to the same submission command. Fix any reported field or evidence reference, then remove `--dry-run` to submit. A successful preview leaves J pending; check `induction-status` after the real submission.
 

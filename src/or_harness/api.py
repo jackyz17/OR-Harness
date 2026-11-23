@@ -3810,7 +3810,8 @@ class ORHarness:
         """Outer runner callback: one material and one submission per pending job.
 
         Reviewer receives (material, frozen job) and returns induce keyword
-        arguments. A crash leaves the same durable job available for retry.
+        arguments, which may be the compact ``{"submission": {...}}`` payload.
+        A crash leaves the same durable job available for retry.
         """
         from or_harness.world_model.hplus import jobs
         results = []
@@ -5479,10 +5480,39 @@ class ORHarness:
                          "shape": "staged_attempt_annotated"})
         return attempted_execution_id
 
-    def induce(self, *, induction_id=None, review=None, **kwargs):
-        """Authorize and settle binary H+ work around the existing writer."""
+    def induce(self, *, induction_id=None, review=None, submission=None, **kwargs):
+        """Authorize and settle binary H+ work around the existing writer.
+
+        ``submission`` is the compact agent entry (see
+        ``world_model.induction_submission``): one JSON object with the
+        learning result, when/do/expect, one evidence-and-argument basis and
+        an optional publication choice.  It is normalised here into the SAME
+        ``relations`` / ``review`` payload used by the legacy ``--relation``
+        / ``--review`` path, then committed through the existing versioned
+        writer and H+ receipt.  The two interfaces cannot be mixed in one
+        call.
+        """
         from or_harness.world_model.hplus import mode
         if mode(self)=='frozen':raise ValueError('the strategy library is frozen for testing')
+        if submission is not None:
+            forbidden = [name for name, value in (
+                ('review', review),
+                ('relations', kwargs.get('relations')),
+                ('notes', kwargs.get('notes')),
+                ('verify', kwargs.get('verify')),
+                ('effect_attributions', kwargs.get('effect_attributions')),
+                ('strategy_id', kwargs.get('strategy_id')),
+            ) if value not in (None, [], {})]
+            if forbidden:
+                raise ValueError('compact submission cannot be combined with '
+                                 + ', '.join('--' + name.replace('_', '-')
+                                             for name in forbidden)
+                                 + '; use one induction interface per call')
+            from or_harness.world_model.induction_submission import normalize_submission
+            compact = normalize_submission(self, submission,
+                                           induction_id=induction_id)
+            review = compact['review']
+            kwargs = {**kwargs, 'relations': compact['relations']}
         relations=kwargs.get('relations') or []
         body_keys={'when','do','expect','claim','text','method','conditions','predicates','effect_scope','merge_entry_ids'}
         existing_only=bool(relations) and all(
@@ -5554,6 +5584,19 @@ class ORHarness:
             return result
         finally:
             self._active_induction_job = None
+
+    def induce_submission(self, submission, *, induction_id=None,
+                          dry_run=False, force=False):
+        """Submit one compact induction review.
+
+        Thin convenience over :meth:`induce`; the compact protocol is
+        documented in ``references/induction.md`` and validated by
+        ``world_model.induction_submission``.  It commits through the same
+        versioned rule writer, H+ authorisation, receipt and idempotency
+        path as ``induce(relations=..., review=...)``.
+        """
+        return self.induce(induction_id=induction_id, submission=submission,
+                           dry_run=dry_run, force=force)
 
     def _sync_induction_result(self,result):
         """Repair only committed vector intents; receipt/action identity stays fixed."""

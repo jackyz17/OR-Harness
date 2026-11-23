@@ -542,6 +542,7 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
             changed = True
         if existing is None:
             metadata = {"seed_evidence": resolved["evidence"],"material_ref": session_ref,
+                "seed_families": ([resolved["family"]] if resolved.get("family") else []),
                 "seed_fact_refs": {r.execution_id: _facts_ref(harness, conn, r) for r in records}}
             if legacy_input is not None:
                 metadata['legacy_input_ref']=put_value(conn,harness.store,'legacy_rule_input',legacy_input)

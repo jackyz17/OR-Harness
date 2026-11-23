@@ -149,17 +149,15 @@ def run(mode="single", home=None):
             assert len(jobs) == 1, jobs
             job = jobs[0]
             cli("induction-material", "--induction-id", job)
-            relation = {"when": "Y can be finitely enumerated and each fixed-Y feasible integer X is a finite interval with monotone objective.",
-                "do": "Skip empty intervals; choose the lower X endpoint for increasing minimization and the opposite endpoint for maximization; enumerate X for nonmonotone objectives.",
-                "expect": "Preserve the optimum within this scope while reducing X enumeration.", "evidence": [ex],
+            submission = {"result": "new_rule",
+                "rule": {"when": "Y can be finitely enumerated and each fixed-Y feasible integer X is a finite interval with monotone objective.",
+                    "do": "Skip empty intervals; choose the lower X endpoint for increasing minimization and the opposite endpoint for maximization; enumerate X for nonmonotone objectives.",
+                    "expect": "Preserve the optimum within this scope while reducing X enumeration."},
+                "basis": {"kind": "derivation", "refs": [ex],
+                    "analysis": "Coefficient 2 makes the fixed-Y objective increasing; the captured enumeration verifies objective 90."},
                 "publication": {"state": "published", "reason": "Monotonicity derivation and captured full enumeration agree.",
                     "scope": ["finite integer intervals with fixed-Y monotone objective"]}}
-            review = {"outcome": "new_rule", "conclusion": "The lower endpoint is supported for this minimization direction.",
-                "comparison": {"sufficient": True, "substantive": True, "basis": "derivation",
-                    "source": "Original task and captured endpoint/full enumeration.",
-                    "assessment": "Coefficient 2 makes the fixed-Y objective increasing; enumeration verifies objective 90.",
-                    "evidence_refs": [ex]}}
-            result, _ = cli("induce", "--induction-id", job, "--relation", json.dumps(relation), "--review", json.dumps(review))
+            result, _ = cli("induce", "--induction-id", job, "--submission", json.dumps(submission))
             receipt = result["induction_receipt"]
             assert receipt["prediction_id"] == pid
             saved = result["relations"][0]

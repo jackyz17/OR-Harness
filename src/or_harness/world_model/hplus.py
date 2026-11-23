@@ -245,8 +245,9 @@ def schedule_view(items, unobserved=()):
             "completed": not pending, "unobserved_prediction_ids": list(unobserved),
             "next_actions": [{"induction_id": j["induction_id"],
                 "material": "orx induction-material --induction-id " + j["induction_id"],
-                "complete": "orx induce --induction-id " + j["induction_id"] + " --relation JSON (or --review JSON --note REASON)",
-                "required": "one short submission or a sourced empty review receipt"} for j in pending],
+                "complete": "orx induce --induction-id " + j["induction_id"] + " --submission JSON",
+                "legacy_complete": "orx induce --induction-id " + j["induction_id"] + " --relation JSON --review JSON (advanced/compatibility)",
+                "required": "one compact submission or a sourced insufficient_evidence review"} for j in pending],
             "handoff": "outer building agent must settle pending_ids before declaring library building complete"}
 
 

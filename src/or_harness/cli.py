@@ -1087,6 +1087,26 @@ def cmd_induce(args) -> int:
     h = _harness(args)
     try:
         notes = list(args.note or []) or None
+        submission = None
+        if getattr(args, "submission", None):
+            mixed = [name for name, value in (
+                ("--relation", getattr(args, "relation", None)),
+                ("--review", getattr(args, "review", None)),
+                ("--note", getattr(args, "note", None)),
+                ("--verify", getattr(args, "verify", None)),
+                ("--attribute-effect", getattr(args, "attribute_effect", None)),
+                ("--strategy", getattr(args, "strategy", None)),
+            ) if value]
+            if mixed:
+                return _fail("--submission is the compact induction interface "
+                             "and cannot be combined with " + ", ".join(mixed)
+                             + "; use one interface per call", 2)
+            try:
+                submission = _load_json_arg(args.submission)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                return _fail(f"--submission must be a JSON object or a JSON file: {exc}", 2)
+            if not isinstance(submission, dict):
+                return _fail("--submission must be a JSON object", 2)
         verify = None
         if getattr(args, "verify", None):
             try:
@@ -1124,6 +1144,7 @@ def cmd_induce(args) -> int:
                               relations=relations,
                               effect_attributions=attributions,
                               induction_id=getattr(args,'induction_id',None),
+                              submission=submission,
                               review=(_load_json_arg(args.review) if getattr(args,'review',None) else None))
         except ValueError as exc:
             if not args.dry_run:
@@ -1152,14 +1173,24 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
         errors=[row['skipped'] for row in rows if row.get('skipped')]
         if (result.get('validation') or {}).get('valid') is False or errors and not (created or updated):
             return 'Dry run rejected: '+'; '.join(errors)+'. Correct the submission and retry with the same induction ID.'
+        if getattr(args, "submission", None):
+            return (f"Dry run passed for the compact submission: would create "
+                    f"{created} rule(s), update {updated} existing rule(s)"+
+                    (' and complete the review' if result.get('would_complete') else '')+
+                    '. Submit the same --submission without --dry-run. No rules or receipts were saved.'+
+                    (' Omitted relation(s): '+'; '.join(errors) if errors else ''))
         return (f"Dry run passed: would create {created} rule(s), update {updated} existing rule(s)"+
                 (' and complete the review' if result.get('would_complete') else '')+
                 '. Submit the same command without --dry-run. No rules or receipts were saved.'+
                 (' Omitted relation(s): '+'; '.join(errors) if errors else ''))
-    if getattr(args, "relation", None):
+    if getattr(args, "relation", None) or (
+            getattr(args, "submission", None) and result.get("relations")):
         return _summarize_relations(result)
     # No relations submitted: the framework did NOT run a statistical
     # induction. Report that honestly rather than implying work happened.
+    if getattr(args, "submission", None) and result.get("no_new_knowledge"):
+        return ("Review recorded with no rule write: the compact result "
+                "declared no new knowledge or insufficient evidence.")
     if result.get("maintenance_only"):
         return f"Managed {len(result.get('affected_entry_ids') or [])} existing entries from recorded use; no induction job created."
     if result.get("skipped"):
@@ -1213,9 +1244,9 @@ def cmd_induction_material(args) -> int:
     neither (distinct tasks, a failed-only cell, a single run) is still
     visible. Success and failure material are both included, and a missing
     field is marked rather than dropped. Read it, form the new strategy
-    (condition -> how -> consequence -> boundary), and submit it with
-    ``orx induce --relation`` — the framework checks what you submit, it
-    does not write the technique for you."""
+    (condition -> how -> consequence -> boundary), and submit it with one
+    ``orx induce --submission`` JSON — the framework checks what you submit,
+    it does not write the technique for you."""
     h = _harness(args)
     try:
         result = h.induction_material(
@@ -1236,7 +1267,10 @@ def cmd_induction_material(args) -> int:
                 return _emit(result, "Induction " + result["induction_gate"]["state"] + ": " + result["reason"])
             from or_harness.world_model.induction_material import seal_budget
             summary = (f"Read {result['count']} task attempt(s) with cross-task controls and short rules. "
-                       "Using the same J, submit when/do/expect and evidence with `induce --relation` plus `--review`, or a reasoned empty review; select the existing entry for revisions.")
+                       "Using the same J, submit one `induce --submission` object "
+                       "(result, when/do/expect, basis, publication), or an "
+                       "insufficient_evidence review; select the existing entry "
+                       "for revisions.")
             seal_budget(result, summary=summary)
             return _emit(result, summary)
         if not result["count"]:
@@ -1269,8 +1303,9 @@ def cmd_induction_material(args) -> int:
                     f"{result['cross_task_hint']['n_distinct_tasks_in_batch']} "
                     "task(s) (a fact, not a threshold). Form the strategy "
                     "(condition -> how -> consequence -> boundary) and submit "
-                    "it with `orx induce --relation` plus `--review`; "
-                    "a required job with no new rule still needs an empty review.")
+                    "it as one `orx induce --submission` JSON; a required job "
+                    "with no new rule still needs a no_new_knowledge or "
+                    "insufficient_evidence review.")
         memory = result.get("memory_state") or {}
         if memory.get("state") in ("both_banks_empty", "strategic_bank_empty",
                                    "evidence_bank_empty"):
@@ -2639,11 +2674,13 @@ def build_parser() -> argparse.ArgumentParser:
         "induce", help="submit short rules or manage existing entries from real use",
         epilog=("Knowledge is ONLY written from a strategy YOU form: read "
                 "the material with `orx induction-material --induction-id J`, then submit "
-                "the strategy with --relation and its conclusion with --review, "
-                "or settle J with a reasoned empty review. The framework derives the evidence "
-                "identity, checks the declared `check` block, and stores the "
-                "result — it never turns a cell's means into a technique and "
-                "has no statistical fallback."))
+                "one compact --submission JSON (result, when/do/expect, basis, "
+                "publication). The legacy --relation/--review spelling remains "
+                "for compatibility, but the two interfaces cannot be mixed in "
+                "one call. The framework derives evidence identity and version "
+                "metadata, checks what you declared, and stores the result — "
+                "it never turns a cell's means into a technique and has no "
+                "statistical fallback."))
     p.add_argument("--strategy", default=None,
                    help="the strategy id the submitted relation belongs to "
                         "(optional: a relation may carry its own free-form "
@@ -2670,8 +2707,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "check is reported as overridden, never silently "
                         "merged")
     p.add_argument('--induction-id', default=None, help='authorize and complete one frozen H+ induction job')
+    p.add_argument('--submission', default=None, metavar='JSON_OR_FILE',
+                   help="ONE compact induction review: {result, rule:{when,do,expect}, "
+                        "entry_id/version, basis:{kind,refs,analysis}, publication}. "
+                        "result is new_rule|revision|evidence_added|already_covered|"
+                        "no_new_knowledge|insufficient_evidence. Cannot be mixed with "
+                        "--relation/--review/--verify/--note/--strategy/--attribute-effect.")
     p.add_argument('--review', default=None, metavar='JSON_OR_FILE',
-                   help='actual learning conclusion: outcome, conclusion, optional hypothesis_outcome, comparison and evidence references; submit alongside --relation or as an empty review')
+                   help='legacy/advanced learning conclusion: outcome, conclusion, optional hypothesis_outcome, comparison and evidence references; submit alongside --relation or as an empty review')
     p.add_argument("--relation", action="append", default=None, metavar="JSON",
                    help="submit when/do/expect plus evidence execution IDs (repeatable). "
                         "Optional entry_id and operation=add_evidence|revise|merge select "
