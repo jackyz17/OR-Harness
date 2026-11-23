@@ -71,6 +71,19 @@ PROTECTED_REQUEST_KEYS = (
     "request_kind",
 )
 
+#: Keys that are LOCAL diagnostics, never model input. The provider receives
+#: a request WITHOUT them, so the budget must measure the same object that is
+#: actually serialized and sent (``request_size`` describes that sent object;
+#: including it in the measured body would understate the real payload).
+WIRE_EXCLUDED_REQUEST_KEYS = ("request_size", "request_diagnostics")
+
+
+def strip_request_diagnostics(request: Dict[str, Any]) -> Dict[str, Any]:
+    """The request AS SENT: a shallow copy without local-only diagnostics."""
+    return {key: value for key, value in (request or {}).items()
+            if key not in WIRE_EXCLUDED_REQUEST_KEYS}
+
+
 #: Trimming order for the CONTEXT fragment: history first, then other
 #: non-core material, then the calibration/evidence blocks. The current task
 #: body, its constraints and the calibration selection are never in this
@@ -175,8 +188,16 @@ def measure_text(text: str, *, provider: Any = None) -> Dict[str, Any]:
 
 def measure_request(request: Dict[str, Any], system_prompt: str = "",
                     *, provider: Any = None) -> Dict[str, Any]:
-    """Measure the WHOLE request (system prompt + JSON body)."""
-    body = json.dumps(request, ensure_ascii=False, default=str)
+    """Measure the WHOLE request AS SENT (system prompt + wire JSON body).
+
+    Local diagnostics (``request_size``) are excluded because the provider
+    never receives them; the budget therefore describes exactly the object
+    that is serialized on the wire. The serialization call is the same one
+    the HTTP provider uses (``json.dumps(..., ensure_ascii=False,
+    default=str)``).
+    """
+    body = json.dumps(strip_request_diagnostics(request),
+                      ensure_ascii=False, default=str)
     prompt = str(system_prompt or "")
     body_measure = measure_text(body, provider=provider)
     prompt_measure = measure_text(prompt, provider=provider)
@@ -713,6 +734,13 @@ def enforce_full_request_budget(request: Dict[str, Any], system_prompt: str,
         "core": core,
         "n_trim_stages": len(stages),
         "trimming": stages,
+        "wire": {
+            "measured_object": "the request WITHOUT request_size",
+            "excluded_keys": list(WIRE_EXCLUDED_REQUEST_KEYS),
+            "note": ("request_size is LOCAL diagnostics: the provider "
+                     "receives the request without it, and the budget "
+                     "measures that exact wire object"),
+        },
     }
     if over:
         block["over_budget"] = {

@@ -653,7 +653,7 @@ def _provider_benefit(row, ref):
             if attribution.get(key) not in (None, ""):
                 compact[key], _ = _clip(attribution[key], 120)
         if attribution.get("assessment") not in (None, ""):
-            text, clipped = _clip(attribution["assessment"], 200)
+            text, clipped = _clip(attribution["assessment"], 280)
             compact["assessment"] = text
             if clipped:
                 compact["assessment_ref"] = (f"{ref}.benefit.attribution."
@@ -920,10 +920,12 @@ def _lean_provider_pair(row):
 
     Used only when a history block exceeds its provider budget: the facts a
     prediction needs (original prediction, real observation, error, G/C/R
-    conventions, eligibility, the recorded attribution and the restore
-    reference) stay. Free-text prose, duplicated audit fields and measured
-    values that the row-level ``detail_ref`` restores are dropped first, so
-    the number of CASES is preserved before any case is removed.
+    conventions, eligibility, the RECORDED failure attribution and the
+    restore reference) stay. Free-text prose, duplicated audit fields and
+    measured values that the row-level ``detail_ref`` restores are dropped
+    first, so the number of CASES is preserved before any case is removed.
+    The attribution assessment is the LAST thing to go — after prose and
+    scaffolding, not before.
     """
     row = copy.deepcopy(row)
     dropped = []
@@ -942,12 +944,13 @@ def _lean_provider_pair(row):
         if "notes" in benefit:
             benefit.pop("notes", None)
             dropped.append("benefit.notes")
-        attribution = benefit.get("attribution")
-        if isinstance(attribution, dict) and "assessment" in attribution:
-            attribution.pop("assessment")
-            attribution["assessment_ref"] = _field_ref(
-                row.get("detail_ref"), "benefit.attribution")
-            dropped.append("benefit.attribution.assessment")
+        # ``benefit.attribution`` is the RECORDED cause of the observation
+        # (method fidelity / failure source / the auditor's short
+        # assessment). It is the highest-value part of a failed case: "the
+        # task required integer quantities but the method used continuous
+        # variables" is the lesson, while the audit scaffolding around it is
+        # not. It is therefore NEVER dropped here — only after every pair has
+        # been reduced and before a whole case is removed for budget.
     fact = row.get("cost_observed_fact")
     if isinstance(fact, dict):
         for key in ("lower_bounds", "conditions", "boundary_exclusions",

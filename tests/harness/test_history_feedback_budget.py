@@ -391,6 +391,48 @@ class TestHistoryBlockBudgets(unittest.TestCase):
             after_chars,
             view_chars2(provider_paired_feedback(block, budget_chars=40000)))
 
+    def test_lean_keeps_the_recorded_failure_attribution(self):
+        """Compression keeps WHY the case failed before audit scaffolding.
+
+        The auditor's short assessment is the highest-value part of a failed
+        case; it must survive the per-row reduction, and only whole-case
+        removal may lose it (with a restore reference).
+        """
+        from or_harness.strategy.evidence_views import (
+            _lean_provider_pair, provider_feedback_pair,
+            provider_paired_feedback,
+        )
+        recorded = {
+            "method_fidelity": "faithful",
+            "failure_source": "candidate_method",
+            "source": "auditor",
+            "assessment": ("The task required integer quantities, but the "
+                           "method used continuous variables; the small "
+                           "instance hid the violation."),
+        }
+        row = _pair(9, big=True, attribution=recorded)
+        compact = provider_feedback_pair(row)
+        self.assertEqual(compact["benefit"]["attribution"]["assessment"],
+                         recorded["assessment"])
+        lean, dropped = _lean_provider_pair(compact)
+        # The recorded cause survives the LEAN reduction ...
+        self.assertEqual(lean["benefit"]["attribution"]["assessment"],
+                         recorded["assessment"])
+        self.assertNotIn("benefit.attribution.assessment", dropped)
+        # ... while audit scaffolding is what actually went.
+        self.assertNotIn("executed",
+                         lean.get("implementation_observation") or {})
+        block = _selection_block([_pair(index, big=True,
+                                        attribution=recorded)
+                                  for index in range(12)])
+        out = provider_paired_feedback(block, budget_chars=30000)
+        self.assertTrue(out["pairs"])
+        for pair in out["pairs"]:
+            self.assertEqual(pair["benefit"]["attribution"]["assessment"],
+                             recorded["assessment"])
+        self.assertNotIn("benefit.attribution.assessment",
+                         out["provider_compaction"]["fields_reduced"])
+
     def test_legends_explain_only_codes_that_are_displayed(self):
         from or_harness.strategy.evidence_views import provider_paired_feedback
         out = provider_paired_feedback(self._block(2))
@@ -536,6 +578,38 @@ class TestFullRequestBudget(unittest.TestCase):
         self.assertEqual(request["prediction_context"]["joint_problem"],
                          task_before)
 
+    def test_wire_request_excludes_local_diagnostics(self):
+        """The budget describes the SENT object, not the local diagnostics.
+
+        ``request_size`` is attached after enforcement and never serialized
+        to the provider, so attaching it cannot push an in-bound request over
+        the wire bound.
+        """
+        from or_harness.world_model.request_budget import (
+            enforce_full_request_budget, measure_request,
+            strip_request_diagnostics,
+        )
+        request = self._request(12)
+        prompt = "system prompt " * 800
+        size = self._with_budget(
+            24000, lambda: enforce_full_request_budget(request, prompt))
+        self.assertTrue(size["sendable"])
+        wire = strip_request_diagnostics({**request, "request_size": size})
+        self.assertNotIn("request_size", wire)
+        measured = measure_request(wire, prompt)
+        # The measured object and the reported size are the SAME wire body.
+        self.assertEqual(measured["chars"], size["chars"])
+        self.assertEqual(measured["tokens"], size["tokens"])
+        self.assertLessEqual(measured["tokens"], size["bound_tokens"])
+        self.assertEqual(size["wire"]["excluded_keys"], ["request_size",
+                                                         "request_diagnostics"])
+        # Adding the local diagnostics does change the serialized dict ...
+        self.assertGreater(
+            len(json.dumps({**request, "request_size": size},
+                           ensure_ascii=False)),
+            len(json.dumps(wire, ensure_ascii=False)))
+        # ... which is exactly why it is excluded from the wire and budget.
+
     def test_cjk_request_is_measured_conservatively(self):
         from or_harness.world_model.request_budget import (
             enforce_full_request_budget,
@@ -618,6 +692,9 @@ class TestEndToEndPriority(M4Case):
         self.assertTrue(self.provider.requests,
                         "the request was within the bound and was sent")
         request = self.provider.requests[-1]
+        # The provider receives the request AS SENT: the local budget
+        # diagnostics are kept on the prediction record, never on the wire.
+        self.assertNotIn("request_size", request)
         context = request["prediction_context"]
         # The current task body and the candidate steps survive untouched.
         self.assertIn("text", context["joint_problem"])
@@ -630,7 +707,7 @@ class TestEndToEndPriority(M4Case):
         self.assertIn("benefit_convention", request)
         self.assertIn("cost_scope", request)
         self.assertIn("output_contract", request)
-        size = request["request_size"]
+        size = prediction.trace.model_info["request_size"]
         self.assertTrue(size["sendable"])
         self.assertLessEqual(size["tokens"], size["bound_tokens"])
         if size["trimming"]:

@@ -343,6 +343,12 @@ class HttpChatProvider(WorldModelProvider):
             STRATEGY_OUTCOME_PROTOCOL_VERSION,
             STRATEGY_OUTCOME_SYSTEM_PROMPT,
         )
+        from or_harness.world_model.request_budget import (
+            strip_request_diagnostics,
+        )
+        # The budget diagnostics are LOCAL: never serialize them onto the
+        # wire, whatever caller assembled the request.
+        request = strip_request_diagnostics(request)
         protocol = request.get("prediction_protocol")
         if protocol not in (None, STRATEGY_OUTCOME_PROTOCOL_VERSION):
             raise ValueError("unsupported prediction protocol")

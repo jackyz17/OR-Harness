@@ -1511,11 +1511,20 @@ class StrategyOutcomeService:
                 save_result(prediction)
                 return prediction
 
+            # The provider receives the request AS SENT: the local
+            # request_size/trimming diagnostics are excluded. The budget was
+            # measured on exactly this wire object, so a request reported
+            # within the bound cannot exceed it because of diagnostics.
+            from or_harness.world_model.request_budget import (
+                strip_request_diagnostics,
+            )
+            wire_request = strip_request_diagnostics(request)
             try:
                 try:
-                    result = self.provider.predict(request, timeout_s=timeout_s)
+                    result = self.provider.predict(wire_request,
+                                                   timeout_s=timeout_s)
                 except TypeError:
-                    result = self.provider.predict(request)
+                    result = self.provider.predict(wire_request)
             except Exception as exc:  # provider adapter failure
                 # The contract vocabulary has ONE honest word for "a prediction
                 # was attempted and did not produce one": ``invalid``. The
