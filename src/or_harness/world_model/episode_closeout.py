@@ -65,7 +65,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import (
+    COST_DIMENSIONS, PREDICTED_COST_DIMENSIONS, CostVector,
+)
 from or_harness.core.storage import StorageError
 from or_harness.core.schema import NON_CUMULATIVE_DIMENSIONS
 from or_harness.core.schema import is_finite_number as _finite
@@ -947,16 +949,16 @@ def _aggregated_dim(dim: str, values: Sequence[float],
 
 
 def _predicted_cost_dims(predicted_cost: Any) -> set:
-    """Every predicted raw dimension can be diagnosed independently.
+    """The ACTIVE four remaining-task C targets this prediction declares.
 
-    Utility charging still deduplicates components; per-dimension errors
-    do not sum costs and must retain both time measurements.
-    ``output_tokens`` pairs only with observed completion counts;
-    historical ``llm_tokens`` keeps its separate total-token error series.
+    A historical prediction's ``latency_s``/``solver_runtime_s`` stays in
+    its stored record for audit, but is NOT scored as new C: C calibration
+    evaluates only remaining_latency_s, output_tokens, tool_calls, retries.
     """
     if predicted_cost is None or predicted_cost.expected is None:
         return set()
-    return predicted_cost.expected.measured_dims()
+    return (predicted_cost.expected.measured_dims()
+            & set(PREDICTED_COST_DIMENSIONS))
 
 
 def _declared_cost_scope(prediction: Any) -> str:

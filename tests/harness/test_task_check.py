@@ -72,7 +72,7 @@ STUB_PAYLOAD = {
                 "metric": "normalized_objective_gap", "unit": "1-gap",
                 "value": 0.8,
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+    "cost": {"output_tokens": 1200, "remaining_latency_s": 3.0, "tool_calls": 4},
     "risk": {"events": [{"event": "model_invalid", "probability": 0.2}]},
     "uncertainty": {"execution_randomness": 0.3, "knowledge_gap": 0.6},
 }

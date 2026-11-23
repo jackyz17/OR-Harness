@@ -310,7 +310,7 @@ class _StubProvider:
                         "value": 0.8,
                         "baseline": {"kind": "conditional_stats",
                                      "value": 0.7}},
-            "cost": {"solver_runtime_s": 3.0},
+            "cost": {"remaining_latency_s": 3.0},
         }, "usage": {"prompt_tokens": 100, "completion_tokens": 50},
             "error": None, "latency_s": 0.02}
 

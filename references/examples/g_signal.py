@@ -30,7 +30,7 @@ class Provider(WorldModelProvider):
             "benefit": {**FAITHFUL_G_CONVENTION, "value": 0.7,
                 "baseline": {"kind": "unknown", "note": "no comparable prior cases"},
                 "notes": [reasoning]},
-            "cost": {"solver_runtime_s": 0.1},
+            "cost": {"remaining_latency_s": 0.1, "tool_calls": 1},
             "risk": {"events": [{"event": "implementation_failure", "probability": 0.2}]}},
             "usage": {}, "latency_s": 0.001}
 

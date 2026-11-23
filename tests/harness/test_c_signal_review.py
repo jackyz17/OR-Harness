@@ -78,9 +78,19 @@ class TestFirstProposal(CCase):
         with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": ""}):
             view = self.call_cli(dict(self.task, task_id="unknown"))
         e = view["cost_evidence"]
-        self.assertFalse(e["reference_ranges"])
         self.assertEqual(e["current_conditions"]["phase"], "unknown")
-        self.assertEqual(e["missing"], ["decision phase unavailable"])
+        # A missing phase is NOT guessed. It allows only a explicitly graded
+        # broader_reference, never a strict same-phase prior.
+        self.assertFalse(e["reference_ranges"])
+        self.assertTrue(e["broader_reference_ranges"])
+        self.assertEqual(e["reference_coverage"]["strict"]["n_groups_available"], 0)
+        self.assertEqual(
+            e["reference_coverage"]["broader_reference"]["n_groups_available"], 1)
+        self.assertEqual(e["evidence_status"], "broader_reference_only")
+        self.assertTrue(all(
+            group["reference_grade"] == "broader_reference"
+            for group in e["broader_reference_ranges"]))
+        self.assertIn("decision phase unavailable", " ".join(e["missing"]))
 
     def test_file_configuration_and_frozen_context_do_not_read_future_runner_state(self):
         config = Path(self.home) / "runner.json"
@@ -125,7 +135,7 @@ class TestFirstProposal(CCase):
 class TestHostMeterIntegrity(CCase):
     def settle(self, *, tools=8, tokens=200, details=None, complete=None, counters=None,
                own_bound=None, extra_execution=False, second_report=False):
-        p = self.predict_c(cost={"tool_calls": 8, "llm_tokens": 200})
+        p = self.predict_c(cost={"tool_calls": 8})
         r = self.run_g(p)
         self.check_g(r)
         if extra_execution:
@@ -183,7 +193,8 @@ class TestHostMeterIntegrity(CCase):
     def test_partial_details_are_bounds_not_complete_totals(self):
         e, _ = self.settle(details=[{"id": "t1", "kind": "tool"}], complete=[])
         self.assertEqual(e["cost"]["per_dim"]["tool_calls"]["actual"], 8)
-        self.assertEqual(e["cost"]["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 200)
 
     def test_explicit_empty_complete_token_ledger_conflicts_with_positive_total(self):
         e, _ = self.settle(tools=1, details=[{"id": "t1", "kind": "tool"}],
@@ -194,7 +205,8 @@ class TestHostMeterIntegrity(CCase):
     def test_executor_lower_bound_rejects_zero_but_preserves_tokens(self):
         e, stats = self.settle(tools=0)
         self.assertNotIn("tool_calls", e["cost"]["observed_fact"]["values"])
-        self.assertEqual(e["cost"]["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 200)
         self.assertEqual(stats["coverage"]["tool_calls"]["n_actual"], 0)
         self.assertTrue(any("lower bound" in s for s in e["cost"]["observed_fact"]["boundary_exclusions"]))
 
@@ -207,17 +219,20 @@ class TestHostMeterIntegrity(CCase):
         e, _ = self.settle(counters={"start": {"tool_calls": 0, "prompt_tokens": 0, "completion_tokens": 0},
             "end": {"tool_calls": 1, "prompt_tokens": 200, "completion_tokens": 0}})
         self.assertNotIn("tool_calls", e["cost"]["observed_fact"]["values"])
-        self.assertEqual(e["cost"]["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 200)
 
     def test_report_own_floor_is_a_per_dimension_unknown(self):
         e, _ = self.settle(tools=0, own_bound=1)
         self.assertNotIn("tool_calls", e["cost"]["observed_fact"]["values"])
-        self.assertEqual(e["cost"]["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 200)
 
     def test_another_report_does_not_hide_a_conflict(self):
         e, _ = self.settle(details=[{"id": "t1", "kind": "tool"}], second_report=True)
         self.assertNotIn("tool_calls", e["cost"]["observed_fact"]["values"])
-        self.assertEqual(e["cost"]["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 200)
 
     def test_matching_summary_and_deduplicated_details_remain_actuals(self):
         tool = {"id": "t1", "kind": "tool"}
@@ -225,21 +240,25 @@ class TestHostMeterIntegrity(CCase):
         e, stats = self.settle(tools=1, details=[tool, model, dict(tool), dict(model)],
                               complete=["tool_calls", "llm_tokens"])
         self.assertEqual(e["cost"]["per_dim"]["tool_calls"]["actual"], 1)
-        self.assertEqual(e["cost"]["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 200)
         self.assertEqual(stats["coverage"]["tool_calls"]["n_actual"], 1)
 
     def test_partial_ledger_lower_bound_can_refute_a_total(self):
         e, _ = self.settle(tools=1, details=[{"id": "t1", "kind": "tool"},
             {"id": "t2", "kind": "tool"}], complete=[])
         self.assertNotIn("tool_calls", e["cost"]["observed_fact"]["values"])
-        self.assertEqual(e["cost"]["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 200)
 
     def test_explicit_complete_zero_tokens_is_a_valid_raw_error(self):
         e, stats = self.settle(tools=1, tokens=0, details=[{"id": "t1", "kind": "tool"}],
             complete=["tool_calls", "llm_tokens"])
-        error = e["cost"]["per_dim"]["llm_tokens"]
-        self.assertEqual((error["actual"], error["abs_error"], error["signed_error"]), (0, 200, -200))
-        self.assertIsNone(error["log_ratio"])
+        # The old raw-token observation is still recorded, but it is not an
+        # active C prediction dimension and never gets a new C error.
+        self.assertNotIn("llm_tokens", e["cost"]["per_dim"])
+        self.assertEqual(
+            e["cost"]["observed_fact"]["values"]["llm_tokens"], 0)
         self.assertEqual(stats["coverage"]["llm_tokens"]["n_actual"], 1)
         self.assertEqual(stats["coverage"]["llm_tokens"]["n_log_ratio"], 0)
 

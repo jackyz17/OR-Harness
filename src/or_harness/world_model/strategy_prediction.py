@@ -38,7 +38,10 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from or_harness.core.schema import COST_DIMENSIONS, CostVector, ProblemProfile, group_key
+from or_harness.core.schema import (
+    COST_DIMENSIONS, PREDICTED_COST_DIMENSIONS, CostVector, ProblemProfile,
+    group_key,
+)
 from or_harness.core.schema import (
     is_finite_number as _finite,
     is_probability as _prob,
@@ -47,6 +50,7 @@ from or_harness.world_model.contracts import (
     FAITHFUL_G_CONVENTION,
     FAITHFUL_G_METRIC,
     FAITHFUL_G_OBSERVATION_VERSION,
+    COST_PREDICTION_CONTRACT_VERSION,
     RETRIES_FUTURE_VERSION,
     is_g_probability,
     BaselineStatement,
@@ -273,33 +277,19 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "and do not present a narrow probability range as if it bounded one "
     "run. Reporting an interval without a kind leaves the semantics "
     "unstated, and the framework will say so.\n"
-    "- cost: object of the resource dimensions you have evidence for, each "
-    "a non-negative number: {output_tokens, tool_calls, solver_runtime_s, "
-    "retries, latency_s, remaining_latency_s}. Include ONLY dimensions you "
-    "actually predict; an omitted dimension is unknown, never zero. "
-    "output_tokens may also be null for unknown; put its reason in "
+    "- cost: object of the FOUR active remaining-task resource dimensions "
+    "you have evidence for, each a non-negative number: "
+    "{remaining_latency_s, output_tokens, tool_calls, retries}. Include ONLY "
+    "dimensions you actually predict; an omitted dimension is unknown, never "
+    "zero. output_tokens may also be null for unknown; put its reason in "
     "unsupported_fields, outside cost.\n"
     "  COST SCOPE (all candidates of one decision share ONE anchor — the "
-    "decision point — and ONE end — the end of the task):\n"
+    "decision point — and ONE end — the end of the task): every active "
+    "dimension covers the SAME remaining task window. C predicts the "
+    "resources still needed to FINISH THE TASK, not one sandbox attempt.\n"
     "    * `remaining_latency_s` is the PRIMARY latency: the wall-clock from "
-    "THIS decision's anchor to the END of the task, covering the LATER "
-    "modelling, coding, tool calls, solving, checking, repair and retries. "
-    "Predict this for cost comparisons;\n"
-    "    * `solver_runtime_s` is the SOLVER's own reported runtime for the "
-    "inner solve the script ran — a component of the total, kept for "
-    "diagnosis, NOT the end-to-end cost. Do not add it to "
-    "`remaining_latency_s` as if they were two separate spends;\n"
-    "    * `latency_s` is the wall-clock ONE attempt's sandbox consumed and "
-    "is NOT summed across attempts — it is NOT the remaining time, and is "
-    "never renamed into it;\n"
-    "    * `retries` is the expected number of ADDITIONAL solve attempts "
-    "needed AFTER the attempt about to be executed, until this task ends. "
-    "That bound attempt is the baseline and is not counted. Use a finite "
-    "non-negative expected count, including fractions or zero; omit when "
-    "unknown. If A, B and C actually run with a fresh decision before each, "
-    "their execution retry increments are 0/1/1 but these decisions' future "
-    "additional-attempt actuals are 2/1/0. Changing strategy, solver or "
-    "candidate does not reset the task/episode attempt chain;\n"
+    "THIS decision's anchor to the END of the task, covering the later "
+    "modelling, coding, tool calls, solving, checking, repair and retries;\n"
     "    * `output_tokens` is the number of tokens the EXECUTION MODEL is "
     "expected to GENERATE from THIS decision point until the task ends, "
     "including later modelling, writing code, self-checks and expected "
@@ -307,26 +297,28 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "conditions, not generated tokens. Exclude generation before this "
     "decision. Raw usage/budget `llm_tokens` still means input plus output "
     "and must not substitute for output_tokens;\n"
-    "    * output_tokens and tool_calls cover the SAME remaining scope as "
-    "`remaining_latency_s` (the rest of the task), never a whole-task "
-    "cumulative total, a single script run, or both at once. Do not mix "
-    "scopes. When a number does NOT measure the whole remaining task, "
-    "state which scope it measures in `unsupported_fields` — NEVER add a "
-    "justification inside `cost`. The `cost` object must contain ONLY the "
-    "numeric dimension keys listed above: a key such as `basis` or `notes` "
-    "is NOT a dimension and invalidates the WHOLE prediction.\n"
-    "  COST EVIDENCE: use prediction_context.cost_evidence. First identify "
-    "the work this candidate ADDS or SAVES relative to its comparable "
-    "reference workflow: existing-model reuse versus rebuilding, extra "
-    "subproblem solves, merging, acceptance checks and evidenced repairs. "
-    "Then estimate their effects in raw tool_calls, host rounds, output_tokens "
-    "and seconds. Host rounds are explanatory, not a new cost dimension. "
-    "Use same-scope generated-token evidence for output_tokens, never "
-    "input-plus-output totals. Historical totals already include their workflow's steps: count each "
-    "step once. Use only applicable window/phase evidence; sparse "
-    "cases describe their own support. Similar costs are appropriate when "
-    "supported. Cite the range/case source in evidence_basis, and name "
-    "unestimable dimensions in unsupported_fields, outside cost.\n"
+    "    * `tool_calls` is the expected number of tool calls in the SAME "
+    "remaining task window, not a whole-task cumulative total and not one "
+    "script run;\n"
+    "    * `retries` is the expected number of ADDITIONAL solve attempts "
+    "needed AFTER the attempt about to be executed, until this task ends. "
+    "That bound attempt is the baseline and is not counted. Use a finite "
+    "non-negative expected count, including fractions or zero; omit when "
+    "unknown. If A, B and C actually run with a fresh decision before each, "
+    "their execution retry increments are 0/1/1 but these decisions' future "
+    "additional-attempt actuals are 2/1/0. Changing strategy, solver or "
+    "candidate does not reset the task/episode attempt chain.\n"
+    "  DO NOT predict `latency_s` or `solver_runtime_s`: they are "
+    "EXECUTION OBSERVATIONS (one attempt's sandbox wall-clock and the "
+    "solver's inner runtime), not remaining-task costs. They are never "
+    "renamed into `remaining_latency_s`, never added to it, and a new "
+    "prediction containing either is rejected as a contract error. Historical "
+    "observations of them remain visible only as execution diagnostics. "
+    "Do not mix scopes. When a number does NOT measure the whole remaining "
+    "task, state which scope it measures in `unsupported_fields` — NEVER add "
+    "a justification inside `cost`. The `cost` object must contain ONLY the "
+    "four numeric dimension keys listed above: a key such as `basis` or "
+    "`notes` is NOT a dimension and invalidates the WHOLE prediction.\n"
     "- risk: object {\"events\": [{\"event\": a short name of the risk "
     "EVENT, \"probability\": number in [0,1] or omitted when you have no "
     "basis, \"severity\": number or omitted, \"severity_unit\": text, "
@@ -376,10 +368,15 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "budget_exhausted) remain diagnostics and NEVER enter R. G concerns "
     "original-task acceptance given faithful execution; C counts "
     "solving/rework resources. Use the small implementation_r_evidence "
-    "block: per-event, matching solver-interface facts, not a global "
-    "adjustment. Supported common base rates or similar candidate scores are "
-    "allowed. A reusable tested script is evidence of technical execution "
-    "only, not current business correctness.\n"
+    "block: per-event, matching solver-interface facts first, not a global "
+    "adjustment. Its optional `global_event_base_rates` block is a separate, "
+    "wider BACKGROUND: it is not the candidate's conditional probability, its "
+    "denominator is known labels only (unknown labels are not non-occurrences), "
+    "and it must not replace a matching condition group. The three events are "
+    "independent: a large maximum is a risk score, never a joint probability. "
+    "Supported common base rates or similar candidate scores are allowed. A "
+    "reusable tested script is evidence of technical execution only, not "
+    "current business correctness.\n"
     "  If you give a probability, base it on the SPECIFIC candidate's "
     "evidence (the steps, the environment, comparable history), not on the "
     "solver's reputation. NEVER hardcode a penalty for a particular solver "
@@ -459,6 +456,16 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "  * these are measured PAST errors, not a promise about this "
     "prediction, and they carry NO per-strategy breakdown (they are a "
     "global diagnostic).\n"
+    "  * `prediction_context.g_candidate_evidence` is a compact DERIVED "
+    "selection over the "
+    "paired feedback: observed cases relevant to THIS candidate's recorded "
+    "method and conditions. `comparison_role=strict_condition_match` means "
+    "same task or known same family+structure; "
+    "`partial_condition_similarity` means only some conditions/method terms "
+    "are shared and unknown structure is NOT a match. `recorded_cause` is "
+    "carried only when the close-out attribution recorded it; never invent a "
+    "cause from a failed check or execution status. These cases show method "
+    "fit and boundaries, not a G correction coefficient.\n"
     "PAIRED FEEDBACK: the context may carry a `prediction_execution_pairs` "
     "block: the compact, per-episode facts of how THIS model's past "
     "predictions turned out. Each pair names the conditions, the planned "
@@ -549,20 +556,28 @@ COST_SCOPE_DEFAULT = "remaining_to_task_end"
 
 #: The SHARED cost scope every candidate of one decision predicts under.
 #: ONE anchor (the decision point) and ONE end (the end of the task), so a
-#: candidate cannot silently measure a different span from its peers. The
-#: primary dimension is ``remaining_latency_s``; ``solver_runtime_s`` is a
-#: COMPONENT kept for diagnosis and is never added on top of it, and the
-#: old attempt-level ``latency_s`` keeps its own (different) meaning. The
-#: anchor is an ID, not a wall-clock reading: prediction is a planning act,
-#: and a shared label is what makes the candidates' costs comparable.
+#: candidate cannot silently measure a different span from its peers. C has
+#: exactly FOUR active prediction targets, all covering that remaining span:
+#: remaining latency, generated output tokens, tool calls and future retries.
+#: ``latency_s`` (one sandbox attempt) and ``solver_runtime_s`` (the solver's
+#: inner runtime) are EXECUTION OBSERVATIONS kept for diagnostics — they are
+#: never predicted, renamed, or added into the remaining span.
 COST_SCOPE_CONVENTION: Dict[str, Any] = {
     "anchor": "decision_point",
     "end": "end_of_task",
+    "prediction_dimensions": list(PREDICTED_COST_DIMENSIONS),
     "primary_dimension": "remaining_latency_s",
     "token_dimension": "output_tokens",
+    "remaining_latency_definition": (
+        "wall-clock from this decision to task termination, covering the "
+        "later modelling, coding, tool calls, solving, checking, repair and "
+        "retries"),
     "token_definition": ("tokens generated by the execution model from this "
                          "decision to task termination; observed from host "
                          "completion_tokens, excluding input tokens"),
+    "tool_calls_definition": ("tool calls within the SAME remaining task "
+                              "window, not a whole-task or single-attempt "
+                              "total"),
     "retries_convention": {
         "observation_rule_version": RETRIES_FUTURE_VERSION,
         "baseline": "the real execution bound to this prediction",
@@ -572,19 +587,23 @@ COST_SCOPE_CONVENTION: Dict[str, Any] = {
     "covers": ("the later modelling, coding, tool calls, solving, checking, "
                "repair and retries until the task ends"),
     "shared_by": "every candidate of one decision (same anchor, same end)",
-    "component_dimensions": {
-        "solver_runtime_s": ("the solver's own inner solve time; a COMPONENT "
-                             "of the total kept for diagnosis, NOT added on "
-                             "top of remaining_latency_s"),
-        "latency_s": ("ONE attempt's sandbox wall-clock; a DIFFERENT "
-                      "measurement, never renamed into the remaining span"),
+    "observation_only_dimensions": {
+        "latency_s": ("ONE attempt's sandbox wall-clock; an execution "
+                      "observation, NOT a prediction target and never "
+                      "renamed into remaining_latency_s"),
+        "solver_runtime_s": ("the solver's own inner solve time; an "
+                             "execution observation/diagnostic, NOT a "
+                             "separate C prediction target"),
+        "llm_tokens": ("raw input-plus-output accounting total, not the "
+                       "generated output_tokens C predicts"),
     },
-    "note": ("output_tokens, tool_calls and remaining_latency_s all cover the "
-             "SAME remaining scope; overlapping prediction ranges are never "
-             "summed, and a cumulative host figure is written once (never "
-             "re-added through several executions)"),
+    "note": ("all four active dimensions cover the SAME remaining scope; "
+             "overlapping prediction ranges are never summed. A missing "
+             "dimension is unknown, never zero. Historical latency_s/"
+             "solver_runtime_s observations stay readable for execution "
+             "diagnostics but do not enter C references, normalization, U or "
+             "the new C calibration."),
 }
-
 
 def build_strategy_outcome_request(
         context: Any, candidate: CandidateRef,
@@ -1024,8 +1043,17 @@ def parse_strategy_outcome_payload(
     else:
         dims: Dict[str, float] = {}
         for dim, value in raw_cost.items():
-            if dim not in COST_DIMENSIONS:
-                problems.append(f"unknown cost dimension {dim!r}")
+            if dim not in PREDICTED_COST_DIMENSIONS:
+                if dim in COST_DIMENSIONS:
+                    problems.append(
+                        f"cost.{dim} is a historical observation "
+                        "dimension, not an active C prediction target; "
+                        "predict only "
+                        f"{list(PREDICTED_COST_DIMENSIONS)} "
+                        "(C covers the remaining task, never one sandbox "
+                        "attempt or the solver's inner runtime)")
+                else:
+                    problems.append(f"unknown cost dimension {dim!r}")
             elif dim == "output_tokens" and value is None:
                 unsupported["cost.output_tokens"] = "reported as unknown by the model"
             elif not _finite(value) or float(value) < 0:
@@ -1034,7 +1062,8 @@ def parse_strategy_outcome_payload(
                 dims[dim] = float(value)
         if "output_tokens" not in dims:
             unsupported.setdefault("cost.output_tokens",
-                "not predicted; legacy llm_tokens is input plus output, not generated tokens")
+                "not predicted; raw input-plus-output tokens are not "
+                "generated output tokens")
         if dims:
             try:
                 vector = CostVector(**dims, measured=set(dims))
@@ -1045,12 +1074,13 @@ def parse_strategy_outcome_payload(
                 cost = ExpectedCost(
                     expected=vector, measured=sorted(dims),
                     scope=COST_SCOPE_DEFAULT,
-                    notes=["predicted by the model under the strategy-outcome "
-                           "protocol; the measured mask marks PREDICTED "
-                           "dimensions, not observed ones. scope="
-                           + COST_SCOPE_DEFAULT + " (decision anchor -> end "
-                           "of task): the close-out observes the SAME span, "
-                           "not one attempt"])
+                    prediction_contract=COST_PREDICTION_CONTRACT_VERSION,
+                    notes=["predicted by the model under the active "
+                           "four-dimensional remaining-task C contract; the "
+                           "measured mask marks PREDICTED dimensions, not "
+                           "observed ones. scope=" + COST_SCOPE_DEFAULT +
+                           " (decision anchor -> end of task): the close-out "
+                           "observes the SAME span, not one attempt"])
         elif not problems:
             unsupported["cost"] = ("no recognized cost dimension was "
                                    "predicted")

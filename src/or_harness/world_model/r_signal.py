@@ -486,14 +486,110 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
                  "never against a later retry")}
 
 
+def _empty_event_base_rate():
+    return {"occurred": 0, "not_occurred": 0, "unknown": 0,
+            "n_known_labels": 0, "occurrence_rate": None}
+
+
+def global_event_base_rates(technical_r):
+    """The window's broad technical-event background, per event.
+
+    Reuses ``technical_r_statistics`` - it does NOT rescan the bank. The
+    denominator is KNOWN labels only (occurred + not_occurred): an unknown
+    label is not a non-occurrence, and an unexecuted candidate or a
+    prediction-stage request timeout never becomes an attempt in this
+    population. Each R event stays its own random variable; this block is
+    background, never a candidate-specific conditional probability and never
+    a joint/max probability.
+    """
+    technical_r = technical_r if isinstance(technical_r, dict) else {}
+    source_events = technical_r.get("events")
+    if not isinstance(source_events, dict) or not source_events:
+        # Older published summaries may predate the window-level ``events``
+        # block. The per-condition groups still carry the SAME attempt labels
+        # and partition the facts, so their counts can be summed without
+        # double counting; a truly legacy record without either stays
+        # unavailable rather than being guessed.
+        aggregated = {name: _empty_event_base_rate() for name in R_EVENTS}
+        found = False
+        for group in technical_r.get("groups") or []:
+            events = (group or {}).get("events") or {}
+            for name in R_EVENTS:
+                entry = events.get(name)
+                if not isinstance(entry, dict):
+                    continue
+                found = True
+                for key in ("occurred", "not_occurred", "unknown"):
+                    aggregated[name][key] += int(entry.get(key) or 0)
+        if not found:
+            return {}
+        source_events = aggregated
+    events = {}
+    any_known = False
+    for name in R_EVENTS:
+        entry = source_events.get(name)
+        if not isinstance(entry, dict):
+            continue
+        occurred = int(entry.get("occurred") or 0)
+        not_occurred = int(entry.get("not_occurred") or 0)
+        unknown = int(entry.get("unknown") or 0)
+        known = occurred + not_occurred
+        any_known = any_known or known > 0
+        events[name] = {
+            "occurred": occurred,
+            "not_occurred": not_occurred,
+            "unknown": unknown,
+            "n_known_labels": known,
+            "occurrence_rate": (round(occurred / known, 6) if known else None),
+        }
+    if not events:
+        return {}
+    return {
+        "version": "wm-r-global-base-rates/1",
+        "observation_rule_version": technical_r.get(
+            "observation_rule_version") or R_OBSERVATION_VERSION,
+        "scope": ("all executed attempts in the closed calibration window; "
+                  "broad background, NOT a candidate-specific condition"),
+        "n_attempts": int((technical_r.get("coverage") or {}).get(
+            "n_actual_attempts") or 0),
+        "events": events,
+        "rate_basis": ("occurred / (occurred + not_occurred); unknown labels "
+                       "are excluded, never counted as non-occurrence"),
+        "source": ("technical_r_statistics event labels on actual executed "
+                   "attempts; unresolved or unexecuted candidates are absent"),
+        "support": ("measured_global_base_rate" if any_known
+                    else "insufficient_evidence"),
+        "note": ("condition groups describe the candidate's solver/structure; "
+                 "this global block is wider background. The three events are "
+                 "independent and the maximum is not a joint probability."),
+    }
+
+
+def refresh_r_evidence_support(block):
+    """Keep the R support label true after a budget trim."""
+    block = block if isinstance(block, dict) else {}
+    groups = block.get("groups") or []
+    global_rates = block.get("global_event_base_rates") or {}
+    if groups and global_rates:
+        block["support"] = "applicable_facts_with_global_base_rates"
+    elif groups:
+        block["support"] = "applicable_facts"
+    elif global_rates:
+        block["support"] = "global_base_rates_only"
+    else:
+        block["support"] = "insufficient_evidence"
+    return block
+
+
 def select_r_evidence(summary, context, candidate):
     runner = context.solving_context.get("execution_context") or {}
     interface = getattr(candidate, "solver", None) or runner.get("solver_interface")
     missing = []
     if not interface:
         missing.append("solver interface unknown")
+    technical_r = (summary or {}).get("technical_r") or {}
     groups = []
-    for g in ((summary or {}).get("technical_r") or {}).get("groups") or []:
+    for g in technical_r.get("groups") or []:
         if missing or g.get("observation_rule_version") != R_OBSERVATION_VERSION \
                 or (g.get("conditions") or {}).get("solver_interface") != interface:
             continue
@@ -518,15 +614,30 @@ def select_r_evidence(summary, context, candidate):
                                    "brier_support"):
                     event_entry.pop(diagnostic, None)
         item["source_refs"] = item["source_refs"][:6]
-        item["support_note"] = "closed attempts for this solver interface; sparse or missing structure supports these cases only"
+        item["n_source_refs"] = len(g.get("source_refs") or [])
+        item["support_note"] = ("closed attempts for this solver interface; "
+                                "sparse or missing structure supports these "
+                                "cases only")
         groups.append(item)
     groups.sort(key=lambda g: (g["conditions"].get("structure") or {}).get("family") !=
                              (context.joint.profile or {}).get("family"))
+    global_rates = global_event_base_rates(technical_r)
+    support = "applicable_facts" if groups else "insufficient_evidence"
+    if global_rates and not groups:
+        support = "global_base_rates_only"
+    elif global_rates and groups:
+        support = "applicable_facts_with_global_base_rates"
     return {**R_CONVENTION, "solver_interface": interface,
             "event_definitions": dict(R_EVENT_DEFINITIONS),
-            "groups": groups[:3], "missing": missing,
-            "support": "applicable_facts" if groups else "insufficient_evidence",
-            "note": ("use the applicable empirical facts for EACH R event "
-                     "(implementation_failure, timeout, environment_failure); "
-                     "shared base rates or similar candidate probabilities are "
-                     "allowed when supported")}
+            "groups": groups[:3],
+            # SEPARATE from the condition groups: a broad background reference
+            # even when no condition group matches. It is not called the
+            # candidate's conditional probability.
+            "global_event_base_rates": global_rates,
+            "missing": missing,
+            "support": support,
+            "note": ("prefer the applicable per-solver-interface event facts; "
+                     "the separate global_event_base_rates block is only broad "
+                     "background. The three events are independent, unknown is "
+                     "not 'did not happen', and the maximum event probability "
+                     "is NOT a joint failure probability.")}

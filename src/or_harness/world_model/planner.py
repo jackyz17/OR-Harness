@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from or_harness.core.schema import COST_DIMENSIONS
+from or_harness.core.schema import COST_DIMENSIONS, PREDICTED_COST_DIMENSIONS
 from or_harness.core.schema import chargeable_dimensions
 from or_harness.world_model.contracts import (
     FAITHFUL_G_CONVENTION, FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
@@ -612,19 +612,20 @@ def score_strategy_outcome_predictions(
         cost = prediction.cost
         if cost is None or cost.expected is None:
             return set()
-        return {dim for dim in set(cost.measured) & set(cost.expected.measured_dims()) & set(COST_DIMENSIONS)
+        # U prices ONLY the four remaining-task C targets. A legacy
+        # observation dimension (latency_s / solver_runtime_s) stays in the
+        # stored prediction for audit, but is never a new U term.
+        return {dim for dim in set(cost.measured) & set(cost.expected.measured_dims())
+                & set(PREDICTED_COST_DIMENSIONS)
                 if isinstance((v := getattr(cost.expected, dim)), (int, float)) and not isinstance(v, bool)
                 and math.isfinite(v) and v >= 0}
 
     def measurement_key(prediction, dim):
-        scope = prediction.cost.scope
-        if scope not in ("attempt", "strategy_window", "remaining_to_task_end"):
+        if dim not in PREDICTED_COST_DIMENSIONS:
             return None
-        if dim == "latency_s":
-            return "attempt_sandbox"
-        if dim in ("remaining_latency_s", "output_tokens") and scope != "remaining_to_task_end":
-            return None
-        return scope
+        # Every active dimension is defined over the SAME remaining window.
+        return ("remaining_to_task_end"
+                if prediction.cost.scope == "remaining_to_task_end" else None)
 
     participants = [p for p in predictions if benefit_reason(p) is None]
     declared_dims = {p.prediction_id: cost_dims(p) for p in predictions}
@@ -644,8 +645,16 @@ def score_strategy_outcome_predictions(
             if len({retries_convention(p) for p in participants})!=1:
                 common.discard(dim)
                 omitted_dims[dim]={'reason':'different retry observation conventions'}
-    # Keep old declarations inspectable/calibratable in their own units.
-    # Strategy U prices generation, never the raw input-plus-output total.
+    # Archived observation dimensions are kept in the prediction record but
+    # are NEVER active C terms: no U weight, no scale, no calibration entry.
+    for prediction in predictions:
+        legacy = set(getattr(prediction.cost, "measured", []) or [])
+        for dim in sorted(legacy - set(PREDICTED_COST_DIMENSIONS)):
+            omitted_dims.setdefault(dim, {
+                "reason": ("historical observation dimension; not an active "
+                           "four-dimensional C prediction target")})
+    # Keep old declarations inspectable in their own units. Strategy U prices
+    # generated tokens, never the raw input-plus-output total.
     if "llm_tokens" in all_dims:
         common.discard("llm_tokens")
         omitted_dims["llm_tokens"] = {"reason": "raw input-plus-output total; token C uses output_tokens"}
@@ -653,9 +662,9 @@ def score_strategy_outcome_predictions(
     if not isinstance(scales,dict):scales={}
     norms={};scale_sources={}
     weights = dict(limits.cost_weights or {})
-    # Reuse the existing token weight without changing raw accounting or
-    # applying an old total-token scale to the new output-only dimension.
-    weights.setdefault("output_tokens", weights.get("llm_tokens", 0.0))
+    # The active C dimensions have their own weights. An old total-token
+    # weight is NOT reused as an output-token weight.
+    weights.setdefault("output_tokens", 1.0)
     for dim in sorted(common):
         raw=scales.get(dim)
         info=copy.deepcopy(raw) if isinstance(raw,dict) else {'peak':raw,'source':'explicit_plan_limits'}
@@ -773,7 +782,7 @@ def score_strategy_outcome_predictions(
         score.cost_reported = {"scope": getattr(cost, "scope", None),
             "expected_measured": list(getattr(cost, "measured", [])),
             "values": {d: (getattr(cost.expected, d) if d in declared_dims[prediction.prediction_id] else None)
-                       for d in getattr(cost, "measured", []) if d in COST_DIMENSIONS} if cost and cost.expected else {}}
+                       for d in getattr(cost, "measured", []) if d in PREDICTED_COST_DIMENSIONS} if cost and cost.expected else {}}
         reason = benefit_reason(prediction)
         score.scoring_basis = {
             "participant_prediction_ids": participant_ids,

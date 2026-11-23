@@ -287,8 +287,8 @@ class TestCommonCRScoring(RCase):
         result = self.h.plan_next(self.task, "ep1", candidates=[
             ActionSpec("execute_strategy", self.task["task_id"], strategy_id=s, solver="highs", method=COUPLED)
             for s in ("S04", "S06")], limits={"horizon": 1, "alpha": 1, "beta": 1, "gamma": 1,
-                "cost_weights": {"llm_tokens": 1, "remaining_latency_s": 1, "solver_runtime_s": 1, "latency_s": 1},
-                "cost_scales":{"output_tokens":700000,"remaining_latency_s":240,"solver_runtime_s":3,"latency_s":2}, **limits})
+                "cost_weights": {"output_tokens": 1, "remaining_latency_s": 1, "tool_calls": 1, "retries": 1},
+                "cost_scales":{"output_tokens":700000,"remaining_latency_s":240,"tool_calls":10,"retries":3}, **limits})
         return [row["score"] for row in result["candidates"]]
 
     def test_timeout_is_dropped_when_a_peer_cannot_supply_it(self):
@@ -321,24 +321,28 @@ class TestCommonCRScoring(RCase):
         self.assertEqual([s["risk_effective"] for s in scores], [0, 0])
 
     def test_no_common_cost_dimension_is_explicitly_incomparable(self):
-        scores = self.plan(payload(None, cost={"latency_s": 2}), payload(None, cost={"remaining_latency_s": 120}))
+        scores = self.plan(payload(None, cost={"tool_calls": 2}),
+                           payload(None, cost={"remaining_latency_s": 120}))
         self.assertTrue(all(s["cost_normalized"] is None and "cost" in s["incomparable"] for s in scores))
         self.assertEqual([s["utility"] for s in scores], [.5, .5])
         self.assertTrue(all(s["scoring_basis"]["terms"] == ["G"] for s in scores))
 
-    def test_component_deduplication_occurs_after_intersection(self):
+    def test_old_component_is_not_a_common_scale(self):
+        # solver_runtime_s is an execution observation; it cannot become a
+        # shared U dimension or a component of the remaining-task total.
         scores = self.plan(payload(None, cost={"remaining_latency_s": 120, "solver_runtime_s": 2}),
                            payload(None, cost={"solver_runtime_s": 3}))
-        self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["solver_runtime_s"] for s in scores))
-        self.assertAlmostEqual(scores[0]["cost_normalized"], __import__("math").log1p(2)/__import__("math").log1p(3), places=6)
+        self.assertTrue(all("solver_runtime_s" not in s["scoring_basis"]["cost_dimensions"]
+                            for s in scores))
+        self.assertTrue(all(s["cost_normalized"] is None for s in scores))
 
     def test_all_valid_data_uses_common_container_and_keeps_components_visible(self):
-        scores = self.plan(payload(.2, cost={"output_tokens": 50, "remaining_latency_s": 120, "solver_runtime_s": 2}),
-                           payload(.3, cost={"output_tokens": 70, "remaining_latency_s": 240, "solver_runtime_s": 3}))
+        scores = self.plan(payload(.2, cost={"output_tokens": 50, "remaining_latency_s": 120}),
+                           payload(.3, cost={"output_tokens": 70, "remaining_latency_s": 240}))
         self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["output_tokens", "remaining_latency_s"] for s in scores))
         self.assertTrue(all(s["scoring_basis"]["terms"] == ["G", "C", "R"] for s in scores))
         self.assertTrue(all(not s["scoring_basis"]["partial"] for s in scores))
-        self.assertEqual(scores[0]["cost_reported"]["values"]["solver_runtime_s"], 2)
+        self.assertNotIn("solver_runtime_s", scores[0]["cost_reported"]["values"])
 
     def test_off_yardstick_candidate_does_not_change_the_common_basis(self):
         a, b = payload(.2, cost={"output_tokens": 10}), payload(None, cost={"output_tokens": 1000000})

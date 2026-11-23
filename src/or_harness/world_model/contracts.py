@@ -66,7 +66,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import (
+    COST_DIMENSIONS, PREDICTED_COST_DIMENSIONS, CostVector,
+)
 from or_harness.core.schema import (
     is_finite_number as _finite,
     is_probability as _prob,
@@ -288,6 +290,11 @@ PREDICTION_SCOPES = ("attempt", "strategy_window")
 #: repair and retries. Comparing a remaining-cost prediction against a
 #: single attempt (or the reverse) is a unit error and is refused.
 COST_SCOPE_KINDS = ("remaining_to_task_end", "attempt", "strategy_window")
+
+#: Contract marker on a wm-so/1 ``ExpectedCost`` produced under the
+#: four-dimensional remaining-task C contract. ``None`` on old records means
+#: "read as historical", never "convert to the new contract".
+COST_PREDICTION_CONTRACT_VERSION = "wm-c-predict/4"
 # Raw attempt increments and remaining predicted counts are different facts.
 RETRIES_INCREMENT_VERSION = "or-retry-increment/1"
 RETRIES_FUTURE_VERSION = "wm-retry-additional-attempts/1"
@@ -1580,15 +1587,23 @@ class ExpectedCost:
     measured: List[str] = field(default_factory=list)
     scope: str = "remaining_to_task_end"
     notes: List[str] = field(default_factory=list)
+    #: ``wm-c-predict/4`` when this cost was produced by the active
+    #: four-dimensional remaining-task contract. ``None`` = an archived
+    #: prediction written before that contract; its values stay READABLE but
+    #: never enter new U/C calibration or normalization.
+    prediction_contract: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "expected": (self.expected.to_dict()
                          if self.expected is not None else None),
             "expected_measured": list(self.measured),
             "scope": self.scope,
             "notes": list(self.notes),
         }
+        if self.prediction_contract is not None:
+            out["prediction_contract"] = self.prediction_contract
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ExpectedCost":
@@ -1607,7 +1622,10 @@ class ExpectedCost:
             scope = str(data.get("scope") or "")
         return cls(expected=vector, measured=measured, scope=scope,
                    notes=normalize_text_list(data.get("notes"),
-                                             field="ExpectedCost.notes"))
+                                             field="ExpectedCost.notes"),
+                   prediction_contract=(str(data["prediction_contract"])
+                                        if data.get("prediction_contract")
+                                        else None))
 
 
 @dataclass
@@ -2293,15 +2311,42 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
                 "is not a prediction")
     cost = prediction.cost
     if cost is not None and cost.expected is not None:
-        for dim in COST_DIMENSIONS:
-            value = getattr(cost.expected, dim)
-            if not _finite(value) or float(value) < 0:
-                problems.append(f"cost.expected.{dim} must be finite and "
-                                ">= 0")
-        for dim in cost.measured:
-            if dim not in COST_DIMENSIONS:
-                problems.append(f"cost.expected_measured has unknown "
-                                f"dimension {dim!r}")
+        active_contract = (cost.prediction_contract
+                          == COST_PREDICTION_CONTRACT_VERSION)
+        if active_contract:
+            # The NEW contract prices ONLY the four remaining-task targets.
+            # A legacy observation dimension in a new prediction is a
+            # validation error, never silently charged or renamed.
+            for dim in PREDICTED_COST_DIMENSIONS:
+                value = getattr(cost.expected, dim)
+                if not _finite(value) or float(value) < 0:
+                    problems.append(f"cost.expected.{dim} must be finite "
+                                    "and >= 0")
+            for dim in cost.measured:
+                if dim not in PREDICTED_COST_DIMENSIONS:
+                    if dim in COST_DIMENSIONS:
+                        problems.append(
+                            f"cost.expected_measured.{dim} is a historical "
+                            "observation dimension, not an active C "
+                            "prediction target; use only "
+                            f"{list(PREDICTED_COST_DIMENSIONS)}")
+                    else:
+                        problems.append(
+                            "cost.expected_measured has unknown dimension "
+                            f"{dim!r}")
+        else:
+            # Archived predictions keep their original validation: they are
+            # READABLE, but their dimensions are excluded from new U and C
+            # calibration by the consumers.
+            for dim in COST_DIMENSIONS:
+                value = getattr(cost.expected, dim)
+                if not _finite(value) or float(value) < 0:
+                    problems.append(f"cost.expected.{dim} must be finite and "
+                                    ">= 0")
+            for dim in cost.measured:
+                if dim not in COST_DIMENSIONS:
+                    problems.append(f"cost.expected_measured has unknown "
+                                    f"dimension {dim!r}")
     risk = prediction.risk
     if risk is not None:
         for index, event in enumerate(risk.events):

@@ -66,7 +66,7 @@ GOOD_PAYLOAD = {
                 "metric": "normalized_objective_gap", "unit": "1-gap",
                 "value": 0.8,
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+    "cost": {"output_tokens": 1200, "remaining_latency_s": 3.0, "tool_calls": 4},
     "risk": {"events": [
         {"event": "timeout", "probability": 0.2},
     ]},
@@ -515,11 +515,13 @@ class TestEvaluationEligibility(M4Case):
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         cost = result["evaluations"][0]["cost"]
-        # The prediction predicted llm_tokens + solver_runtime_s; the real
-        # execution measured solver_runtime_s (and llm_tokens=0 unmeasured
-        # by default). Only the both-sides dims participate.
-        self.assertIn("solver_runtime_s", cost["per_dim"])
-        self.assertIn("llm_tokens", cost["excluded"])
+        # The active prediction covers the four remaining-task dimensions;
+        # this fixture's execution measures only the OLD per-attempt
+        # observations, so no new C per-dimension comparison exists.
+        self.assertEqual(cost.get("per_dim"), {})
+        self.assertIn("solver_runtime_s",
+                      (cost.get("observed_fact") or {}).get("dimension_scopes") or {})
+        self.assertNotIn("solver_runtime_s", cost.get("per_dim") or {})
 
     def test_prediction_is_not_rewritten_by_evaluation(self):
         task = _task("t1")
@@ -698,19 +700,18 @@ class TestWindowScopeAggregation(M4Case):
                                      second.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
-        runtime = evaluation["cost"]["per_dim"]["solver_runtime_s"]
-        # BOTH attempts' runtimes aggregate: the old behaviour reported
-        # only the bound action's single execution.
-        self.assertEqual(runtime["actual"],
-                         first.cost.solver_runtime_s
-                         + second.cost.solver_runtime_s)
-        # The summary's scope covered both executions.
+        # The old solver runtime is an OBSERVATION, not an active C target:
+        # it aggregates in the audit summary, never in the new per-dim C.
+        self.assertNotIn("solver_runtime_s", evaluation["cost"]["per_dim"])
         from or_harness.world_model.episode_closeout import (
             summarize_real_outcome,
         )
         stored = self.h.get_strategy_outcome_prediction(
             prediction.prediction_id)
         scope_summary = summarize_real_outcome(self.h, stored)
+        self.assertEqual(scope_summary.cost["solver_runtime_s"]["total"],
+                         first.cost.solver_runtime_s
+                         + second.cost.solver_runtime_s)
         self.assertEqual(len(scope_summary.execution_ids), 2)
         # tool_calls is a HARNESS declaration, not an executor measurement:
         # with no override supplied it stays unknown (never a fabricated
@@ -745,15 +746,20 @@ class TestWindowScopeAggregation(M4Case):
                                      second.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
-        # ONLY round 1's runtime: the old behaviour aggregated the whole
-        # episode (first + second).
-        self.assertAlmostEqual(
-            evaluation["cost"]["per_dim"]["solver_runtime_s"]["actual"],
-            second.cost.solver_runtime_s, places=5)
-        self.assertNotAlmostEqual(
-            evaluation["cost"]["per_dim"]["solver_runtime_s"]["actual"],
-            first.cost.solver_runtime_s + second.cost.solver_runtime_s,
-            places=5)
+        self.assertNotIn("solver_runtime_s", evaluation["cost"]["per_dim"])
+        from or_harness.world_model.episode_closeout import (
+            summarize_real_outcome,
+        )
+        stored = self.h.get_strategy_outcome_prediction(
+            prediction.prediction_id)
+        summary = summarize_real_outcome(self.h, stored)
+        # ONLY round 1's observed runtime: the audit scope is still the
+        # declared window, never the whole episode.
+        self.assertAlmostEqual(summary.cost["solver_runtime_s"]["total"],
+                               second.cost.solver_runtime_s, places=5)
+        self.assertNotAlmostEqual(summary.cost["solver_runtime_s"]["total"],
+                                  first.cost.solver_runtime_s +
+                                  second.cost.solver_runtime_s, places=5)
 
     def test_binding_action_of_another_round_is_a_mismatch(self):
         task = _task("t1")
@@ -1210,9 +1216,11 @@ class TestEligibilityIsPerField(M4Case):
         self.assertEqual(eligibility["benefit"]["eligibility"], "evaluable")
         # The unmeasured cost dimension is excluded, and the BENEFIT is not
         # erased by that: cost and benefit have SEPARATE eligibilities.
-        self.assertIn("llm_tokens", eligibility["cost"]["dimensions"])
+        self.assertIn("output_tokens", eligibility["cost"]["dimensions"])
+        self.assertNotIn("llm_tokens", eligibility["cost"]["dimensions"])
+        self.assertNotIn("solver_runtime_s", eligibility["cost"]["dimensions"])
         self.assertEqual(
-            eligibility["cost"]["dimensions"]["llm_tokens"]["eligibility"],
+            eligibility["cost"]["dimensions"]["output_tokens"]["eligibility"],
             "unobserved")
         self.assertEqual(eligibility["benefit"]["eligibility"], "evaluable")
 

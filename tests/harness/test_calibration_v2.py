@@ -28,6 +28,7 @@ future change that re-breaks a correction fails here first:
 from decision_fixtures import bind_legacy, execute_scored, planned_prediction
 
 import io
+import math
 import json
 import os
 import sys
@@ -54,7 +55,7 @@ PAYLOAD = {
                 "metric": "normalized_objective_gap", "unit": "1-gap",
                 "value": 0.8,
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+    "cost": {"output_tokens": 1200, "remaining_latency_s": 3.0, "tool_calls": 4},
     "risk": {"events": [{"event": "timeout", "probability": 0.25}]},
 }
 
@@ -882,42 +883,24 @@ class TestDirectedStatistics(CalibrationV2Case):
             0.2, places=5)
 
     def test_cost_log_ratio_is_directed(self):
-        task = _task("t1")
-        prediction = planned_prediction(self.h,
-            task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = self.solve(task, strategy="S04")
-        bind_legacy(self.h,prediction.prediction_id,
-                                     record.action_id)
-        result = self.h.close_episode("t1", "ep1")
-        entry = result["evaluations"][0]["cost"]["per_dim"][
-            "solver_runtime_s"]
+        from or_harness.core.schema import CostVector, cost_error_per_dim
+        predicted = CostVector(output_tokens=3.0,
+                               measured={"output_tokens"})
+        actual = CostVector(output_tokens=0.01,
+                            measured={"output_tokens"})
+        entry = cost_error_per_dim(predicted, actual)["output_tokens"]
         # predicted 3.0, actual 0.01 → log(0.01/3.0) < 0 (over-predicted).
-        self.assertIsNotNone(entry["log_ratio"])
-        self.assertLess(entry["log_ratio"], 0)
-        self.assertAlmostEqual(entry["log_ratio"], -entry["log_error"],
-                               places=4)
+        log_ratio = math.log(entry["actual"] / entry["predicted"])
+        self.assertLess(log_ratio, 0)
+        self.assertAlmostEqual(log_ratio, -entry["log_error"], places=4)
 
     def test_zero_cost_produces_no_ratio(self):
-        task = _task("t1")
-        payload = json.loads(json.dumps(PAYLOAD))
-        payload["cost"] = {"solver_runtime_s": 0.0}
-        provider = StubProvider(payload=payload)
-        h = ORHarness(home=self.home, world_model=provider,
-                      embedding=self.backend)
-        self.addCleanup(h.close)
-        prediction = planned_prediction(h,
-            task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = self.solve(task, strategy="S04")
-        bind_legacy(h,prediction.prediction_id,
-                                record.action_id)
-        result = h.close_episode("t1", "ep1")
-        entry = result["evaluations"][0]["cost"]["per_dim"][
-            "solver_runtime_s"]
-        self.assertIsNone(entry["log_ratio"])
-        self.assertIsNone(entry["log_error"])
-        self.assertIn("no relative ratio is manufactured", entry["note"])
+        from or_harness.core.schema import CostVector, cost_error_per_dim
+        # Two zero placeholders teach nothing: no ratio entry is created.
+        self.assertEqual(cost_error_per_dim(
+            CostVector(output_tokens=0.0, measured={"output_tokens"}),
+            CostVector(output_tokens=0.0,
+                       measured={"output_tokens"})), {})
 
     def test_interval_width_is_reported(self):
         task = _task("t1")
@@ -1264,46 +1247,35 @@ class TestLiveCorrection(CalibrationV2Case):
                          "the execution really happened, so its observation "
                          "stays")
 
-    def test_late_cost_amend_is_reflected_by_re_derivation(self):
-        """A legacy ATTEMPT-cost amend can land AFTER close-out froze
-        the evaluation. The stored evaluation then says ``not measured on
-        the real scope`` while the live fact measures it — the
-        self-contradiction W1 fixes. The live re-derivation must pick up
-        the newly measured dimension instead of leaving calibration and
-        evaluation reading two cost views."""
+    def test_late_legacy_amend_is_not_promoted_to_new_c(self):
+        """A late amend of an OLD observation dimension stays an old
+        observation. It is never re-read as a new four-dimensional C target
+        by calibration or by the live re-derivation."""
         from or_harness.world_model import episode_closeout as ec
         task = _task("t1")
         prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        # Replay an explicitly narrow historical contract. An ambiguous
-        # attempt receipt must not become a new remaining-window truth.
-        prediction.cost.scope = "attempt"
-        self.h.strategy_predictions._save(prediction)
         record = self.solve(task, strategy="S04")
         bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         stored = self.h.strategy_prediction_evaluations(task_id="t1")
         self.assertTrue(stored)
-        # At close-out llm_tokens was not yet measured.
-        self.assertNotIn("llm_tokens",
+        # The active prediction has no comparable active actual yet.
+        self.assertNotIn("output_tokens",
                          stored[0]["cost"].get("per_dim") or {})
-        # The host report arrives late and is backfilled.
+        # A late amend lands on the OLD llm_tokens observation only.
         self.h.bank.update_cost(record.execution_id, llm_tokens=1000.0,
                                 source="provider_usage")
-        # Now re-derive from the live facts.
         evaluation = ec.get_evaluation(
             self.h.store, stored[0]["evaluation_id"])
         derived, correction = ec._live_evaluation(self.h, evaluation)
-        self.assertIsNotNone(correction,
-                             "the late amend must be reported as a change")
-        self.assertEqual(correction["kind"], "live_rederivation")
-        self.assertIn("cost", correction["fields"])
-        self.assertIn("llm_tokens", correction["detail"]["cost"]
-                      ["newly_measured"])
-        self.assertEqual(derived.cost["per_dim"]["llm_tokens"]["actual"],
-                         1000.0)
+        self.assertIsNone(correction,
+                          "an old observation dimension is not a new C "
+                          "calibration change")
+        self.assertNotIn("llm_tokens",
+                         derived.cost.get("per_dim") or {})
 
 
 class TestLegacyMigration(CalibrationV2Case):

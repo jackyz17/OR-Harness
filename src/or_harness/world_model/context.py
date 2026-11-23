@@ -2071,14 +2071,31 @@ class PredictionContext:
                 view["solving_context"]["execution_context"])
         if omitted:
             view["omitted"] = omitted
-        from or_harness.world_model.g_signal import select_conditional_g, requested_solving_conditions
+        from or_harness.world_model.g_signal import (
+            select_candidate_method_evidence, select_conditional_g,
+            requested_solving_conditions,
+        )
         from or_harness.world_model.contracts import FAITHFUL_G_CONVENTION
+        convention = g_convention or FAITHFUL_G_CONVENTION
         view["strategy_outcome_calibration"] = select_conditional_g(
             view["strategy_outcome_calibration"], profile=self.joint.profile or {},
             conditions=requested_solving_conditions(g_candidate, self.execution_constraints),
-            convention=g_convention or FAITHFUL_G_CONVENTION,
+            convention=convention,
             scope=getattr(g_candidate, "scope", None), task_id=self.task_id)
         if g_candidate is not None:
+            # G's candidate-specific method evidence is DERIVED from the
+            # already-selected paired feedback (one case per evaluation,
+            # pointing back at that block's body). It adds no second history
+            # store and no correction coefficient.
+            method_evidence = select_candidate_method_evidence(
+                self.paired_feedback, candidate=g_candidate,
+                profile=self.joint.profile or {}, convention=convention,
+                scope=getattr(g_candidate, "scope", None), task_id=self.task_id)
+            if method_evidence:
+                # A separate provider-only block: it is derived from the
+                # already-selected pairs and may be reduced by the G/C/R
+                # evidence budget without touching the frozen calibration.
+                view["g_candidate_evidence"] = method_evidence
             from or_harness.world_model.cost_signal import select_cost_evidence
             view["cost_evidence"] = select_cost_evidence(self.strategy_calibration, self, g_candidate)
             from or_harness.world_model.r_signal import select_r_evidence
@@ -2797,6 +2814,7 @@ _TRIMMABLE_BLOCKS = (
     "prediction_reminders",
     "cost_evidence",
     "implementation_r_evidence",
+    "g_candidate_evidence",
     "notes",
 )
 
@@ -2861,7 +2879,8 @@ def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
                     view[block], max(200, before - (size - max_chars)),
                     kind="retrieval_evidence")
                 action = "retrieval hits reduced from the tail"
-            elif block in ("cost_evidence", "implementation_r_evidence"):
+            elif block in ("cost_evidence", "implementation_r_evidence",
+                           "g_candidate_evidence"):
                 trimmed, info = budget_module.trim_evidence_block(
                     view[block], max(200, before - (size - max_chars)),
                     kind=block)

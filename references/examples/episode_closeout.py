@@ -73,7 +73,7 @@ PAYLOAD = {
                 "value": 0.8,
                 "interval": [0.6, 0.95],
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+    "cost": {"remaining_latency_s": 3.0, "tool_calls": 4},
     "risk": {"events": [{"event": "timeout", "probability": 0.2}]},
     "uncertainty": {"execution_randomness": 0.3, "knowledge_gap": 0.6},
 }

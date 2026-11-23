@@ -73,7 +73,7 @@ PAYLOADS = {
                     "metric": "normalized_objective_gap", "unit": "1-gap",
                     "value": 0.35,
                     "baseline": {"kind": "conditional_stats", "value": 0.5}},
-        "cost": {"llm_tokens": 900, "solver_runtime_s": 8.0},
+        "cost": {"remaining_latency_s": 8.0, "tool_calls": 5},
         "risk": {"events": [{"event": "model_invalid",
                              "probability": 0.3}]},
         "uncertainty": {"knowledge_gap": 0.7},
@@ -83,7 +83,7 @@ PAYLOADS = {
                     "metric": "normalized_objective_gap", "unit": "1-gap",
                     "value": 0.9,
                     "baseline": {"kind": "conditional_stats", "value": 0.5}},
-        "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+        "cost": {"remaining_latency_s": 3.0, "tool_calls": 4},
         "risk": {"events": [{"event": "model_invalid",
                              "probability": 0.1}]},
         "uncertainty": {"knowledge_gap": 0.4},
@@ -218,7 +218,7 @@ def main() -> int:
                                strategy_id="S01", solver="highs"),
                     ActionSpec("execute_strategy", task["task_id"],
                                strategy_id="S02", solver="highs")],
-        limits={"horizon": 1,"benefit_kind":"solution_quality","benefit_metric":"normalized_objective_gap","benefit_unit":"1-gap", "cost_scales":{"solver_runtime_s":1000,"llm_tokens":10000}})
+        limits={"horizon": 1,"benefit_kind":"solution_quality","benefit_metric":"normalized_objective_gap","benefit_unit":"1-gap", "cost_scales":{"remaining_latency_s":1000,"tool_calls":100}})
     suggested = (plan.get("suggested") or {}).get("strategy_id")
     print(f"prediction-driven plan : status={plan['status']}, "
           f"suggested={suggested}")

@@ -63,11 +63,16 @@ R is omitted for everyone. An explicit zero is a supplied value; a duplicate eve
 or an illegal probability makes that event unknown. Other event probabilities
 remain diagnostics. `scoring_basis` reports the participating events, the per-
 candidate probabilities, the omitted events with reasons, and the maximum's source.
-C first intersects finite nonnegative resource
-predictions with identical measurement scopes, then removes dimensions without a
-reliable independent scale, then performs common component deduplication.
-`solver_runtime_s`, attempt `latency_s` and `remaining_latency_s` retain their own
-scopes. Explicit zero is a value; unknown is never imputed as zero or peak cost.
+C first intersects finite nonnegative predictions of the FOUR active
+remaining-task dimensions with identical measurement scopes, then removes
+dimensions without a reliable independent scale. The active C targets are
+`remaining_latency_s`, `output_tokens`, `tool_calls` and `retries`; every one
+covers the decision-to-task-end window. Execution-only `latency_s` (one
+attempt's sandbox wall-clock), `solver_runtime_s` (the solver's inner runtime)
+and raw `llm_tokens` (input plus output) remain recorded observations for
+diagnostics/audit, but they are NOT prediction targets, not U terms and not
+C-calibration dimensions. Explicit zero is a value; unknown is never imputed as
+zero or peak cost.
 
 The token term in U is `output_tokens`: tokens the execution model is expected
 to generate from this decision until task termination. The known task text and
@@ -118,7 +123,7 @@ Predictor discrimination still requires comparable attributable real executions.
 
 **A declared budget caps SOLVING, and the stop is the HOST's.** `orx budget --task T [--episode E] --declare 'dim=value,...'` declares (and replaces) a task/episode budget. It is a cap over real consumption, not a promise: the framework REFUSES to START new solving work once a budget is spent, but it does not itself kill a running process.
 
-**Dimensions and scope.** Supported dimensions are `llm_tokens`, `output_tokens`, `tool_calls`, `solver_runtime_s`, `retries`, `latency_s`, `remaining_latency_s`. Raw attempt usage accumulates over the EPISODE (recorded + staged executions, own-cost actions, unparented prediction calls, deduplicated by execution id). `llm_tokens` retains the input-plus-output budget total. The two WALL-CLOCK dimensions are NEVER summed — attempts may overlap, and overlapping prediction ranges would double-count the same span — so they are reported per item. Full decision-window reports are observations, not extra attempt charges.
+**Dimensions and scope.** OBSERVATION dimensions are `llm_tokens`, `output_tokens`, `tool_calls`, `solver_runtime_s`, `retries`, `latency_s`, `remaining_latency_s`. A wm-so/1 C PREDICTION may name only the four active remaining-task targets: `remaining_latency_s`, `output_tokens`, `tool_calls`, `retries` (contract marker `wm-c-predict/4`). Raw attempt usage accumulates over the EPISODE (recorded + staged executions, own-cost actions, unparented prediction calls, deduplicated by execution id). `llm_tokens` retains the input-plus-output budget total. The two WALL-CLOCK dimensions are NEVER summed — attempts may overlap, and overlapping prediction ranges would double-count the same span — so they are reported per item. Full decision-window reports are observations, not extra attempt charges.
 
 **Generated-token observations.** C predicts `cost.output_tokens`; saved
 forecasts expose it under `cost.expected.output_tokens` and declare it in
@@ -135,7 +140,7 @@ attempt totals or unclear boundaries leave output unknown. A raw total alone
 does not establish output. Older trustworthy same-window reports can reuse
 their recorded completion sub-fact without rewriting historical data.
 
-**The PRIMARY latency is `remaining_latency_s` (r12).** It measures the wall-clock from the DECISION's anchor to the END of the task, covering the later modelling, coding, tool calls, solving, checking, repair and retries. Every candidate of one decision shares ONE anchor (the decision point) and ONE end (the end of the task) — stated in the request's `cost_scope` block. `solver_runtime_s` is a COMPONENT of that span (the solver's own inner solve time): it is kept for diagnosis but is NOT added on top of `remaining_latency_s` (the part and the whole are never billed together — see `chargeable_dimensions`). The old attempt-level `latency_s` keeps its own meaning (one attempt's sandbox wall-clock) and is NEVER renamed into the remaining span. When no real start/end boundary is available the framework leaves `remaining_latency_s` UNKNOWN and says so — it never downgrades to the script-execution cost.
+**The PRIMARY latency is `remaining_latency_s`.** It measures the wall-clock from the DECISION's anchor to the END of the task, covering the later modelling, coding, tool calls, solving, checking, repair and retries. Every candidate of one decision shares ONE anchor (the decision point) and ONE end (the end of the task) — stated in the request's `cost_scope` block. `solver_runtime_s` (the solver's own inner runtime) and attempt `latency_s` (one sandbox attempt) are EXECUTION OBSERVATIONS, not C prediction targets: they are never renamed into the remaining span, never added to it, and a new prediction containing either is rejected. When no real start/end boundary is available the framework leaves `remaining_latency_s` UNKNOWN and says so — it never downgrades to the script-execution cost.
 
 **C evidence (`wm-c-window/1`).** `prediction_context.cost_evidence` contains the known modelling phase, reusable artifacts, up to four applicable P50/P75 ranges and three executed cases with raw costs, work facts and source references. Select history before request-size trimming. Cost window, known phase, family, structure and solving restrictions constrain applicability; unknown conditions are stated. Actual receipt configurations remain separate groups even when candidates omitted limits. Prediction-token consumption is not a grouping key. The full population stays in the published audit summary under `conditional_cost`.
 

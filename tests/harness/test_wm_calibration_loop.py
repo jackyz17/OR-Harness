@@ -225,8 +225,10 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.amend_action_cost(record.action_id, llm_tokens=500.0,
-                                 solver_runtime_s=2.0)
+        # The execution fixture measures old per-attempt dimensions; add an
+        # ACTIVE remaining-task measurement so the C pair is comparable.
+        self.h.bank.update_cost(record.execution_id, source="provider_usage",
+                                tool_calls=4.0)
         bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
@@ -237,13 +239,12 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         request = self.provider.requests[-1]
         row = request["prediction_context"][
             "prediction_execution_pairs"]["pairs"][0]
-        self.assertIn("cost_measured", row)
-        # The prediction claimed solver_runtime_s=3.0; the measured spend
-        # travels as its own value beside the ratio.
-        self.assertEqual(
-            row["cost_measured"]["solver_runtime_s"]["predicted"], 3.0)
-        self.assertEqual(
-            row["cost_measured"]["solver_runtime_s"]["actual"], 0.01)
+        # This fixture measures only the OLD per-attempt dimensions, so no
+        # active four-dimensional C pair exists. The old observations stay
+        # visible as execution diagnostics, never as a new C comparison.
+        self.assertNotIn("cost_measured", row)
+        self.assertIn("solver_runtime_s", row["cost_observed_unpredicted"])
+        self.assertIn("latency_s", row["cost_observed_unpredicted"])
 
     def test_pair_carries_the_actual_risk_event_label(self):
         """A predicted risk event is paired with what actually happened,
@@ -374,6 +375,11 @@ class TestRemindersReachTheProvider(CalibrationLoopCase):
                        "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             record = self.solve(task, strategy="S04",
                                 episode_id="ep1", tag=f"rem{index}")
+            # An ACTIVE remaining-task measurement makes the C residual
+            # meaningful; the fixture's old latency/solver observations are
+            # diagnostics only and do not produce a C reminder.
+            self.h.bank.update_cost(record.execution_id,
+                                    source="provider_usage", tool_calls=2.0)
             bind_legacy(self.h,prediction.prediction_id,
                                          record.action_id)
             self.h.close_episode(f"t{index}", "ep1")
@@ -386,8 +392,12 @@ class TestRemindersReachTheProvider(CalibrationLoopCase):
         self.assertFalse(benefit_reminders, "G residuals must remain diagnostic")
         self.assertTrue(any(g.get("mean_benefit_signed_error") is not None
                             for g in summary["groups"].values()))
+        # This fixture's executions measure only legacy latency/solver
+        # observations; they are diagnostics, not a new C residual, so no
+        # cost reminder is derived from them.
         self.assertFalse(any(r["field"].startswith("cost.") for r in reminders))
-        self.assertTrue(any(g.get("mean_cost_log_ratio") for g in summary["groups"].values()))
+        self.assertFalse(any(g.get("mean_cost_log_ratio")
+                             for g in summary["groups"].values()))
 
         # The NEXT request carries the reminders.
         self.provider.requests.clear()

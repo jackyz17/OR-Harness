@@ -370,7 +370,15 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
         "retrieval_evidence": "orx inspect --bank experience / stored context",
         "capability": "stored prediction context",
     }.get(kind, "stored prediction context")
-    if kind == "implementation_r_evidence":
+    if kind == "g_candidate_evidence":
+        _cap_list(block, ("cases",), 2, removed)
+        selection = block.get("selection")
+        if isinstance(selection, dict):
+            selection["n_cases_included"] = len(block.get("cases") or [])
+            selection["n_cases_omitted_by_budget"] = max(
+                0, int(selection.get("n_included") or 0)
+                - selection["n_cases_included"])
+    elif kind == "implementation_r_evidence":
         node = block
         if "event_definitions" in node:
             node.pop("event_definitions", None)
@@ -385,10 +393,18 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
                 _cap_list(group, ("source_refs",), 5, removed)
     elif kind == "cost_evidence":
         _cap_list(block, ("cases",), 3, removed)
+        _cap_list(block, ("broader_reference_cases",), 3, removed)
         _cap_list(block, ("reference_ranges",), 3, removed)
+        _cap_list(block, ("broader_reference_ranges",), 3, removed)
         conditions = block.get("current_conditions")
         if isinstance(conditions, dict):
             _cap_list(conditions, ("reusable_artifacts",), 2, removed)
+        # A trimmed list must not leave a stale "included" count that makes a
+        # weak reference look like the strict population.
+        from or_harness.world_model.cost_signal import (
+            refresh_cost_evidence_coverage,
+        )
+        refresh_cost_evidence_coverage(block)
     elif kind == "retrieval_evidence":
         hits = block.get("hits")
         if isinstance(hits, list) and len(hits) > 8:
@@ -427,6 +443,14 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
                 break
         if not progress:
             break
+    if kind == "cost_evidence":
+        from or_harness.world_model.cost_signal import (
+            refresh_cost_evidence_coverage,
+        )
+        refresh_cost_evidence_coverage(block)
+    elif kind == "implementation_r_evidence":
+        from or_harness.world_model.r_signal import refresh_r_evidence_support
+        refresh_r_evidence_support(block)
     if removed:
         block["budget_trim"] = {
             "removed": removed,
@@ -511,7 +535,8 @@ def apply_provider_block_budgets(view: Dict[str, Any]) -> Dict[str, Any]:
             }
         view["prediction_execution_pairs"] = projected
     evidence_keys = tuple(key for key in ("cost_evidence",
-                                         "implementation_r_evidence")
+                                         "implementation_r_evidence",
+                                         "g_candidate_evidence")
                           if key in view)
     if evidence_keys:
         limits["gcr_evidence"] = _fit_blocks(
@@ -568,6 +593,69 @@ def _history_summary(block: Dict[str, Any]) -> Dict[str, Any]:
         "note": ("the whole history block was reduced to its counts to keep "
                  "the request within its size bound; the stored block and "
                  "`orx calibration` retain every case"),
+    }
+
+
+def _gcr_evidence_summary(key, block):
+    """The smallest honest form of a G/C/R evidence block.
+
+    Used only when the WHOLE request is still over its bound after per-block
+    trimming. It keeps the GRADES, counts and source pointers - never a
+    shortened list that could make a weak reference look strict - and drops
+    the per-case bodies, which remain in the stored context and
+    ``orx calibration``.
+    """
+    block = block if isinstance(block, dict) else {}
+    detail_ref = {
+        "cost_evidence": "orx calibration #conditional_cost / stored context",
+        "implementation_r_evidence": (
+            "orx calibration #technical_r / stored prediction context"),
+        "g_candidate_evidence": "prediction_context.prediction_execution_pairs",
+    }.get(key, "stored prediction context")
+    if key == "cost_evidence":
+        return {
+            "observation_rule_version": block.get("observation_rule_version"),
+            "current_conditions": copy.deepcopy(block.get("current_conditions")),
+            "reference_coverage": copy.deepcopy(block.get("reference_coverage")),
+            "evidence_status": block.get("evidence_status"),
+            "reference_ranges": [],
+            "broader_reference_ranges": [],
+            "cases": [],
+            "broader_reference_cases": [],
+            "missing": list(block.get("missing") or []),
+            "applicability": block.get("applicability"),
+            "omitted_for_size": True,
+            "detail_ref": detail_ref,
+            "note": ("per-case cost bodies were omitted to keep the full "
+                     "request within its bound; strict/broader/unavailable "
+                     "grades and counts are retained and the cases remain in "
+                     "the stored context"),
+        }
+    if key == "implementation_r_evidence":
+        summary = {**{k: copy.deepcopy(v) for k, v in block.items()
+                      if k in ("solver_interface", "event_definitions",
+                               "missing", "support", "note")},
+                   "groups": [],
+                   "global_event_base_rates": copy.deepcopy(
+                       block.get("global_event_base_rates") or {}),
+                   "omitted_for_size": True,
+                   "detail_ref": detail_ref,
+                   "detail_note": ("condition groups were omitted to keep the "
+                                   "full request within its bound; the wider "
+                                   "global base rates and support remain, and "
+                                   "the per-condition facts remain in the "
+                                   "stored context")}
+        return summary
+    return {
+        "version": block.get("version"),
+        "selection": copy.deepcopy(block.get("selection")),
+        "global_calibration_role": block.get("global_calibration_role"),
+        "cases": [],
+        "omitted_for_size": True,
+        "detail_ref": detail_ref,
+        "note": ("candidate method cases were omitted to keep the full "
+                 "request within its bound; their full bodies remain in the "
+                 "prediction-execution pairs and the evaluation store"),
     }
 
 
@@ -666,6 +754,7 @@ def enforce_full_request_budget(request: Dict[str, Any], system_prompt: str,
             for key in ("harness_capability", "capability_version",
                         "retrieval_evidence", "hplus_feedback",
                         "prediction_reminders", "notes",
+                        "g_candidate_evidence",
                         "implementation_r_evidence", "cost_evidence"):
                 if current["tokens"] <= max_tokens:
                     break
@@ -697,6 +786,49 @@ def enforce_full_request_budget(request: Dict[str, Any], system_prompt: str,
                 current = measured()
             if not progressed:
                 break
+        # 3b. G/C/R evidence at its irreducible minimum: keep the grades and
+        # counts, replace per-case bodies with a reference. This is the last
+        # step before the protected core is declared unsendable.
+        for key in ("g_candidate_evidence", "implementation_r_evidence",
+                    "cost_evidence"):
+            if current["tokens"] <= max_tokens:
+                break
+            value = context.get(key)
+            if not isinstance(value, dict) or not value:
+                continue
+            before_chars = _size(value)
+            summary = _gcr_evidence_summary(key, value)
+            if _size(summary) >= before_chars:
+                continue
+            context[key] = summary
+            stages.append({"stage": "gcr_evidence:summary",
+                           "block": key,
+                           "before_chars": before_chars,
+                           "after_chars": _size(summary)})
+            current = measured()
+        # 3c. Optional non-core context at its irreducible minimum. The
+        # stored context and `orx inspect` keep the full material; the model
+        # gets a named pointer rather than an oversized request.
+        for key in ("prediction_reminders", "hplus_feedback", "notes",
+                    "capability_version", "harness_capability",
+                    "retrieval_evidence"):
+            if current["tokens"] <= max_tokens:
+                break
+            value = context.get(key)
+            if value in (None, {}, [], ""):
+                continue
+            before_chars = _size(value)
+            context[key] = {
+                "omitted_for_size": True,
+                "detail_ref": "the stored prediction context",
+                "note": ("this optional block was reduced to a reference to "
+                         "keep the full request within its bound; the stored "
+                         "context keeps the complete value"),
+            }
+            stages.append({"stage": "noncore:summary", "block": key,
+                           "before_chars": before_chars,
+                           "after_chars": _size(context[key])})
+            current = measured()
         # 4. History at its irreducible minimum: counts-only report.
         block = context.get("prediction_execution_pairs")
         if current["tokens"] > max_tokens and isinstance(block, dict) \

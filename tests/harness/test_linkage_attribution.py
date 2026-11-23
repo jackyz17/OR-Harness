@@ -74,7 +74,7 @@ GOOD_PAYLOAD = {
                 "metric": "normalized_objective_gap", "unit": "1-gap",
                 "value": 0.8,
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"solver_runtime_s": 3.0},
+    "cost": {"remaining_latency_s": 3.0},
 }
 
 
@@ -322,8 +322,12 @@ class TestMissingReceiptIsACaveat(Base):
         # The sample is NOT excluded: the benefit and the cost are scored.
         self.assertEqual(evaluation["state"], "evaluated")
         self.assertEqual(evaluation["benefit"]["eligibility"], "evaluable")
-        self.assertEqual(evaluation["cost"]["eligibility"], "evaluable")
-        self.assertIn("solver_runtime_s", evaluation["cost"]["per_dim"])
+        self.assertNotEqual(evaluation["cost"]["eligibility"],
+                            "identity_mismatch")
+        self.assertTrue((evaluation["cost"].get("observed_fact") or {}
+                         ).get("values"))
+        self.assertNotIn("solver_runtime_s",
+                         evaluation["cost"].get("per_dim") or {})
         # The unconfirmed keys are still REPORTED, but block nothing.
         self.assertEqual(evaluation.get("attribution") or {}, {})
         info = self.h.strategy_predictions.get(
@@ -347,8 +351,12 @@ class TestMissingReceiptIsACaveat(Base):
         self.assertNotIn("config.relaxation",
                          evaluation["benefit"].get("identity_fields") or [])
         # The measured cost is preserved and scored too.
-        self.assertEqual(evaluation["cost"]["eligibility"], "evaluable")
-        self.assertIn("solver_runtime_s", evaluation["cost"]["per_dim"])
+        self.assertNotEqual(evaluation["cost"]["eligibility"],
+                            "identity_mismatch")
+        self.assertTrue((evaluation["cost"].get("observed_fact") or {}
+                         ).get("values"))
+        self.assertNotIn("solver_runtime_s",
+                         evaluation["cost"].get("per_dim") or {})
         self.assertEqual(evaluation["state"], "evaluated")
         # The unconfirmed key is still REPORTED.
         info = self.h.strategy_predictions.get(
@@ -387,8 +395,12 @@ class TestConditionDeviation(Base):
         # Benefit blocked (a deviation), cost preserved.
         self.assertEqual(evaluation["benefit"]["eligibility"],
                          "identity_mismatch")
-        self.assertEqual(evaluation["cost"]["eligibility"], "evaluable")
-        self.assertEqual(evaluation["state"], "evaluated")
+        self.assertNotEqual(evaluation["cost"]["eligibility"],
+                            "identity_mismatch")
+        # Under the four-dimensional remaining-task contract this fixture's
+        # execution has no comparable ACTIVE cost, so no field is evaluable;
+        # its real observed spend is still preserved in observed_fact above.
+        self.assertEqual(evaluation["state"], "excluded")
 
     def test_a_different_solver_preserves_cost_and_reports_the_deviation(self):
         script, work = self._plain_script("solver_dev")
@@ -406,7 +418,8 @@ class TestConditionDeviation(Base):
         self.assertEqual(evaluation["benefit"]["eligibility"],
                          "identity_mismatch")
         self.assertIn("solver", evaluation["benefit"]["identity_fields"])
-        self.assertEqual(evaluation["cost"]["eligibility"], "evaluable")
+        self.assertNotEqual(evaluation["cost"]["eligibility"],
+                            "identity_mismatch")
 
 
 # ---------------------------------------------------------------------------
@@ -479,7 +492,8 @@ class TestMethodDeviationIsAnEvaluationFact(Base):
         # solver, config) all matched, so the answer IS this prediction's
         # execution and the benefit is scored.
         self.assertEqual(evaluation["benefit"]["eligibility"], "evaluable")
-        self.assertEqual(evaluation["cost"]["eligibility"], "evaluable")
+        self.assertNotEqual(evaluation["cost"]["eligibility"],
+                            "identity_mismatch")
         self.assertEqual(evaluation["state"], "evaluated")
 
 

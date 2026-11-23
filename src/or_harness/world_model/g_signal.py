@@ -183,6 +183,229 @@ def select_conditional_g(calibration, *, profile, conditions, convention, scope=
     return out
 
 
+def _pair_g_observation(row):
+    """The observed G label a pair actually carries, or ``None``.
+
+    The current home is ``benefit.observed``; a legacy pair may carry the
+    same fact under ``g_observed_fact.observed``. A crash, an execution
+    error or an ineligible audit has NO label and is never read as 0.
+    """
+    for key in ("benefit", "g_observed_fact"):
+        block = row.get(key)
+        if not isinstance(block, dict):
+            continue
+        observed = block.get("observed")
+        if isinstance(observed, (int, float)) and not isinstance(observed, bool) \
+                and observed in (0, 1):
+            return int(observed), block
+    return None, {}
+
+
+def _pair_convention(row):
+    for key in ("benefit", "g_observed_fact"):
+        block = row.get(key)
+        if isinstance(block, dict) and (block.get("metric")
+                                        or block.get("observation_rule_version")):
+            return block.get("metric"), block.get("observation_rule_version")
+    return None, None
+
+
+def _method_steps(method):
+    method = normalize_method(method) or {}
+    steps = method.get("steps")
+    if isinstance(steps, str):
+        return None
+    if isinstance(steps, list):
+        return [str(step) for step in steps]
+    return []
+
+
+def _method_terms(method):
+    from or_harness.world_model.episode_closeout import _method_signature_tokens
+    method = normalize_method(method) or {}
+    return set(_method_signature_tokens(
+        [method.get("name")] + list(method.get("steps") or [])))
+
+
+def select_candidate_method_evidence(paired_feedback, *, candidate, profile,
+                                     convention, scope=None, task_id="", limit=4):
+    """Compact, candidate-relevant G cases from the EXISTING paired feedback.
+
+    This is a derived provider-only selection, not a second history store:
+    every case names an ``evaluation_id``/``detail_ref`` whose full body stays
+    in ``prediction_context.prediction_execution_pairs`` and the evaluation
+    store. It answers ONE question - which recorded method/condition cases
+    bear on this candidate - and never adjusts a G number.
+
+    Comparability is explicit and never upgraded by a keyword:
+
+    - ``same_task``: the pair is an execution of THIS task (strict condition);
+    - ``same_family_and_structure``: known family and structural cell match
+      (strict condition);
+    - ``same_family_only`` / ``same_structure_cross_family`` /
+      ``shared_method_only``: partial similarity, where a missing structural
+      value stays unknown rather than becoming a match;
+    - background cases are not sent; the global calibration remains the
+      diagnostic-only general reference.
+
+    A cause is carried ONLY from the close-out's recorded attribution
+    (``benefit.attribution``). No failure reason is inferred from a failed
+    task check, an execution status or prose.
+    """
+    pairs = [row for row in ((paired_feedback or {}).get("pairs") or [])
+             if isinstance(row, dict)]
+    if not pairs:
+        return {}
+    candidate_method = getattr(candidate, "method", None)
+    if not isinstance(candidate_method, dict):
+        candidate_method = {}
+    candidate_norm = normalize_method(candidate_method) or {}
+    candidate_steps = _method_steps(candidate_norm)
+    candidate_terms = _method_terms(candidate_norm)
+    family = (profile or {}).get("family")
+    current_cell = ""
+    try:
+        from or_harness.core.schema import ProblemProfile
+        from or_harness.strategy.stats import cell_token
+        if profile:
+            current_cell = cell_token(ProblemProfile.from_dict(profile))
+    except Exception:
+        current_cell = ""
+    wanted_metric = (convention or {}).get("metric")
+    wanted_rule = (convention or {}).get("observation_rule_version")
+    ranked = []
+    relevant = 0
+    for index, row in enumerate(pairs):
+        observed, observation_block = _pair_g_observation(row)
+        if observed is None:
+            # An unobserved execution error is not G evidence. Its R/technical
+            # facts remain visible in the pair block; it is not promoted here.
+            continue
+        metric, rule = _pair_convention(row)
+        if wanted_metric and metric and metric != wanted_metric:
+            continue
+        if wanted_rule and rule and rule != wanted_rule:
+            continue
+        if scope is not None and row.get("scope") not in (None, scope):
+            continue
+        conditions = row.get("conditions") or {}
+        row_family = conditions.get("family")
+        row_cell = conditions.get("cell")
+        same_task = bool(task_id) and str(row.get("task_id") or "") == str(task_id)
+        same_family = bool(family) and bool(row_family) and str(family) == str(row_family)
+        same_cell = bool(current_cell) and bool(row_cell) and (
+            str(row_cell) in str(current_cell) or str(current_cell) in str(row_cell))
+        if same_task:
+            condition_match = "same_task"
+            role = "strict_condition_match"
+        elif same_family and same_cell:
+            condition_match = "same_family_and_structure"
+            role = "strict_condition_match"
+        elif same_family:
+            condition_match = "same_family_only"
+            role = "partial_condition_similarity"
+        elif same_cell:
+            condition_match = "same_structure_cross_family"
+            role = "partial_condition_similarity"
+        else:
+            condition_match = "shared_method_only" if candidate_terms else "background"
+            role = "partial_condition_similarity" if candidate_terms else None
+        if role is None:
+            continue
+        # A pair whose execution conditions are explicitly non-comparable is
+        # never a strict condition match; the fact is retained as partial.
+        actual_conditions = row.get("execution_conditions") or {}
+        if actual_conditions.get("comparable") is False and role == "strict_condition_match":
+            role = "partial_condition_similarity"
+            condition_match = "conditions_not_comparable"
+        planned = row.get("method_planned") or {}
+        actual = row.get("method_actual") or {}
+        planned_steps = planned.get("steps") if isinstance(planned.get("steps"), list) else None
+        actual_steps = actual.get("steps") if isinstance(actual.get("steps"), list) else None
+        # A pointer such as "same as method_planned.steps" is not a second
+        # method body: only a REAL step list contributes shared method terms.
+        actual_terms = _method_terms(actual) if actual_steps is not None else set()
+        planned_terms = _method_terms(planned) if planned_steps is not None else set()
+        shared = sorted(candidate_terms & (planned_terms | actual_terms))
+        method_match = None
+        if candidate_steps is not None and planned_steps is not None \
+                and candidate_steps == planned_steps:
+            method_match = "same_planned_method"
+        elif candidate_steps is not None and actual_steps is not None \
+                and candidate_steps == actual_steps:
+            method_match = "same_actual_method"
+        elif shared:
+            method_match = "shared_method_terms"
+        benefit = row.get("benefit") if isinstance(row.get("benefit"), dict) else {}
+        fact = observation_block if isinstance(observation_block, dict) else {}
+        refs = []
+        for source in (benefit.get("evidence_refs"), fact.get("evidence_refs")):
+            if isinstance(source, list):
+                refs.extend(str(ref) for ref in source)
+        refs = list(dict.fromkeys(refs))[:4]
+        evaluation_id = row.get("evaluation_id")
+        case = {
+            "evaluation_id": evaluation_id,
+            "comparison_role": role,
+            "condition_match": condition_match,
+            "same_task": same_task,
+            "observed": observed,
+            "predicted": benefit.get("predicted"),
+            "signed_error": benefit.get("signed_error"),
+        }
+        if method_match:
+            case["method_match"] = method_match
+        if shared:
+            case["shared_method_terms"] = shared[:6]
+        if not same_cell and not same_task:
+            case["unknown_conditions"] = ["structural cell/family not both known equal"]
+        if evaluation_id:
+            case["detail_ref"] = (
+                "orx inspect --bank evaluations --evaluation "
+                f"{evaluation_id}")
+        attribution = benefit.get("attribution")
+        if isinstance(attribution, dict) and attribution:
+            recorded = {key: copy.deepcopy(attribution[key]) for key in
+                        ("method_fidelity", "failure_source", "source",
+                         "assessment") if attribution.get(key) not in (None, "", [], {})}
+            if recorded:
+                case["recorded_cause"] = recorded
+        if row.get("failure_classes"):
+            case["technical_failure_classes"] = list(row["failure_classes"])[:4]
+        if refs:
+            case["evidence_refs"] = refs
+        relevant += 1
+        ranked.append(((0 if role == "strict_condition_match" else 1),
+                       0 if same_task else 1,
+                       0 if method_match else 1,
+                       0 if observed == 0 else 1,
+                       -len(shared), index, case))
+    ranked.sort(key=lambda entry: entry[:6])
+    cases = [entry[-1] for entry in ranked[:limit]]
+    return {
+        "version": "wm-g-method-evidence/1",
+        "selection": {
+            "n_pairs_available": len(pairs),
+            "n_condition_relevant": relevant,
+            "n_included": len(cases),
+            "n_omitted": max(0, relevant - len(cases)),
+            "basis": ("candidate method/condition relevance over the SELECTED "
+                      "prediction-execution pairs; observed G labels only; "
+                      "same-task and known matching conditions rank first"),
+        },
+        "cases": cases,
+        "global_calibration_role": "diagnostic_only",
+        "same_task_comparisons_ref": (
+            "prediction_context.prediction_execution_pairs.same_task_comparisons"),
+        "note": ("derived from the existing paired feedback; full case bodies "
+                 "stay there and in the evaluation store. These are recorded "
+                 "cases, not a candidate correction coefficient: the global "
+                 "calibration remains a diagnostic of past error. An absent "
+                 "field is unknown, and a cause appears only when the "
+                 "close-out recorded an attribution."),
+    }
+
+
 def checked_attribution(record, declaration):
     """Validate optional check-task evidence without changing its verdict."""
     if not isinstance(declaration, dict):

@@ -12,17 +12,20 @@ discarded observation.
 This example shows the corrected rule, ONE field at a time:
 
 1. **an unreported effort knob is a caveat** — the run never reported
-   `time_limit`/`seed`. Nothing is blocked: the measured `solver_runtime_s`
-   is compared and the benefit is scored. The missing receipt is REPORTED,
-   not punished;
-2. **an unreported approach knob blocks the benefit, keeps the cost** — the
-   run never reported `relaxation`, so the answer may not be the predicted
-   approach's answer. The benefit is not scored; the real spend still is;
-3. **a condition deviation keeps the cost** — the run really reported a
-   DIFFERENT value for a key the prediction fixed (`time_limit=30` vs
-   predicted 60) or used a different solver. The quality is not the original
-   condition's performance, but the attempt really cost what it cost, so the
-   cost sample survives;
+   `time_limit`/`seed`. Nothing is blocked: the measured execution spend is
+   preserved and the benefit is scored. The missing receipt is REPORTED, not
+   punished;
+2. **an unreported approach knob blocks the benefit, keeps the cost
+   observation** — the run never reported `relaxation`, so the answer may not
+   be the predicted approach's answer. The benefit is not scored; the real
+   observed spend still is retained;
+3. **a condition deviation keeps the cost observation** — the run really
+   reported a DIFFERENT value for a key the prediction fixed
+   (`time_limit=30` vs predicted 60) or used a different solver. The quality
+   is not the original condition's performance, but the attempt's observed
+   spend remains in `observed_fact`; under the four-dimensional C contract it
+   may not itself be a comparable remaining-task prediction, and the example
+   reports that explicitly;
 4. **the genuine boundaries still refuse** — a wrong strategy is not this
    prediction's attempt at all, and the whole sample is excluded. An
    unexecuted candidate gets no counterfactual outcome.
@@ -68,7 +71,7 @@ PAYLOAD = {
                 "metric": "normalized_objective_gap", "unit": "1-gap",
                 "value": 0.8,
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"solver_runtime_s": 3.0},
+    "cost": {"tool_calls": 4},
 }
 
 
@@ -156,7 +159,8 @@ def main() -> int:
     # The whole sample survives: nothing is blocked by a missing receipt.
     assert evaluation["state"] == "evaluated"
     assert evaluation["benefit"]["eligibility"] == "evaluable"
-    assert "solver_runtime_s" in evaluation["cost"]["per_dim"]
+    assert evaluation["cost"]["eligibility"] != "identity_mismatch"
+    assert (evaluation["cost"].get("observed_fact") or {}).get("values")
     assert not evaluation.get("attribution")
 
     # ------------------------------------------------------------------
@@ -188,7 +192,8 @@ def main() -> int:
     # sample is still scored.
     assert evaluation2["benefit"]["eligibility"] == "evaluable"
     assert not evaluation2["benefit"].get("identity_fields")
-    assert evaluation2["cost"]["eligibility"] == "evaluable"
+    assert evaluation2["cost"]["eligibility"] != "identity_mismatch"
+    assert (evaluation2["cost"].get("observed_fact") or {}).get("values")
     # It is still REPORTED, so the agent can see the evidence is thinner.
     info2 = bound2.trace.model_info
     print(f"  reported as unknown  : "
@@ -221,8 +226,11 @@ def main() -> int:
     print(f"state                  : {evaluation3['state']}")
     # A different solver is a deviation: the outcome goes, the spend stays.
     assert evaluation3["benefit"]["eligibility"] == "identity_mismatch"
-    assert evaluation3["cost"]["eligibility"] == "evaluable"
-    assert evaluation3["state"] == "evaluated"
+    assert evaluation3["cost"]["eligibility"] != "identity_mismatch"
+    # No active C target is comparable for this fixture, and the blocked
+    # benefit leaves no evaluable field, so the sample is excluded; its
+    # observed spend remains available above.
+    assert evaluation3["state"] == "excluded"
 
     # ------------------------------------------------------------------
     print()

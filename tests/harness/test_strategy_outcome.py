@@ -83,7 +83,8 @@ GOOD_PAYLOAD = {
                 "metric": "normalized_objective_gap", "unit": "1-gap",
                 "value": 0.8,
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+    "cost": {"output_tokens": 1200, "remaining_latency_s": 3.0,
+             "tool_calls": 4, "retries": 0},
     "risk": {"events": [
         {"event": "model_invalid", "probability": 0.2,
          "severity": 1.0, "severity_unit": "attempts",
@@ -593,7 +594,8 @@ class TestProtocolReachesProvider(StrategyCase):
         self.assertEqual(prediction.benefit.value, 0.8)
         self.assertIsNotNone(prediction.benefit.baseline)
         self.assertEqual(sorted(prediction.cost.expected.measured_dims()),
-                         ["llm_tokens", "solver_runtime_s"])
+                         ["output_tokens", "remaining_latency_s",
+                          "retries", "tool_calls"])
         self.assertEqual(len(prediction.risk.events), 2)
         self.assertEqual(prediction.uncertainty.source, "model_self_report")
         self.assertEqual(validate_strategy_outcome(prediction), [])
@@ -888,7 +890,7 @@ class TestProtocolReachesProvider(StrategyCase):
             "benefit": {"kind": "solution_quality", "metric": "q",
                         "value": 1.5,   # out of [0,1]
                         "baseline": {"kind": "declared", "value": 0.5}},
-            "cost": {"llm_tokens": float("nan")},
+            "cost": {"output_tokens": float("nan")},
             "risk": {"events": [{"event": "x", "probability": 1.5}]},
         }
         provider = StubProvider(payload=payload)
@@ -902,7 +904,7 @@ class TestProtocolReachesProvider(StrategyCase):
         self.assertEqual(prediction.status, "invalid")
         joined = " ".join(prediction.notes)
         self.assertIn("NORMALIZED", joined)
-        self.assertIn("cost.llm_tokens", joined)
+        self.assertIn("cost.output_tokens", joined)
         self.assertIn("probability", joined)
 
     def test_provider_error_keeps_its_cost(self):
@@ -950,7 +952,7 @@ class TestScopeAndHonesty(StrategyCase):
         )
         # Two valid predictions: one predicts cost, one does not.
         payload_full = dict(GOOD_PAYLOAD)
-        payload_full["cost"] = {"llm_tokens": 1000}
+        payload_full["cost"] = {"output_tokens": 1000}
         payload_none = dict(GOOD_PAYLOAD)
         payload_none.pop("cost")
         provider = StubProvider()
@@ -965,7 +967,7 @@ class TestScopeAndHonesty(StrategyCase):
             _task("t1"), {"action_type": "execute_strategy",
                           "strategy_id": "S02"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         limits = PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
-                            cost_weights={"llm_tokens": 1.0}, benefit_kind='solution_quality', benefit_metric='normalized_objective_gap', benefit_unit='1-gap')
+                            cost_weights={"output_tokens": 1.0}, benefit_kind='solution_quality', benefit_metric='normalized_objective_gap', benefit_unit='1-gap')
         scores = score_strategy_outcome_predictions([p_full, p_none], limits)
         self.assertTrue(all("cost" in s.incomparable for s in scores))
         self.assertTrue(all(s.cost_normalized is None for s in scores))
@@ -1004,7 +1006,7 @@ class TestScopeAndHonesty(StrategyCase):
                         "metric": "task_result_check_passed",
                         "unit": "boolean", "value": 0.9,
                         "baseline": {"kind": "declared", "value": 0.5}},
-            "cost": {"llm_tokens": 100},
+            "cost": {"output_tokens": 100},
         }
         p_completion = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
@@ -1016,7 +1018,7 @@ class TestScopeAndHonesty(StrategyCase):
             _task("t1"), {"action_type": "execute_strategy",
                           "strategy_id": "S02"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         limits = PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
-                            cost_weights={"llm_tokens": 1.0}, benefit_kind='effective_completion', benefit_metric='task_result_check_passed', benefit_unit='boolean')
+                            cost_weights={"output_tokens": 1.0}, benefit_kind='effective_completion', benefit_metric='task_result_check_passed', benefit_unit='boolean')
         scores = score_strategy_outcome_predictions(
             [p_completion, p_quality], limits)
         quality_score = scores[1]
@@ -1046,7 +1048,7 @@ class TestScopeAndHonesty(StrategyCase):
                         "unit": "ratio", "value": 0.8,
                         "baseline": {"kind": "conditional_stats",
                                      "value": 0.5}},
-            "cost": {"llm_tokens": 100},
+            "cost": {"output_tokens": 100},
         }
         prediction = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",

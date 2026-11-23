@@ -20,7 +20,8 @@ SPLIT = {"name": "separate factory selection", "steps": [
 G_NOTE = "The task requires BE and CFC at one factory; separate selection then merging may produce a cross-factory answer."
 G_PAYLOAD = {"benefit": {**FAITHFUL_G_CONVENTION, "value": 0.7,
     "baseline": {"kind": "unknown", "note": "no comparable prior cases"},
-    "notes": [G_NOTE]}, "cost": {"solver_runtime_s": 0.1},
+    "notes": [G_NOTE]}, "cost": {"remaining_latency_s": 0.1,
+                                "tool_calls": 1},
     "risk": {"events": [{"event": "implementation_failure", "probability": 0.2}]}}
 
 

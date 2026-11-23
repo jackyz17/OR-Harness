@@ -73,7 +73,7 @@ class TestRemainingCostObservation(M4Case):
                         "metric": "task_result_check_passed",
                         "unit": "boolean", "value": 0.8,
                         "baseline": {"kind": "declared", "value": 0.5}},
-            "cost": {"llm_tokens": 300.0},
+            "cost": {"output_tokens": 300.0},
         }
         task = _task("t1")
         prediction = planned_prediction(h,
@@ -105,13 +105,13 @@ class TestRemainingCostObservation(M4Case):
         h.report_action("finish_task", task, "ep1", started_at=end, ended_at=end,
             host_usage={"schema": "or-host-usage/1", "host": "test-host",
                 "model": "executor/v1", "scope": "remaining_to_task_end",
-                "tokens": {"prompt_tokens": 200, "completion_tokens": 100},
+                "tokens": {"prompt_tokens": 200, "completion_tokens": 300},
                 "measured": ["llm_tokens"], "window": {
                     "started_at": prediction_anchor(self.h,prediction), "ended_at": end,
                     "complete": True, "end_event": "finish_task"}})
         result = h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
-        entry = evaluation["cost"]["per_dim"].get("llm_tokens")
+        entry = evaluation["cost"]["per_dim"].get("output_tokens")
         self.assertIsNotNone(
             entry,
             "the remaining-cost prediction must be compared against the "
@@ -164,13 +164,13 @@ from tests.harness.c_fixtures import CCase, REUSE, REBUILD
 
 class TestHostCostWindow(CCase):
     def test_counter_delta_and_duplicate_report_cover_full_window(self):
-        prediction = self.predict_c(cost={"tool_calls": 8, "llm_tokens": 300})
+        prediction = self.predict_c(cost={"tool_calls": 8, "output_tokens": 0})
         record = self.run_g(prediction, record=False)
         self.check_g(record)
         result, _ = self.finish_c(prediction, counters=True, duplicate_record=record)
         cost = result["evaluations"][0]["cost"]
         self.assertEqual(cost["per_dim"]["tool_calls"]["actual"], 8)
-        self.assertEqual(cost["per_dim"]["llm_tokens"]["actual"], 300)
+        self.assertEqual(cost["per_dim"]["output_tokens"]["actual"], 0)
         self.assertEqual(cost["observed_fact"]["work_facts"]["host_rounds"], 2)
         self.assertEqual(cost["observed_fact"]["work_facts"]["execution_attempts"], 1)
         # A remaining-window total is not rewritten as the attempt's spend.
@@ -178,7 +178,7 @@ class TestHostCostWindow(CCase):
 
     def test_timed_calls_count_input_output_and_each_id_once(self):
         import time
-        prediction = self.predict_c(cost={"tool_calls": 2, "llm_tokens": 200})
+        prediction = self.predict_c(cost={"tool_calls": 2, "output_tokens": 80})
         record = self.run_g(prediction, record=False)
         self.check_g(record)
         start, stop = prediction_anchor(self.h,prediction), time.time()
@@ -190,12 +190,12 @@ class TestHostCostWindow(CCase):
         result, _ = self.finish_c(prediction, calls=calls + [dict(calls[1])], duplicate_record=record)
         cost = result["evaluations"][0]["cost"]
         self.assertEqual(cost["per_dim"]["tool_calls"]["actual"], 2)
-        self.assertEqual(cost["per_dim"]["llm_tokens"]["actual"], 200)
+        self.assertEqual(cost["per_dim"]["output_tokens"]["actual"], 80)
         self.assertEqual(cost["observed_fact"]["work_facts"]["host_rounds"], 1)
 
     def test_ambiguous_attempt_totals_and_last_action_are_lower_bounds(self):
         from or_harness.world_model.episode_closeout import summarize_real_outcome
-        prediction = self.predict_c(cost={"tool_calls": 8, "llm_tokens": 300, "remaining_latency_s": 1})
+        prediction = self.predict_c(cost={"tool_calls": 8, "remaining_latency_s": 1})
         record = self.run_g(prediction)
         self.check_g(record)
         self.h.bank.update_cost(record.execution_id, source="provider_usage", llm_tokens=300, tool_calls=8)
@@ -203,15 +203,13 @@ class TestHostCostWindow(CCase):
         cost = result["evaluations"][0]["cost"]
         self.assertFalse(cost.get("per_dim"))
         summary = summarize_real_outcome(self.h, self.h.strategy_predictions.get(prediction.prediction_id))
-        self.assertEqual(summary.cost["llm_tokens"]["observation_scope"], "execution_attempts")
-        self.assertEqual(summary.cost["llm_tokens"]["total"], 300)
         self.assertFalse(summary.cost["remaining_latency_s"]["complete"])
         self.assertIn("LOWER BOUND", summary.cost["remaining_latency_s"]["boundary_note"])
 
     def test_failed_and_aborted_terminal_windows_have_spent_cost(self):
         for terminal in ("failed", "aborted"):
             with self.subTest(terminal=terminal):
-                prediction = self.predict_c(terminal, cost={"tool_calls": 8, "llm_tokens": 300})
+                prediction = self.predict_c(terminal, cost={"tool_calls": 8})
                 record = self.run_g(prediction, crash=True)
                 result, _ = self.finish_c(prediction, terminal=terminal)
                 cost = result["evaluations"][0]["cost"]
@@ -237,31 +235,36 @@ class TestHostCostWindow(CCase):
         # A real execution proves tool_calls >= 1. Tokens can legitimately
         # be zero when the host made no model calls.
         from or_harness.world_model.episode_closeout import build_calibration_summary
-        for episode, predicted, actual in (("zero", 0, 0), ("positive", 2, 4)):
-            prediction = self.predict_c(episode, cost={"llm_tokens": predicted})
+        # The host's default generation is 100 completion tokens. A zero
+        # prediction is a REAL forecast and gets a finite absolute error; a
+        # positive prediction also gets a log ratio.
+        for episode, predicted, actual in (("zero", 0, 100), ("positive", 100, 100)):
+            prediction = self.predict_c(episode, cost={"output_tokens": predicted})
             record = self.run_g(prediction)
             self.check_g(record)
-            result, _ = self.finish_c(prediction, tokens=actual, rounds=0 if actual == 0 else 1)
-            error = result["evaluations"][0]["cost"]["per_dim"]["llm_tokens"]
+            result, _ = self.finish_c(prediction)
+            error = result["evaluations"][0]["cost"]["per_dim"]["output_tokens"]
             self.assertEqual(error["abs_error"], actual - predicted)
             self.assertEqual(error["signed_error"], actual - predicted)
         summary = build_calibration_summary(self.h, min_samples=2)
-        group = next(g for g in summary["groups"].values() if "llm_tokens" in g["mean_cost_abs_error"])
-        self.assertEqual(group["mean_cost_abs_error"]["llm_tokens"], 1)
-        self.assertEqual(group["cost_absolute_evidence"]["llm_tokens"]["n_distinct_episodes"], 2)
-        self.assertEqual(group["cost_evidence"]["llm_tokens"]["n_distinct_episodes"], 1)
-        self.assertEqual(group["cost_evidence"]["llm_tokens"]["evidence"], "insufficient_evidence")
-        self.assertEqual(summary["conditional_cost"]["coverage"]["llm_tokens"],
+        group = next(g for g in summary["groups"].values()
+                     if "output_tokens" in g["mean_cost_abs_error"])
+        self.assertEqual(group["mean_cost_abs_error"]["output_tokens"], 50)
+        self.assertEqual(group["cost_absolute_evidence"]["output_tokens"]["n_distinct_episodes"], 2)
+        self.assertEqual(group["cost_evidence"]["output_tokens"]["n_distinct_episodes"], 1)
+        self.assertEqual(group["cost_evidence"]["output_tokens"]["evidence"], "insufficient_evidence")
+        self.assertEqual(summary["conditional_cost"]["coverage"]["output_tokens"],
             {"n_actual": 2, "n_predicted": 2, "n_error": 2, "n_log_ratio": 1})
 
-    def test_both_time_dimensions_keep_independent_errors(self):
-        prediction = self.predict_c(cost={"solver_runtime_s": .005, "remaining_latency_s": 10})
+    def test_remaining_latency_is_the_only_time_prediction(self):
+        prediction = self.predict_c(cost={"remaining_latency_s": 10})
         record = self.run_g(prediction)
         self.check_g(record)
         result, _ = self.finish_c(prediction)
         per_dim = result["evaluations"][0]["cost"]["per_dim"]
-        self.assertEqual(set(per_dim), {"solver_runtime_s", "remaining_latency_s"})
-        self.assertEqual(per_dim["solver_runtime_s"]["actual"], .01)
+        self.assertEqual(set(per_dim), {"remaining_latency_s"})
+        self.assertNotIn("solver_runtime_s", per_dim)
+        self.assertNotIn("latency_s", per_dim)
 
     def test_two_candidates_use_the_recorded_shared_decision_anchor(self):
         from or_harness.world_model.prediction import ActionSpec
@@ -362,7 +365,7 @@ class TestHostCostWindow(CCase):
         self.assertTrue(cost["observed_fact"]["boundary_exclusions"])
 
     def test_script_wall_proxy_cannot_score_inner_solver_time(self):
-        prediction = self.predict_c(cost={"solver_runtime_s": 1, "remaining_latency_s": 1})
+        prediction = self.predict_c(cost={"remaining_latency_s": 1})
         self.run_g(prediction, crash=True)
         result, _ = self.finish_c(prediction, terminal="failed")
         cost = result["evaluations"][0]["cost"]
@@ -472,7 +475,9 @@ class TestConditionalCostRequest(CCase):
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
         self.assertEqual(evidence["current_conditions"]["phase"], "unknown")
         self.assertEqual(evidence["reference_ranges"], [])
-        self.assertIn("decision phase unavailable", evidence["missing"])
+        self.assertTrue(evidence["broader_reference_ranges"])
+        self.assertEqual(evidence["evidence_status"], "broader_reference_only")
+        self.assertIn("decision phase unavailable", " ".join(evidence["missing"]))
 
 
 class TestOutputTokenCost(CCase):
@@ -543,21 +548,35 @@ class TestOutputTokenCost(CCase):
         self.assertEqual(costs[first.prediction_id]["observed_fact"]["work_facts"]["host_rounds"], 2)
         self.assertEqual(costs[retry.prediction_id]["observed_fact"]["work_facts"]["host_rounds"], 1)
 
-    def test_total_only_is_not_output_and_legacy_prediction_keeps_its_units(self):
-        prediction = self.predict_c(cost={"llm_tokens": 10400, "output_tokens": None})
-        self.assertEqual(prediction.status, "valid")
-        self.assertEqual(prediction.cost.expected.llm_tokens, 10400)
-        self.assertEqual(prediction.cost.measured, ["llm_tokens"])
-        self.assertIn("cost.output_tokens", prediction.trace.unsupported_fields)
-        record = self.run_g(prediction)
-        self.check_g(record)
-        result = self.finish_output(prediction, tokens={"total_tokens": 10400})
-        cost = result["evaluations"][0]["cost"]
-        self.assertEqual(cost["per_dim"]["llm_tokens"]["actual"], 10400)
-        self.assertNotIn("output_tokens", cost["observed_fact"]["values"])
-        coverage = self.h.calibration_summary()["conditional_cost"]["coverage"]["output_tokens"]
-        self.assertEqual(coverage["n_actual"], 0)
-        self.assertEqual(coverage["n_predicted"], 0)
+    def test_total_only_is_not_output_and_legacy_prediction_stays_readable(self):
+        # A NEW prediction may not use the raw input-plus-output total.
+        prediction = self.predict_c(cost={"llm_tokens": 10400})
+        self.assertEqual(prediction.status, "invalid")
+        joined = " ".join(prediction.notes)
+        self.assertIn("historical observation dimension", joined)
+        self.assertIn("remaining_latency_s", joined)
+
+        # An ARCHIVED six-dimensional prediction remains READABLE and is not
+        # converted into the new contract.
+        from or_harness.world_model.contracts import (
+            ExpectedCost, StrategyOutcomePrediction,
+        )
+        from or_harness.core.schema import CostVector
+        old = StrategyOutcomePrediction(
+            candidate=prediction.candidate,
+            status="contract_only",
+            cost=ExpectedCost(
+                expected=CostVector(llm_tokens=10400.0,
+                                    measured={"llm_tokens"}),
+                measured=["llm_tokens"]),
+            trace=prediction.trace)
+        dumped = old.to_dict()
+        from or_harness.world_model.contracts import StrategyOutcomePrediction as P
+        restored = P.from_dict(dumped)
+        self.assertEqual(restored.to_dict(), dumped)
+        self.assertIsNone(restored.cost.prediction_contract)
+        self.assertEqual(restored.cost.expected.llm_tokens, 10400.0)
+        self.assertEqual(restored.cost.measured, ["llm_tokens"])
 
     def test_missing_prediction_still_provides_output_baseline(self):
         prediction = self.predict_c(cost=None)
@@ -617,20 +636,23 @@ class TestOutputTokenCost(CCase):
         for index, (cost, scales, expected) in enumerate([
                 ({"output_tokens": 400}, {"output_tokens": 1000}, ["output_tokens"]),
                 ({"output_tokens": 0}, {"output_tokens": 1000}, ["output_tokens"]),
-                ({"output_tokens": 400}, {"llm_tokens": 10400}, []),
-                ({"llm_tokens": 10400}, {"llm_tokens": 20000}, [])]):
+                ({"output_tokens": 400}, {"llm_tokens": 10400}, [])]):
             with self.subTest(cost=cost, scales=scales):
                 self.provider.payload["cost"] = cost
                 result = self.h.plan_next(self.task, "scoring" + str(index), candidates=[{
                     "strategy_id": "S04", "solver": "highs", "method": REUSE}], limits={
-                        "cost_weights": {"llm_tokens": 1}, "cost_scales": scales})
+                        "cost_weights": {"output_tokens": 1}, "cost_scales": scales})
                 score = result["selected_score"]
                 self.assertEqual(score["scoring_basis"]["cost_dimensions"], expected)
                 if cost.get("output_tokens") == 0:
                     self.assertEqual(score["cost_normalized"], 0)
-                if "llm_tokens" in cost:
-                    self.assertEqual(score["cost_reported"]["values"]["llm_tokens"], 10400)
-                    self.assertIn("token C uses output_tokens", score["scoring_basis"]["omitted_cost_dimensions"]["llm_tokens"]["reason"])
+        # An old raw-token prediction is a CONTRACT ERROR, not a U term.
+        self.provider.payload["cost"] = {"llm_tokens": 10400}
+        result = self.h.plan_next(self.task, "scoring-legacy", candidates=[{
+            "strategy_id": "S04", "solver": "highs", "method": REUSE}],
+            limits={"cost_weights": {"llm_tokens": 1},
+                    "cost_scales": {"llm_tokens": 20000}})
+        self.assertEqual(result["status"], "no_valid_predictions")
 
 
 class TestFutureRetryObservation(CCase):

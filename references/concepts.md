@@ -67,7 +67,7 @@ The solver status describes the model it solved. The original-task check examine
 
 Record the raw cost dimensions.
 
-**`llm_tokens, output_tokens, tool_calls, solver_runtime_s, retries, latency_s, remaining_latency_s`**
+**Observation dimensions:** `llm_tokens, output_tokens, tool_calls, solver_runtime_s, retries, latency_s, remaining_latency_s`. **Active C prediction dimensions:** `remaining_latency_s, output_tokens, tool_calls, retries` — all over the decision-to-task-end window. `latency_s` (one sandbox attempt), `solver_runtime_s` (the solver's inner runtime) and `llm_tokens` (input plus output) remain execution observations only.
 
 An execution's `retries` is its own 0/1 increment in the task/episode chain;
 three attempts record 0/1/1 and total 2. A remaining-cost forecast predicts

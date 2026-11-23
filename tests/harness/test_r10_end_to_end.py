@@ -39,7 +39,7 @@ PAYLOAD = {
                 "metric": "normalized_objective_gap", "unit": "1-gap",
                 "value": 0.8,
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
-    "cost": {"solver_runtime_s": 3.0},
+    "cost": {"remaining_latency_s": 3.0},
 }
 
 

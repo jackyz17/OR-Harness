@@ -80,6 +80,29 @@ COST_DIMENSIONS: Tuple[str, ...] = (
 #: overlapping prediction ranges (and per-attempt figures measured against
 #: an episode-level answer) would double-count if added. They are counted
 #: as measured facts and reported individually, never accumulated.
+#: The ACTIVE C prediction targets of the strategy-outcome protocol.
+#: C predicts the resources needed to FINISH THE REMAINING TASK; one sandbox
+#: attempt's ``latency_s`` and the solver's inner ``solver_runtime_s`` are
+#: execution observations, not prediction targets. They stay in
+#: ``COST_DIMENSIONS`` so historical facts remain readable and auditable,
+#: but new wm-so/1 predictions may use ONLY these four and U/calibration
+#: price only these four.
+PREDICTED_COST_DIMENSIONS: Tuple[str, ...] = (
+    "remaining_latency_s",
+    "output_tokens",
+    "tool_calls",
+    "retries",
+)
+
+#: Historical observation dimensions that are NOT active prediction targets.
+#: Kept for archived execution facts and diagnostics; never required from a
+#: new agent prediction and never charged as the new four-dimensional C.
+LEGACY_PREDICTION_COST_DIMENSIONS: Tuple[str, ...] = (
+    "llm_tokens",
+    "solver_runtime_s",
+    "latency_s",
+)
+
 NON_CUMULATIVE_DIMENSIONS: Tuple[str, ...] = (
     "latency_s",
     "remaining_latency_s",
@@ -88,6 +111,7 @@ NON_CUMULATIVE_DIMENSIONS: Tuple[str, ...] = (
 #: Default scalarization weights. Used only inside the selector; never at rest.
 DEFAULT_COST_WEIGHTS: Dict[str, float] = {
     "llm_tokens": 1.0,
+    "output_tokens": 1.0,
     "tool_calls": 0.2,
     "solver_runtime_s": 0.5,
     "retries": 2.0,
