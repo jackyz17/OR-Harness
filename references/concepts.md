@@ -37,7 +37,7 @@ Keep the proposed method with its prediction and the performed method with the e
 
 ### Retrieval and cold start
 
-Embedding retrieval finds related methods and executions. The task profile helps organize them. Check the original constraints and the rule's premises to decide what to adapt. A failed attempt can reveal a repair or a boundary, and a retrieved method carries the scope of its existing evidence.
+Embedding retrieval finds related methods and executions. The task profile helps organize them. Structural recommendations require confirmed or partial machine support; a rule with empty or unmeasured predicates is not a structural match and remains discoverable through text retrieval. Check the original constraints and the rule's premises to decide what to adapt. A failed attempt can reveal a repair or a boundary, and a retrieved method carries the scope of its existing evidence.
 
 When relevant memory is sparse, propose a method from the task itself. The resulting execution provides evidence for later retrieval and review.
 

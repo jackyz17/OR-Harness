@@ -307,6 +307,31 @@ class TestRetrievalEvidence(ContextCase):
                     if h["evidence_id"] == eid)
         self.assertNotEqual(item["evidence_class"], "verified_knowledge")
 
+    def test_verified_rule_is_not_downgraded_by_structural_only_recall(self):
+        entry = StrategicEntry(
+            entry_id="", strategy_id="S04",
+            pattern={"predicates": {"family": "routing"}},
+            expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
+            expected_cost_hat=self.make_record().cost,
+            failure_prob=0.1, status="candidate", support_n=2,
+            verification={"state": "verified", "claim": "c",
+                          "conclusion": "checked"})
+        eid = self.h.sbank.add(entry)
+        # Deliberately do NOT index the entry: the semantic channel cannot
+        # surface it, so this is a STRUCTURAL-ONLY hit.
+        ctx = self.h.build_prediction_context(_task(), "ep1")
+        item = next(h for h in ctx.retrieval.hits
+                    if h["evidence_id"] == eid)
+        self.assertEqual(item["evidence_class"], "verified_knowledge")
+        self.assertEqual(item["content"]["verification_state"], "verified")
+        self.assertTrue(item["content"]["requires_agent_assessment"])
+        self.assertIn("machine_applicability", item["content"])
+        provider_hit = next(
+            h for h in ctx.provider_view()["retrieval_evidence"]["hits"]
+            if h["identity"] == item["identity"])
+        self.assertEqual(provider_hit["evidence_class"],
+                         "verified_knowledge")
+
     def test_evidence_classes_distinguish_the_five_kinds(self):
         self.assertEqual(classify_evidence("execution_evidence", {}),
                          "execution_fact")
@@ -321,6 +346,13 @@ class TestRetrievalEvidence(ContextCase):
             "strategic_knowledge", {"reusable": True,
                                     "verification_state": "legacy"}),
             "legacy_knowledge")
+        # Older/frozen structural rows carry the state nested in ``knowledge``
+        # rather than at the top level; classification must not lose it.
+        self.assertEqual(classify_evidence(
+            "strategic_knowledge",
+            {"knowledge": {"verification_state": "verified"},
+             "requires_agent_assessment": True}),
+            "verified_knowledge")
         self.assertEqual(classify_evidence("recommendation", {}),
                          "structural_recommendation")
 

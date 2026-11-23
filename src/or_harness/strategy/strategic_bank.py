@@ -232,9 +232,11 @@ class StrategicBank:
         keeps entries whose machine conditions are confirmed compatible (the
         strict mode used when a cost estimate is taken from the entry).
         The default keeps every entry without a confirmed structural
-        conflict, so ``not_specified`` / ``unknown`` rules stay discoverable
-        — with their explicit machine state and their ``when`` — rather than
-        being silently treated as applicable.
+        conflict, so ``not_specified`` / ``unknown`` rules stay readable with
+        their explicit machine state and their ``when``. This bank-level view
+        is not the structural-recall set: the Selector offers only entries
+        with confirmed ``compatible`` or ``partial`` machine support, while
+        empty/unknown rules remain discoverable through text retrieval.
 
         ``include_dormant=False`` (default) is the RETRIEVAL view: dormant
         entries are not consulted. ``include_dormant=True`` is the EVIDENCE

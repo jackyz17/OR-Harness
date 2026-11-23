@@ -3854,7 +3854,10 @@ class ORHarness:
 
         - ``recommendations`` / ``available_solver_families`` /
           ``solver_advisories``: the structural channel — the strategies this
-          cell has REAL memory about, with their evidence-based scores.
+          cell has REAL memory about, with their evidence-based scores. It
+          requires confirmed ``compatible`` or ``partial`` machine support;
+          empty-predicate and unmeasured-condition rules are not structural
+          matches and remain reachable through the vector channel.
         - ``vector_recall``: the text-similarity channel (embedding), which
           surfaces memories whose TEXT is close regardless of structural
           cell. Its ``similarity`` is a discovery signal only; it is never a
@@ -3940,6 +3943,8 @@ class ORHarness:
                 "returned": recalled["returned"],
                 "material_budget": recalled["material_budget"],
                 "omitted": recalled["omitted"],
+                "omitted_without_machine_support":
+                    recalled.get("omitted_without_machine_support", 0),
                 "note": recalled["note"],
             },
             "recommendations_basis": self._recall_basis(
@@ -3956,6 +3961,19 @@ class ORHarness:
             # rather than admitted.
             "held_claims": self._held_claims(profile, include_unverified),
         }
+        omitted_structural = recalled.get(
+            "omitted_without_machine_support", 0)
+        if omitted_structural:
+            basis = result["recommendations_basis"]
+            basis["omitted_without_machine_support"] = omitted_structural
+            if not recs:
+                basis["reason"] = (
+                    f"{omitted_structural} knowledge entr"
+                    f"{'y has' if omitted_structural == 1 else 'ies have'} "
+                    "no confirmed machine structural support (empty or "
+                    "unmeasured predicates). They are not ranked in the "
+                    "structural channel; read vector_recall for semantic "
+                    "discovery and assess `when` before adoption.")
         if proposed is not None:
             result["candidates_proposed"] = list(proposed)
             result["candidates_without_evidence"] = [

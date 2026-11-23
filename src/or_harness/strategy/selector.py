@@ -112,6 +112,13 @@ class Recommendation:
     #: agent's used-entry facts in its normal solving flow.
     adoption_state: Optional[str] = None
     adoption_note: Optional[str] = None
+    #: The entry's own historical verification state (``verified`` /
+    #: ``legacy`` / ``unverified`` / ...), transferred explicitly from the
+    #: Strategic Entry. It is INDEPENDENT of the current task's machine or
+    #: semantic applicability: a verified rule can still require the agent's
+    #: ``when`` assessment. Structural hits carry this field so evidence
+    #: classification never downgrades known verification to "unverified".
+    verification_state: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -133,6 +140,8 @@ class Recommendation:
                       if self.claim is not None else None),
             "knowledge": copy.deepcopy(self.knowledge),
         }
+        if self.verification_state is not None:
+            out["verification_state"] = self.verification_state
         for key in ("rule_body", "machine_applicability",
                     "semantic_applicability"):
             value = getattr(self, key)
@@ -190,8 +199,11 @@ class Selector:
 
         - the strategy ids of this structural cell's aggregated evidence
           (executions that really ran and were recorded);
-        - the strategy ids of matching strategic entries that are published
-          (or of every matching entry, in the offline inspection view).
+        - the strategy ids of strategic entries that are published AND have
+          confirmed/partial machine structural support (or of every such
+          entry in the offline inspection view). Entries with empty or
+          unknown predicates are not structural candidates; they remain
+          reachable through text retrieval.
 
         A strategy nobody ever tried, and that no entry speaks about, is not
         a candidate — the framework has no menu to fall back on.
@@ -302,21 +314,67 @@ class Selector:
             "returned": len(shown),
             "material_budget": budget,
             "omitted": len(recs) - len(shown),
+            "omitted_without_machine_support": len(
+                self.structural_omissions(
+                    profile, memory_mode=memory_mode,
+                    include_unverified=include_unverified)),
             "note": ("recall DISCOVERS material in relevance order; it does "
                      "NOT rank by utility. A `top` cap is a material budget, "
                      "and any omission is reported — it is not a decision "
-                     "about which candidate is best"),
+                     "about which candidate is best. Entries counted in "
+                     "`omitted_without_machine_support` have no confirmed "
+                     "machine support (empty/unknown predicates) and are "
+                     "reachable only through the semantic channel"),
         }
 
     def _matching_entries(self, profile: ProblemProfile, memory_mode: str,
                           include_unverified: bool) -> List[StrategicEntry]:
-        """The entries this recall may present, per mode and publication."""
+        """The entries this STRUCTURAL recall may present.
+
+        Structural recommendation is a claim about the task's structure, so
+        only entries with real machine support enter it: a predicate set
+        whose deterministic state is ``compatible`` or ``partial``. An empty
+        predicate set is ``not_specified`` and an unmeasured condition is
+        ``unknown``; neither is a confirmed structural match, so neither may
+        occupy a structural ``top`` slot. They remain available through the
+        independent text/semantic channel, which does not use this filter.
+
+        ``include_unverified`` controls publication, not machine support:
+        an unverified claim with compatible predicates is still offered, with
+        its own verification state carried on the row.
+        """
         if memory_mode not in ("strategic", "cost-aware"):
             return []
+        from or_harness.strategy.applicability import machine_applicability
         matched = self.sbank.matching(profile)
-        if include_unverified:
-            return matched
-        return [e for e in matched if is_publishable(e)]
+        if not include_unverified:
+            matched = [e for e in matched if is_publishable(e)]
+        return [e for e in matched
+                if machine_applicability(
+                    profile, e.predicates)["state"] in
+                ("compatible", "partial")]
+
+    def structural_omissions(self, profile: ProblemProfile, *,
+                             memory_mode: str = "cost-aware",
+                             include_unverified: bool = False) -> List[str]:
+        """Published/non-conflicting entries excluded from structural recall.
+
+        These are the entries with no confirmed machine structural support
+        (``not_specified`` or ``unknown``). They are not hidden content: the
+        independent semantic channel still discovers their text. The list is
+        reported so an empty structural channel is not mistaken for an empty
+        memory.
+        """
+        if memory_mode not in ("strategic", "cost-aware"):
+            return []
+        from or_harness.strategy.applicability import machine_applicability
+        matched = self.sbank.matching(profile)
+        if not include_unverified:
+            matched = [e for e in matched if is_publishable(e)]
+        return [e.entry_id for e in matched
+                if machine_applicability(
+                    profile, e.predicates)["state"] not in
+                ("compatible", "partial")]
 
     # -- internals ---------------------------------------------------------------
 
@@ -477,7 +535,8 @@ class Selector:
             semantic_applicability=annotations["semantic_applicability"],
             requires_agent_assessment=True,
             adoption_state=annotations["adoption_state"],
-            adoption_note=annotations["adoption_note"])
+            adoption_note=annotations["adoption_note"],
+            verification_state=entry.verification_state)
 
     @staticmethod
     def _entry_knowledge(entry: StrategicEntry) -> Dict[str, Any]:

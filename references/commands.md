@@ -59,7 +59,7 @@ Set relation evidence to `structural` for co-occurrence, `semantic` for a suppor
 
 ### `orx recall --task t.json [--top 3] [--exclude S04 S06] [--candidate ID ...] [--memory-mode M] [--include-unverified]`
 
-Find text matches and related structural evidence. `--top` caps returned hits and `--candidate` filters by strategy ID. `--memory-mode` controls the structural channel. `none` leaves it empty, `cases` returns statistics, and `strategic` or `cost-aware` adds knowledge. Vector retrieval remains available in all modes. Use `--include-unverified` to inspect unpublished candidates.
+Find text matches and related structural evidence. `--top` caps returned hits and `--candidate` filters by strategy ID. `--memory-mode` controls the structural channel. `none` leaves it empty, `cases` returns statistics, and `strategic` or `cost-aware` adds knowledge. Structural recommendations include only rules with confirmed or partial machine conditions; a rule with empty predicates (`not_specified`) or unmeasured conditions (`unknown`) is not a structural match and is reachable only through vector retrieval. Vector retrieval remains available in all modes. Use `--include-unverified` to inspect unpublished candidates.
 
 | Result field | What to read |
 |---|---|

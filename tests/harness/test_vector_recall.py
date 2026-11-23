@@ -294,6 +294,66 @@ class TestStatisticsNotContaminated(VectorCase):
                 list(cell.execution_ids))
 
 
+class TestStructuralSupportSelection(VectorCase):
+    """Empty predicates do not compete for structural recommendation slots."""
+
+    def test_empty_predicates_do_not_crowd_a_confirmed_rule_from_top(self):
+        for index in range(29):
+            self.h.sbank.add(_entry(strategy_id=f"empty{index:02d}",
+                                    predicates={}))
+        good = self.h.sbank.add(_entry(
+            strategy_id="Z-percent",
+            predicates={"family": "routing",
+                        "resource_coupling": [0.25, 0.50]}))
+        out = self.h.recall(_task("t_q", description=REQ_A,
+                                  resource_coupling=0.3), top=3)
+        strategy_ids = [r["strategy_id"] for r in out["recommendations"]]
+        self.assertIn("Z-percent", strategy_ids)
+        self.assertFalse(any(sid.startswith("empty")
+                             for sid in strategy_ids), strategy_ids)
+        self.assertIn(good, [r["evidence_refs"][0]
+                             for r in out["recommendations"]
+                             if r["evidence"] == "strategic_entry"])
+        self.assertEqual(
+            out["recall_budget"]["omitted_without_machine_support"], 29)
+        self.assertEqual(
+            out["recommendations_basis"]["omitted_without_machine_support"],
+            29)
+        self.assertEqual(out["recall_budget"]["n_matched"], 1)
+
+    def test_only_empty_rules_report_the_semantic_only_reason(self):
+        for index in range(3):
+            self.h.sbank.add(_entry(strategy_id=f"empty{index}",
+                                    predicates={}))
+        out = self.h.recall(_task("t_q", description=REQ_A), top=3)
+        self.assertEqual(out["recommendations"], [])
+        self.assertEqual(
+            out["recall_budget"]["omitted_without_machine_support"], 3)
+        self.assertIn("no confirmed machine structural support",
+                      out["recommendations_basis"]["reason"])
+
+    def test_empty_predicate_rule_remains_semantically_discoverable(self):
+        self.solve(_task("t_a", description=REQ_A))
+        entry = StrategicEntry(
+            entry_id="", strategy_id="empty-semantic",
+            pattern={"predicates": {}},
+            claim={"text": REQ_A,
+                   "conditions": {"note": "Read the when paragraph."},
+                   "method": {"steps": ["Load before opening."]},
+                   "evidence": []},
+            verification={"state": "verified", "claim": "c"})
+        eid = self.h.sbank.add(entry)
+        self.h.index_sync.sync_entries([eid])
+        out = self.h.recall(_task("t_q", description=REQ_A,
+                                  resource_coupling=0.3), top=5,
+                            vector_top_k=5)
+        self.assertNotIn(eid, [ref for rec in out["recommendations"]
+                               for ref in rec.get("evidence_refs") or []])
+        semantic = [row["entry_id"]
+                    for row in out["vector_recall"]["strategic_knowledge"]]
+        self.assertIn(eid, semantic)
+
+
 class TestUnverifiedKnowledge(VectorCase):
     """Case 4: a submitted claim IS offered knowledge — the agent decides
     publication — and its verification state travels with it so a reader can

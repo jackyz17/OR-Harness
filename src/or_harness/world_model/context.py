@@ -811,14 +811,21 @@ def classify_evidence(layer: str, row: Dict[str, Any]) -> str:
     if layer == "execution_evidence":
         return "execution_fact"
     if layer == "strategic_knowledge":
-        state = str(row.get("verification_state") or "")
+        # The ENTRY's verification state is authoritative and independent of
+        # the current task's applicability. A verified rule can still need
+        # the agent's assessment of `when`; that does not downgrade its
+        # historical verification. Read the explicit top-level field first,
+        # then the nested entry content carried by older/frozen shapes.
+        state = str(row.get("verification_state")
+                    or (row.get("knowledge") or {}).get(
+                        "verification_state") or "")
         if state == "verified":
             return "verified_knowledge"
         if state == "legacy":
             return "legacy_knowledge"
         # Machine compatibility is NOT verification: a hit that requires the
-        # agent's semantic assessment is unverified knowledge even when its
-        # structural conditions happen to be compatible.
+        # agent's semantic assessment is unverified knowledge when the entry
+        # itself has no verified/legacy state.
         if row.get("requires_agent_assessment") or \
                 row.get("reusable") is False:
             return "unverified_knowledge"
@@ -909,6 +916,14 @@ def _structural_hits(recommendations: Sequence[Dict[str, Any]]
                                       rec.get("requires_agent_assessment")),
                                   "adoption_state": rec.get("adoption_state"),
                                   "adoption_note": rec.get("adoption_note"),
+                                  # The entry's HISTORICAL verification
+                                  # state travels explicitly. Current-task
+                                  # applicability is a separate layer and
+                                  # must never overwrite this fact.
+                                  "verification_state": (
+                                      rec.get("verification_state")
+                                      or (rec.get("knowledge") or {}).get(
+                                          "verification_state")),
                                   "reusable": bool(
                                       (rec.get("machine_applicability") or {}
                                        ).get("machine_compatible"))}))
@@ -1367,6 +1382,7 @@ def _project_retrieval_for_provider(view: "RetrievalView") -> Dict[str, Any]:
                 for key in ("claim", "knowledge", "rule_body",
                             "machine_applicability",
                             "semantic_applicability",
+                            "verification_state",
                             "requires_agent_assessment", "adoption_state",
                             "adoption_note"):
                     if rec.get(key) is not None:
