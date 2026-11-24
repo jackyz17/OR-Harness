@@ -34,53 +34,80 @@ def _flat(text):
 
 
 class TestSelfCheckGuidance(unittest.TestCase):
-    """The Skill and command reference must express the two-layer check."""
+    """SKILL.md keeps the flow; the reference keeps the detail."""
 
     @classmethod
     def setUpClass(cls):
-        cls.skill = _flat(_read("SKILL.md"))
+        cls.skill_raw = _read("SKILL.md")
+        cls.skill = _flat(cls.skill_raw)
         cls.commands = _flat(_read("references/commands.md"))
         cls.closeout = _flat(_read("references/episode_closeout.md"))
+        cls.self_check = _flat(_read("references/self_check.md"))
+        cls.induction = _flat(_read("references/induction.md"))
 
-    def test_base_and_conditional_enhanced_layers_are_defined(self):
-        self.assertIn("Layer 1 — necessary base check", self.skill)
+    def test_skill_is_a_concise_flow_that_links_the_detail(self):
+        self.assertLessEqual(len(self.skill_raw.splitlines()), 280)
+        self.assertIn("references/self_check.md", self.skill)
+        for phrase in ("does the model correctly express the task",
+                       "base check",
+                       "enhanced check",
+                       "Do not run a complete independent re-solve as a "
+                       "default step for every task",
+                       "self-check done --> commit"):
+            self.assertIn(phrase, self.skill)
+        # Detailed lists, report fields and worked examples live in the
+        # reference, not in the always-loaded entry doc.
+        for detail in ("Layer 1 — necessary base check",
+                       "report.scope.unchecked",
+                       "two solvers agree on the same wrong model",
+                       "B018"):
+            self.assertNotIn(detail, self.skill)
+
+    def test_reference_defines_the_two_layers(self):
+        self.assertIn("Layer 1 — necessary base check", self.self_check)
         self.assertIn("Layer 2 — enhanced verification only when needed",
-                      self.skill)
+                      self.self_check)
         self.assertIn("These are check dimensions, not a fixed checklist",
-                      self.skill)
+                      self.self_check)
         self.assertIn("the objective and the quantity it actually optimises",
-                      self.skill)
+                      self.self_check)
         self.assertIn("feasibility of the returned solution against the "
-                      "original constraints", self.skill)
+                      "original constraints", self.self_check)
 
     def test_simple_task_does_not_default_to_a_full_resolve(self):
         self.assertIn("Do NOT run a complete independent re-solve as a default "
-                      "step for every task", self.skill)
+                      "step for every task", self.self_check)
         self.assertIn("This small task needs only the base check", self.skill)
-        self.assertIn("Do not run a complete independent re-solve as a default "
-                      "step", self.commands)
+        self.assertIn("do not default to a complete independent re-solve",
+                      self.commands)
 
     def test_complex_task_may_still_add_independent_verification(self):
         self.assertIn("when a second algorithm is genuinely how a complex "
-                      "problem gets a reliable answer, run it", self.skill)
+                      "problem gets a reliable answer, run it", self.self_check)
         self.assertIn("optimality cannot be confirmed from the available "
-                      "evidence", self.skill)
-        self.assertIn("an anomalous value", self.commands)
+                      "evidence", self.self_check)
+        self.assertIn("add an enhanced check only for a concrete reason",
+                      self.commands)
 
     def test_model_verification_is_not_task_verification(self):
         self.assertIn("a second solver solving the same wrong model can "
-                      "return the same wrong answer", self.skill)
-        self.assertIn("two solvers agree on the same wrong model", self.skill)
-        self.assertIn("A solver's `optimal` proves optimality for the model as "
-                      "written", self.commands)
+                      "return the same wrong answer", self.self_check)
+        self.assertIn("A second solver on the same wrong model still returns "
+                      "the wrong answer", self.skill)
+        self.assertIn("two solvers agree on the same wrong model",
+                      self.self_check)
+        self.assertIn("A solver's `optimal` proves only that the written "
+                      "model was solved", self.commands)
 
     def test_failed_check_and_checker_error_are_not_a_pass(self):
         self.assertIn("Never mark the self-check complete or passed when a "
                       "verification script raised or an assertion failed",
-                      self.skill)
+                      self.self_check)
         self.assertIn("A bad check, a broken verification script or missing "
                       "evidence is corrected and re-run on the SAME execution",
-                      self.skill)
+                      self.self_check)
+        self.assertIn("A failed or errored verification is evidence, not a "
+                      "pass", self.skill)
         self.assertIn("A `script_error` or `assertion_violations` result is NOT "
                       "a pass", self.commands)
         self.assertIn("a failed check or a broken verification script is "
@@ -88,15 +115,16 @@ class TestSelfCheckGuidance(unittest.TestCase):
                       self.closeout)
 
     def test_insufficient_is_neither_pass_nor_forced_resolve(self):
-        self.assertIn("It is neither a pass nor a failure, and it does not by "
-                      "itself require a complete re-solve", self.skill)
+        self.assertIn("neither a pass nor a failure, and not by itself a "
+                      "reason for a complete re-solve", self.skill)
         self.assertIn("an `insufficient` result is neither a pass nor a reason "
                       "to force a full re-solve", self.commands)
 
     def test_hplus_verification_is_not_a_second_task_requirement(self):
-        self.assertIn("They are not a second task requirement", self.skill)
+        self.assertIn("not a second task requirement", self.skill)
+        self.assertIn("They are not a second task requirement", self.self_check)
         self.assertIn("never run a second complete solve merely to make it "
-                      "show as checked", _read("references/induction.md"))
+                      "show as checked", self.induction)
         self.assertIn("rather than running a second complete solve just to show "
                       "it as checked", self.commands)
 

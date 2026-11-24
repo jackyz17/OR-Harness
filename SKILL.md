@@ -67,107 +67,55 @@ orx execute --task task.json --prediction P --code ws/solve.py --workspace ws
 
 ### 3b. Self-check the answer, then decide to repair, re-solve or commit
 
-After `execute`, return to the ORIGINAL task and check your own model, code and
-solution. A self-check answers two questions, in this order:
+After `execute`, return to the ORIGINAL task and answer two questions, in
+order: does the model correctly express the task, and does the actual result
+satisfy that model and the task? A solver's `optimal` proves only that the
+written model was solved; it does not prove the model is the task.
 
-1. Does the model correctly express the original task?
-2. Does the actual result correctly satisfy that model and the task?
-
-The solver's `optimal` status only says the model you wrote was solved. It does
-not prove that the model is the task, and adding more verification methods does
-not by itself make the check reliable. Choose the checks the task's real
-difficulty and uncertainty require, in two layers.
-
-**Layer 1 — necessary base check (every task).** Re-read the original statement
-and inputs and check, where they apply:
-
-- the objective and the quantity it actually optimises;
-- the meaning and domain of each decision variable (integer, binary, continuous, sign);
-- units — quantity, price, capacity, time — and the billing or cost range;
-- completeness of the key constraints, especially coupling or aggregation
-  relations that are easy to misread;
-- feasibility of the returned solution against the original constraints;
-- agreement of the objective value, constraint residuals and solver status;
-- for a task that needs an optimality argument: whether the available bound,
-  gap, dual or other evidence is enough.
-
-These are check dimensions, not a fixed checklist. A genuinely continuous
-problem needs no integer check, and a task with no time dimension needs no
-constructed time-constraint check. Base checks must produce real evidence —
-code review, recomputation of constraints, a short calculation, or the solver's
-own report — but they do not require a new verification script per item.
+Every task needs the base check on the objective, variable meaning and domain,
+units, key constraints, feasibility, and the agreement of objective value,
+constraint residuals and solver status. Add an enhanced check (enumeration,
+independent script, bound/dual, second exact algorithm or solver) only when
+there is a concrete reason: uncertain optimality, an anomalous value, an
+ambiguous constraint reading, a solver/independent disagreement, or a structure
+the base check cannot cover. Do not run a complete independent re-solve as a
+default step for every task.
 
 ```text
 candidate answer
    |
    v
-re-read the ORIGINAL task; run the base check on model meaning, domains,
-units, key constraints, feasibility and objective/residual/status agreement
+re-read the ORIGINAL task; base check the model, units, constraints, solution
+and solver report
    |
    v
-is there a concrete reason for enhanced verification?
-   |-- no --> read the evidence and decide
+concrete reason for enhanced verification? -- no --> read the evidence
    |-- yes
    v
-run ONE targeted independent check (enumeration, independent script,
-bound/dual, second exact algorithm or solver) and read its ACTUAL evidence
+run ONE targeted independent check and read the ACTUAL evidence
    |
    v
-locate the finding: the task reading? the model? the implementation?
-the recording? or the check itself?
+locate the finding: task reading? model? implementation? recording? the check?
    |
-   +-- check or evidence wrong/incomplete --> correct it and re-run
-   |                                          `check-task` on the SAME EX
-   +-- model/implementation wrong -----------> new `plan-next`, then execute
+   +-- check or evidence wrong/incomplete --> fix it and re-run on the SAME EX
+   +-- model/implementation wrong ----------> new `plan-next`, then execute
    |
    v
 self-check done --> commit (record the attempt, close the episode)
-   |
-   v
-the benchmark/reference comparison happens AFTER the commitment
 ```
 
-**Layer 2 — enhanced verification only when needed.** Options include a small
-enumeration, an independent verification script, a dual or bound argument, a
-second exact algorithm, a second solver, or another independent check suited to
-the structure. Use one only when there is a concrete reason, such as: optimality
-cannot be confirmed from the available evidence; the solution or objective looks
-anomalous; a constraint interpretation is genuinely ambiguous; the solver's
-return disagrees with an independent computation; the structure is complex
-enough that the base check cannot cover a key error; or a specific modelling
-assumption needs independent validation.
+A second solver on the same wrong model still returns the wrong answer: check
+the model-to-statement correspondence before trusting any independent
+verification. When the prediction has H+=1, its `verification_conditions` check
+the knowledge hypothesis, not a second task requirement; reuse evidence, record
+`not_checked`/`unavailable` when it cannot be checked, and never run a second
+complete solve just to make it show complete. See [self-check detail and
+examples](references/self_check.md) for the layer criteria, failure handling and
+worked cases.
 
-Do NOT run a complete independent re-solve as a default step for every task.
-This does not forbid independent verification: when a second algorithm is
-genuinely how a complex problem gets a reliable answer, run it. It forbids the
-automatic "another full solve per task" habit.
-
-**Verify the model, not only the solver.** Verification of the model is not
-verification of the task:
-
-- a solver's `optimal` proves optimality for the model as written, not that the
-  model matches the statement;
-- a second solver solving the same wrong model can return the same wrong answer;
-- a dual, enumeration or independent algorithm can prove a mathematical result
-  while sharing a wrong objective or constraint interpretation.
-
-Check the model-to-statement correspondence BEFORE relying on an independent
-numerical verification. No extra semantic-review tool or world-model call is
-needed for this.
-
-**H+ verification conditions are a separate check.** When the selected
-prediction has H+=1, its `verification_conditions` test the predicted knowledge
-hypothesis. They are not a second task requirement. Reuse the same evidence
-when it supports both. If the condition cannot be checked within a reasonable
-scope, record `not_checked`, `unavailable` or the protocol's unknown state; do
-not run a second complete solve just to make the condition show as complete.
-The offline review decides whether the evidence is sufficient.
-
-`check.json` declares only the deterministic checks the framework can compute.
-It is not the whole self-check, and a basis that does not apply to the task must
-NOT be declared merely for form: a genuinely continuous problem needs no
-`integer` check, and the framework does not infer that a missing declaration is
-an uncovered requirement. EX is `result.execution_id` from `execute`.
+`check.json` declares only the deterministic checks the framework can compute; it
+is not the whole self-check, and an inapplicable basis must not be declared for
+form. EX is `result.execution_id` from `execute`.
 
 ```bash
 orx check-task EX --check check.json [--verification verify.json]
@@ -176,44 +124,25 @@ orx record --from-staged EX
 
 Read `result.state`:
 
-- `passed`: the DECLARED checks held on the recorded values. It covers those
-  bases only, it is not a proof that the model matches the task, and it does
-  NOT stop you from planning a different candidate when your own review finds a
-  problem.
-- `failed`: a declared check found a violation. The framework does not decide
-  whether the task reading, the model, the code or the check itself is wrong.
-  Analyse which one it is. A bad check, a broken verification script or missing
-  evidence is corrected and re-run on the SAME execution; a new attempt is
-  planned only when the model or implementation is the real problem.
-- `insufficient`: the declared check could not decide. It is neither a pass nor
-  a failure, and it does not by itself require a complete re-solve.
+- `passed`: the declared checks held; not proof that the model matches the task,
+  and not a block on planning a different candidate.
+- `failed`: a declared check found a violation. Decide whether the task reading,
+  model, implementation or check is wrong; fix a bad check on the SAME
+  execution and re-plan only for a real model/implementation problem.
+- `insufficient`: neither a pass nor a failure, and not by itself a reason for a
+  complete re-solve.
 
-**Never mark the self-check complete or passed when a verification script
-raised or an assertion failed without handling it.** A failed verification is
-evidence about the model, the implementation, the task reading or the script;
-decide which, and act on that decision.
+A failed or errored verification is evidence, not a pass. Attach your own
+verification with `--verification`: it is captured as `agent_reported` evidence
+on the same execution, separate from the framework checks, and creates no
+solving attempt.
 
-`report.scope.note` states the checker's fixed scope; `report.checks` and
-`report.diffs` hold what actually ran and the numeric differences;
-`report.scope.unchecked` names only declared checks that could not run.
-`reflection_material` gives the task text/version reference, the candidate and
-performed method, the captured artifacts and solution (with references), the
-check report, any agent-run verification, and prior attempts as references.
-
-A verification you ran yourself can be attached to the same execution with
-`--verification`: the framework captures the script, output and result as
-artifacts and labels them `agent_reported`. They are kept separate from the
-framework checks — a satisfied assertion is your claim, not a framework verdict
-— and this path creates no solving attempt and overwrites no `result.json`.
-
-Record every real attempt and attach available host usage with
-`record --usage-file`. See [task-check fields](references/commands.md#5-execute-and-check)
-and [the self-check examples](#self-check-examples).
-
-Start at most three retries after the first execution, within the episode
-budget. Keep the same task and episode and obtain a fresh scored selection from
-`plan-next` before each NEW execution. A re-check or a corrected check on the
-same execution is not a new attempt and does not consume a retry.
+`reflection_material` carries the task reference, method, artifacts, solution,
+check report and prior attempts; read it before deciding. Record every real
+attempt with `record --usage-file`. Start at most three retries after the first
+execution; a re-check on the same execution is not a new attempt. See
+[self-check detail and examples](references/self_check.md) and
+[task-check fields](references/commands.md#5-execute-and-check).
 
 ### 4. Commit the answer and close the episode
 
@@ -266,7 +195,7 @@ orx induction-material --task T --induction-id J
 
 Compare the actual methods, task constraints, checked outcomes, and relevant existing rules. During this post-answer review, available reference answers, checker verdicts, or user correctness feedback can supply evidence; cite their sources and coverage. Form a conclusion about the reusable method and its supported scope, using a contrast, derivation, or small executable check as needed.
 
-A positive trigger schedules the review; it does not assert that knowledge was gained, and writing a rule is never required. A normal modelling/solving run, a method already covered by a published rule, or missing verification supports `no_new_knowledge`, `already_covered` or `insufficient_evidence`. Record what happened to the original hypothesis separately from the learning result with the existing `hypothesis_outcome` and `deviation_reason`; a later unrelated finding does not turn a refuted hypothesis into a supported one. Keep a durable rule decidable and executable at a future decision point: no benchmark answer, hidden-reference difference or post-hoc evaluation result may be part of its `when`.
+A positive trigger schedules the review, not a rule. The review may settle as `already_covered`, `no_new_knowledge` or `insufficient_evidence`, and it records the original hypothesis outcome separately from the learning result; durable rules must be decidable at a future decision point. See [review decisions](references/induction.md#review-decisions) and [durable knowledge](references/induction.md#durable-knowledge-must-be-usable-by-a-future-decision).
 
 Compare the frozen prediction with the actual execution and identify the affected premise, step, or execution condition when evidence supports it. Separate confirmed causes from hypotheses and unknowns. Keep attribution brief and sourced; see [G attribution evidence](references/episode_closeout.md#g-attribution-evidence). Post-answer reference feedback supports this review, not a return to solving or changing the committed answer.
 
@@ -321,60 +250,12 @@ and use `integer` on M and L plus `recompute_objective` with coefficients
 `{"M": 30, "L": 70}` only because the task states integer carts. If the
 declared checks pass but your own review finds the model wrong, still plan a
 new candidate; if a check/evidence is wrong, correct it on the same execution.
-This small task needs only the base check: the returned counts are the whole
-decision and recomputation covers the stated constraints, so do not add a
-second solver run.
-
-## Self-check examples
-
-These examples show the judgment the framework leaves to the agent: the tool
-gives numbers and references, not the decision.
-
-### B018 — a consistent answer with the wrong unit
-
-The task prices each chair at 50 and each order at 15 chairs, so one order in
-the objective is 15 × 50 = 750. Suppose the script used 50 per order and the
-solver reported a matching optimum. Recomputing the objective with the same
-wrong coefficient reproduces the same number: agreement proves the model is
-solved consistently, NOT that its unit is right. The self-check is to read the
-unit from the task, compute one order by hand (750), and compare it with the
-coefficient in the code. The framework's `recompute_objective` uses the
-coefficients the agent declares, so declaring the code's coefficient would
-just repeat the bug; either the model is corrected through a new `plan-next`,
-or the task's coefficient is declared and the difference is reported.
-
-### 0087 — a claimed optimum the evidence rejects
-
-A continuous LP was reported optimal at 20, while a grid search found feasible
-points near 17.725 and a dual bound near 17.714. The size of that difference is
-enough to review the corner calculation: with the task as stated (continuous,
-no integrality requirement), 17.714 has an optimality argument because the
-bound is achievable. Do not add an integer constraint because the reference
-value happens to be integral — the task is continuous, so the finding is a
-calculation/verification problem, not a missing domain. Record the bound or
-derivation as the optimality evidence; the agent decides that, not the tool.
-
-### 0312 — two solvers agree on the same wrong model
-
-A task asks to minimise total cost, but the script maximises revenue and then
-negates the number. A second solver reproduces the same value. The agreement
-proves the model is solved consistently; it proves nothing about the objective
-semantics. The base check is to read the objective from the task (what is
-minimised or maximised, in which unit) and compare it with the code before
-trusting any independent verification. If the objective is wrong, plan a new
-candidate; a more thorough verification of the same wrong model cannot fix it.
-
-### A failed verification script is not a pass
-
-If a verification script raises or an assertion fails, the self-check is not
-done. Decide whether the model, the implementation, the task reading or the
-verification script is wrong. A broken verification script or a bad check
-declaration is fixed and re-run on the SAME execution with `check-task`; it
-does not create a new solving attempt and it cannot be recorded as a pass.
+This small task needs only the base check; do not add a second solver run.
 
 ## References
 
 - [commands.md](references/commands.md) for CLI syntax, host usage, and recovery.
+- [self_check.md](references/self_check.md) for self-check layers, failure handling, and worked examples.
 - [episode_closeout.md](references/episode_closeout.md) for acceptance evidence, G feedback, and calibration.
 - [induction.md](references/induction.md) for H+ review dispatch, induction, publication, and existing rule use.
 - [world_model_contract.md](references/world_model_contract.md) for prediction inputs, forecast fields, and request audit.

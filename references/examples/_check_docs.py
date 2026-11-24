@@ -25,6 +25,7 @@ AGENT_FACING_DOCS = [
     "SKILL.md", "README.md", "README_zh.md",
     "references/commands.md", "references/concepts.md",
     "references/induction.md", "references/modeling.md",
+    "references/self_check.md",
     "references/world_model_contract.md",
     "references/strategy_outcome.md",
     "references/episode_closeout.md", "references/snapshot_lifecycle.md",

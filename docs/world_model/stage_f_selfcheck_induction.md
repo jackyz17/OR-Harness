@@ -26,8 +26,12 @@ not bound when an independent check is justified, and did not say how a failed
 or errored check is handled. `references/commands.md` repeated the same
 single-flow framing.
 
-After the change, §3b defines two layers and keeps the same `check-task`
-interface:
+After the change, `SKILL.md` §3b keeps the two questions, the base/enhanced
+decision, the flow and the `check-task` contract in a compact form (the entry
+doc went from 298 to 262 lines), while the detailed check lists, the
+model-vs-task explanation, failure handling and all worked examples live in the
+new [references/self_check.md](../../references/self_check.md). The
+`check-task` interface is unchanged. The substantive change:
 
 | Aspect | Before | After |
 |---|---|---|
@@ -41,14 +45,15 @@ interface:
 
 The flow diagram now asks "is there a concrete reason for enhanced
 verification?" and runs at most ONE targeted independent check before the same
-finding-location decision tree. Two new short examples make the distinction
-concrete: "two solvers agree on the same wrong model" and "a failed
-verification script is not a pass". The NL4Opt walkthrough now says the small
-exhaustive task needs only the base check and must not add a second solver run.
+finding-location decision tree. The reference adds two short examples for the
+new rules: "two solvers agree on the same wrong model" and "a failed
+verification script is not a pass"; the existing B018/0087 examples moved there
+as well. The NL4Opt walkthrough in `SKILL.md` now says the small exhaustive task
+needs only the base check and must not add a second solver run.
 
-`references/commands.md` §5 carries the same two-layer rule next to `execute`
-and `check-task`, and `references/episode_closeout.md` states that a framework
-`passed` covers only declared checks and that a failed check or broken
+`references/commands.md` §5 keeps a one-paragraph summary next to `execute` and
+links to the reference, and `references/episode_closeout.md` states that a
+framework `passed` covers only declared checks and that a failed check or broken
 verification is corrected on the same execution, never silently accepted.
 
 ## 2. H+ prediction — tightening the trigger
@@ -173,20 +178,23 @@ No contract, storage or scheduling change:
 
 Modified:
 
-- `SKILL.md` — §3b rewritten (two layers, model-vs-task, failure handling,
-  H+ verification separation); new self-check examples; §5 review standard;
-  NL4Opt base-check note.
+- `SKILL.md` — §3b compacted to the two questions, the base/enhanced decision,
+  the flow and the `check-task` contract (298 → 262 lines; detail moved out);
+  §5 review standard condensed with links; NL4Opt base-check note.
 - `src/or_harness/world_model/strategy_prediction.py` — the
   `STRATEGY_OUTCOME_SYSTEM_PROMPT` `capability_gain` instructions (prompt text
   only; no code path or schema change).
-- `references/commands.md` — §5 two-layer self-check, result-state analysis,
-  failed-verification and H+ verification notes.
+- `references/commands.md` — §5 keeps a one-paragraph self-check summary, the
+  result-state analysis and the failed-verification/H+ notes, and links to the
+  new reference.
 - `references/induction.md` — increment definition and non-triggers, cold-start
   nuance, review decisions, hypothesis/result separation, durable knowledge
   boundary, verification-claim matching, worked flows.
 - `references/concepts.md`, `references/world_model_contract.md`,
   `references/episode_closeout.md` — aligned H+ definition, review outcome and
   self-check/verification wording.
+- `README.md`, `README_zh.md`, `references/examples/_check_docs.py` — reference
+  map and agent-facing doc list include `self_check.md`.
 - `tests/harness/test_history_feedback_budget.py` — the end-to-end
   history-first fixture budget moved from 26,000 to 28,000 tokens (the system
   prompt grew ~1.7k chars; 26k had been within ~200 tokens of the send bound,
@@ -195,9 +203,14 @@ Modified:
 
 New:
 
-- `tests/harness/test_stage_f_selfcheck_induction.py` — 29 tests: self-check
-  guidance contract, H+ prompt contract, induction-review contract, receipt-level
-  review flows, and interface invariance.
+- `references/self_check.md` — the detailed self-check reference: two-layer
+  criteria, model-vs-task rules, H+ verification conditions, failed/insufficient
+  handling, report reading and all worked examples (B018, 0087, 0312, failed
+  verification script).
+- `tests/harness/test_stage_f_selfcheck_induction.py` — 30 tests: SKILL
+  conciseness/link contract, self-check reference contract, H+ prompt contract,
+  induction-review contract, receipt-level review flows, and interface
+  invariance.
 
 ## 6. Tests
 
@@ -206,7 +219,7 @@ Targeted regression run from the repo root with
 
 | Module | Result |
 |---|---|
-| `test_stage_f_selfcheck_induction` (new) | 29 / 29 OK |
+| `test_stage_f_selfcheck_induction` (new) | 30 / 30 OK |
 | `test_hplus_binary` + `test_induction_submission` + `test_hplus` + `test_hplus_experiments` | 53 / 53 OK |
 | `test_task_check` + `test_episode_closeout` + `test_offline_induction` + `test_r14_induction` | 130 / 130 OK |
 | `test_history_feedback_budget` | 25 / 25 OK |
@@ -214,7 +227,8 @@ Targeted regression run from the repo root with
 | `test_numbered_entries` + `test_r_technical` + `test_documented_result_keys` + `test_command_surface` | 175 ran; 171 OK, 4 pre-existing failures/errors on the clean base `c387cae` (verified in a separate worktree) |
 | `test_prediction_context` | 105 / 105 OK |
 | `test_strategy_outcome` + `test_stage_e_history_retrieval` | 108 / 108 OK |
-| `references/examples/_check_docs.py` | OK (flags, symbols, links, result keys) |
+| `references/examples/_check_docs.py` | OK (flags, symbols, links, result keys; includes `self_check.md`) |
+| `test_world_model_contract.TestDocumentationMatchesCode` | 2 / 2 OK |
 | `python -m py_compile` on the edited module | OK |
 
 Pre-existing failures confirmed on the clean base (`c387cae`), unrelated to
@@ -238,3 +252,7 @@ and two `test_command_surface.TestSameConventionCompletionCompares` tests.
   prevents an agent from ignoring a failed verification script, but the
   `script_error`/`assertion_violations` evidence and the close-out report make
   it visible, and the guidance now names it as a self-check failure.
+- `SKILL.md` stays a flow document: detailed criteria, report fields and worked
+  examples are in `references/self_check.md`, and a regression test enforces a
+  line budget plus the absence of the detailed material from the entry doc, so
+  future edits do not silently grow it again.

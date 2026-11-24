@@ -54,6 +54,7 @@ The first two exercise normal CLI planning, execution, checking, recording, clos
 | Need | Reference |
 |---|---|
 | Commands, result fields, configuration and compatibility/recovery paths | [commands.md](references/commands.md) |
+| Self-check layers, failure handling and worked examples | [self_check.md](references/self_check.md) |
 | Minimal input, modeling representation and CIR | [modeling.md](references/modeling.md) |
 | U permission, G/C/R, resource scales, missing terms and budgets | [strategy_outcome.md](references/strategy_outcome.md) |
 | Acceptance scope, terminal states, calibration and H+ dispatch | [episode_closeout.md](references/episode_closeout.md) |

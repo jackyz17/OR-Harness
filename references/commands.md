@@ -179,9 +179,7 @@ Use `--adapted-from` and `--adaptation` to cite past cases. Use `--used-entry-id
 
 Check original task requirements against a staged or recorded execution. `check-task` writes a `verify` action and `execution_features.task_check`. It never runs the solver again, so a corrected check or a late check on the same execution does not create a solving attempt or consume a retry.
 
-**Before answering** The self-check is the agent's, not the tool's. It answers two questions: does the model correctly express the original task, and does the actual result correctly satisfy that model and the task? Re-read the original task and inputs, then run the necessary base check: objective meaning, variable meaning and domain, units and billing range, key constraints (especially coupling relations), feasibility of the returned solution, agreement of objective/residuals/status, and whether an optimality argument is available when the task needs one. Add an enhanced check (small enumeration, independent script, bound/dual, second exact algorithm or solver) only when a concrete reason exists, such as uncertain optimality, an anomalous value, an ambiguous constraint reading, a solver/independent disagreement or a structure the base check cannot cover. Do not run a complete independent re-solve as a default step. `--check` declares ONLY the bases the framework can compute; it is not the whole self-check.
-
-A solver's `optimal` proves optimality for the model as written, not that the model matches the statement. A second solver on the same wrong model can return the same wrong answer, and a dual, enumeration or independent algorithm can prove a mathematical result that shares a wrong interpretation. Check the model-to-statement correspondence before relying on independent numerical verification.
+**Before answering** The self-check is the agent's, not the tool's: check the model against the original task, then check the result against both. A solver's `optimal` proves only that the written model was solved. Use the base check on every task and add an enhanced check only for a concrete reason; do not default to a complete independent re-solve, and check the model-to-statement correspondence before trusting a second algorithm or solver. See [self-check detail](self_check.md) for the two layers, failure handling and examples. `--check` declares ONLY the bases the framework can compute; it is not the whole self-check.
 
 | Check key | Use |
 |---|---|
@@ -192,7 +190,7 @@ A solver's `optimal` proves optimality for the model as written, not that the mo
 | `semantic_probe` | Apply `{path, equals\|min\|max\|in}` probes to recorded fields |
 | `intent` | Mark a `relaxation` or `intermediate` result |
 
-A useful deterministic check is not a proof that the model represents the task: `recompute_objective` with the coefficient you already used in the code can reproduce a unit error (see [the B018 example](../SKILL.md#self-check-examples)). The declared bases must come from the task's units and constraints.
+A useful deterministic check is not a proof that the model represents the task: `recompute_objective` with the coefficient you already used in the code can reproduce a unit error (see [the B018 example](self_check.md#b018--a-consistent-answer-with-the-wrong-unit)). The declared bases must come from the task's units and constraints.
 
 Read:
 
