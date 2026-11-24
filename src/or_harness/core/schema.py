@@ -103,12 +103,23 @@ LEGACY_PREDICTION_COST_DIMENSIONS: Tuple[str, ...] = (
     "latency_s",
 )
 
+#: Provisional resource preferences for the active four-dimensional C in U.
+#: These are engineering defaults, not fitted or experimentally optimal
+#: weights. Keep them separate from legacy raw-cost scalarization below.
+DEFAULT_PREDICTED_COST_WEIGHTS: Dict[str, float] = {
+    "remaining_latency_s": 1.0,
+    "output_tokens": 1.0,
+    "tool_calls": 0.5,
+    "retries": 0.5,
+}
+
 NON_CUMULATIVE_DIMENSIONS: Tuple[str, ...] = (
     "latency_s",
     "remaining_latency_s",
 )
 
-#: Default scalarization weights. Used only inside the selector; never at rest.
+#: Legacy raw-cost scalarization/reporting defaults; never stored as facts.
+#: Active strategy C uses DEFAULT_PREDICTED_COST_WEIGHTS independently.
 DEFAULT_COST_WEIGHTS: Dict[str, float] = {
     "llm_tokens": 1.0,
     "output_tokens": 1.0,

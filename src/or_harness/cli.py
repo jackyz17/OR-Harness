@@ -2303,7 +2303,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gamma", type=float, default=1.0, help="risk weight")
     parser.add_argument("--cost-weights", default=None,
                         help="per-dimension cost weights, e.g. "
-                             "'llm_tokens=1.0,retries=2.0'")
+                             "'remaining_latency_s=1,output_tokens=1,tool_calls=0.5,retries=0.5'")
     parser.add_argument("--delta", type=float, default=0.0,
                         help="legacy compatibility setting; formal strategy U uses G/C/R, "
                              "with H+ scheduling induction independently")

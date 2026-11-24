@@ -185,6 +185,8 @@ class Selector:
         # Cost weights are retained ONLY for the experiments runner's cost
         # accounting and for reporting which dimensions are comparable;
         # recall applies NO cost scalarization to rank candidates.
+        # Formal strategy C inherits ORHarness.cost_weights instead; these
+        # legacy defaults must not change with its resource preferences.
         self.cost_weights = dict(cost_weights or DEFAULT_COST_WEIGHTS)
 
     # -- public ----------------------------------------------------------------

@@ -19,7 +19,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from or_harness.core.schema import COST_DIMENSIONS, PREDICTED_COST_DIMENSIONS
+from or_harness.core.schema import (
+    COST_DIMENSIONS, DEFAULT_PREDICTED_COST_WEIGHTS, PREDICTED_COST_DIMENSIONS,
+)
 from or_harness.core.schema import chargeable_dimensions
 from or_harness.world_model.contracts import (
     FAITHFUL_G_CONVENTION, FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
@@ -661,10 +663,10 @@ def score_strategy_outcome_predictions(
     scales=cost_scales if cost_scales is not None else limits.cost_scales or {}
     if not isinstance(scales,dict):scales={}
     norms={};scale_sources={}
-    weights = dict(limits.cost_weights or {})
-    # The active C dimensions have their own weights. An old total-token
-    # weight is NOT reused as an output-token weight.
-    weights.setdefault("output_tokens", 1.0)
+    # Only an unspecified map receives defaults. Explicit partial/empty maps
+    # and zero weights must not acquire an implicit output-token charge.
+    weights = dict(DEFAULT_PREDICTED_COST_WEIGHTS
+                   if limits.cost_weights is None else limits.cost_weights)
     for dim in sorted(common):
         raw=scales.get(dim)
         info=copy.deepcopy(raw) if isinstance(raw,dict) else {'peak':raw,'source':'explicit_plan_limits'}
@@ -789,6 +791,7 @@ def score_strategy_outcome_predictions(
             "terms": (["G"] + (["C"] if basis else []) + (["R"] if use_r else [])) if reason is None else [],
             "cost_dimensions": basis, "cost_scales": dict(norms),
             "cost_weights": normalized_weights,
+            "cost_normalized_values": {},
             "cost_scale_sources":copy.deepcopy(scale_sources),
             "cost_normalization":"clip(log1p(predicted) / log1p(peak), 0, 1)",
             "utility_weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
@@ -817,8 +820,13 @@ def score_strategy_outcome_predictions(
             scores.append(score)
             continue
         score.benefit_value = float(prediction.benefit.value)
-        cost_value = sum(normalized_weights[d] * min(1.0,max(0.0,
-            math.log1p(float(getattr(prediction.cost.expected,d)))/math.log1p(norms[d]))) for d in basis)
+        normalized_values = {d: min(1.0, max(0.0,
+            math.log1p(float(getattr(prediction.cost.expected, d)))
+            / math.log1p(norms[d]))) for d in basis}
+        # Preserve full precision here so the existing score audit can
+        # reproduce C and U, each rounded only at its final output boundary.
+        score.scoring_basis["cost_normalized_values"] = normalized_values
+        cost_value = sum(normalized_weights[d] * normalized_values[d] for d in basis)
         score.cost_normalized = round(cost_value, 6) if basis else None
         if not basis:
             score.incomparable["cost"] = "no common same-scope valid cost dimensions; C omitted for all ranked candidates"

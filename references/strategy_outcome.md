@@ -79,15 +79,14 @@ to generate from this decision until task termination. The known task text and
 its length inform that forecast but are not generated-token cost. Later
 modelling, code, self-checks and expected repairs/retries are included. Raw
 `llm_tokens` remains input plus output for usage and budgets; old predictions
-keep that meaning and cannot supply the new token term. The existing token
-weight applies to `output_tokens` unless an explicit `output_tokens` weight is
-configured. Its scale must come from output-token history or an explicit
+keep that meaning and cannot supply the new token term. `output_tokens` has
+its own weight; an old `llm_tokens` weight does not supply it. Its scale must
+come from output-token history or an explicit
 `cost_scales.output_tokens`, never a total-token scale.
 
 Each retained dimension uses `clip(log1p(predicted_d)/log1p(peak_d),0,1)`.
 Positive `peak_d` comes from explicit `limits.cost_scales` / CLI `--cost-scales`,
-or the maximum trustworthy actual in pre-decision published conditional-cost
-global pre-decision remaining-task distribution frozen on the context (the p90
+or the global pre-decision remaining-task distribution frozen on the context (the p90
 of each dimension in `history_retrieval.global.c`). That population is the same
 for every participating candidate and uses no phase classification. The current
 candidate costs and current planning spend never set the peak. A scalar explicit peak is a declared resource scale; a structured
@@ -99,6 +98,105 @@ and explains why. Existing positive dimension weights are normalized over the
 retained set. Scores preserve raw resources, normalized C, scales, sources,
 weights, actual terms and omissions. Candidate costs do not change another
 candidate's same-dimension normalized value.
+
+### C resource weights and explicit overrides
+
+The active default is `DEFAULT_PREDICTED_COST_WEIGHTS` in `core/schema.py`.
+These are **provisional engineering resource preferences**, not weights fitted
+to execution data and not an experimentally optimal configuration. Remaining
+time and generated tokens receive the largest shares; tool calls retain an
+independent charge, and retries retain a smaller share because their resource
+use can also appear in the other dimensions.
+
+| Dimension | Previous raw weight | Current raw weight | Current share with all four valid |
+|---|---:|---:|---:|
+| `remaining_latency_s` | 0.1 | 1.0 | 1/3 |
+| `output_tokens` | 1.0 | 1.0 | 1/3 |
+| `tool_calls` | 0.2 | 0.5 | 1/6 |
+| `retries` | 2.0 | 0.5 | 1/6 |
+
+For the common valid dimension set D, `w_d = raw_weight_d / sum(raw_weight_j
+for j in D)` and `C = sum(w_d * normalized_d for d in D)`. C stays in [0,1].
+Removing an unknown, invalid, differently scoped, unscaled or nonpositively
+weighted dimension removes it for every ranked candidate and renormalizes the
+remaining positive weights. No common valid dimensions means `C = null` and
+the C term is omitted from U. Clipping and six-decimal output rounding can
+produce ties; componentwise lower costs cannot produce a higher C on the same
+valid dimensions, scales and nonnegative weights.
+
+Precedence is an explicit `PlanLimits.cost_weights` / `plan_next(limits=...)`
+map, then `ORHarness(cost_weights=...)` / global CLI `--cost-weights`, then the
+four-dimensional default. Direct `score_strategy_outcome_predictions` calls
+use the same default when `PlanLimits.cost_weights is None`. An explicit map
+**replaces** the default: unspecified dimensions get no positive weight, a
+zero disables that dimension, and an explicit `{}` disables C. No output-token
+weight is silently added to a supplied map. These settings change only C's
+contribution to U; alpha/beta/gamma and H+ keep their existing meanings.
+
+For example, switch between the default and the previous preference using the
+existing CLI option (put global options before `plan-next`):
+
+```bash
+orx --cost-weights remaining_latency_s=1,output_tokens=1,tool_calls=0.5,retries=0.5 \
+  plan-next --task task.json --episode E --candidates candidates.json
+orx --cost-weights remaining_latency_s=0.1,output_tokens=1,tool_calls=0.2,retries=2 \
+  plan-next --task task.json --episode E --candidates candidates.json
+```
+
+Legacy `DEFAULT_COST_WEIGHTS`, `CostVector.scalarize()` and the selector's
+legacy cost-reporting defaults are unchanged. The active planner inherits
+`ORHarness.cost_weights` independently of `Selector.cost_weights`. Historical
+prediction/observation formats and measurements are unchanged; no old records
+are rewritten by changing a preference.
+
+### Scoring audit and synthetic arithmetic checks
+
+Each `candidates[].score` and `selected_score` carries the following audit.
+The CLI nests candidates under `result.plan`; the Python plan returns them
+directly. `selected_prediction_id` and `execution_allowed` identify the chosen
+candidate, while `execution_refusal_reason` explains the others.
+
+| Field in a score | Meaning |
+|---|---|
+| `cost_reported.values` | Raw declared active C predictions; absent/invalid dimensions remain unknown |
+| `scoring_basis.cost_dimensions` | Common valid dimensions actually charged |
+| `scoring_basis.cost_normalized_values` | Per-dimension clipped log1p values, at full calculation precision; omitted dimensions have no value |
+| `scoring_basis.cost_scales`, `cost_scale_sources` | Peaks and their explicit or pre-decision provenance |
+| `scoring_basis.cost_weights` | Positive weights renormalized over the charged dimensions |
+| `scoring_basis.omitted_cost_dimensions`, `incomparable` | Reasons that reported dimensions or whole terms could not be used |
+| `cost_normalized` | Aggregated C, rounded to six decimals; null when unavailable |
+| `benefit_value`, `risk_effective`, `scoring_basis.utility_weights`, `utility` | G, R, alpha/beta/gamma and final U |
+
+Recompute C from the full-precision normalized values and weights. Recompute U
+from that **unrounded** C and the reported G/R and external coefficients,
+omitting unavailable terms; round C and U separately to six decimals at the
+end. No new persistent log or database schema is needed.
+
+The following are **synthetic fixtures only**, from
+`tests/harness/test_c_aggregation_weights.py`. Fixed peaks in the dimension
+order above are `(99, 9999, 15, 3)`; G=0.8, R=0.2 and alpha=beta=gamma=1.
+These deliberately constructed resource combinations test arithmetic, not
+whether any real solving workflow has these costs.
+
+| Synthetic candidate | Raw four-dimensional costs | Normalized costs | Previous C | Current C | Previous U | Current U |
+|---|---|---|---:|---:|---:|---:|
+| A | `(9, 99, 3, 0)` | `(0.5, 0.5, 0.5, 0)` | 0.196970 | 0.416667 | 0.403030 | 0.183333 |
+| B | `(0, 0, 0, 3)` | `(0, 0, 0, 1)` | 0.606061 | 0.166667 | -0.006061 | 0.433333 |
+
+The previous preference selects A; the current preference selects B. Neither
+dominates the other in all dimensions. With beta=0 both have U=0.6 under
+either preference, and the existing stable tie rule applies. Missing retries
+on one candidate removes retries for both and gives the current remaining
+weights `(0.4, 0.4, 0.2)`; absent scales omit C rather than deriving peaks from
+these predictions. Tests also cover per-dimension monotonicity, dominance,
+explicit empty/partial/zero overrides, single/multiple candidate agreement,
+audit recomputation and unchanged legacy reads.
+
+Real data must still validate resource preferences, sensitivity of selection
+to weights/scales and overlap among retries, time, tokens and tool calls. The
+synthetic checks establish no success-rate or measured resource advantage;
+the separate experiment environment performs the real-data and eight-task
+acceptance work.
 
 `result.selected_prediction_id` and `result.selected_score` are nullable.
 `result.plan.candidates[]` includes each original P, score, frozen candidate

@@ -19,6 +19,7 @@ from or_harness.adapters.solver import available_families, probe_all
 from or_harness.core.schema import (
     StrategicEntry,
     COST_DIMENSIONS,
+    DEFAULT_PREDICTED_COST_WEIGHTS,
     NON_CUMULATIVE_DIMENSIONS,
     CostVector,
     ExecutionRecord,
@@ -247,6 +248,11 @@ class ORHarness:
         # discovers material. They are kept on the harness so the planner
         # defaults can read them.
         self.alpha, self.beta, self.gamma = alpha, beta, gamma
+        # Formal C has its own four-dimensional defaults. The selector keeps
+        # its legacy reporting weights, so changing C does not change raw
+        # cost reports. An explicit map, including {}, replaces the defaults.
+        self.cost_weights = dict(DEFAULT_PREDICTED_COST_WEIGHTS
+                                 if cost_weights is None else cost_weights)
         self.bank = ExperienceBank(self.store)
         self.sbank = StrategicBank(self.store)
         self.stats = ConditionalStats(self.bank)
@@ -3279,7 +3285,7 @@ class ORHarness:
         if limits.gamma is None:
             limits.gamma = self.gamma
         if limits.cost_weights is None:
-            limits.cost_weights = dict(self.selector.cost_weights)
+            limits.cost_weights = dict(self.cost_weights)
         # Retain legacy experiment settings in the record; they do not
         # enter the one-step G/C/R utility.
         if limits.delta is None:
