@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from or_harness.core.schema import (
-    COST_DIMENSIONS, DEFAULT_PREDICTED_COST_WEIGHTS, PREDICTED_COST_DIMENSIONS,
+    COST_DIMENSIONS, DEFAULT_PREDICTED_COST_WEIGHTS,
+    LEGACY_PREDICTION_COST_DIMENSIONS, PREDICTED_COST_DIMENSIONS,
 )
 from or_harness.core.schema import chargeable_dimensions
 from or_harness.world_model.contracts import (
@@ -578,6 +579,34 @@ def resolve_benefit_convention(predictions: List[Any], *, kind: Any = None,
     }
 
 
+def _legacy_cost_weight_diagnostic(weights: Dict[str, float]
+                                   ) -> Optional[Dict[str, Any]]:
+    """Explain ignored legacy configuration without changing the yardstick."""
+    ignored = sorted(set(weights) & set(LEGACY_PREDICTION_COST_DIMENSIONS))
+    if not ignored:
+        return None
+    positive = sorted(d for d in PREDICTED_COST_DIMENSIONS
+                      if isinstance((value := weights.get(d)), (int, float))
+                      and not isinstance(value, bool)
+                      and math.isfinite(value) and value > 0)
+    missing = sorted(set(PREDICTED_COST_DIMENSIONS) - set(positive))
+    return {
+        "ignored_legacy_dimensions": ignored,
+        "positive_active_dimensions": positive,
+        "active_dimensions_without_positive_weight": missing,
+        "message": (
+            "Warning: legacy cost-weight dimensions are ignored by active C: "
+            + ", ".join(ignored) + ". Positive active configured dimensions "
+            + f"({len(positive)}/{len(PREDICTED_COST_DIMENSIONS)}): "
+            + (", ".join(positive) or "none")
+            + ". Active dimensions without a positive configured weight: "
+            + (", ".join(missing) or "none")
+            + ". Explicit weights still replace defaults; no weights were "
+              "added. Charged dimensions depend on common valid predictions "
+              "and independent scales; see scoring_basis.cost_dimensions."),
+    }
+
+
 def score_strategy_outcome_predictions(
         predictions: List[Any], limits: PlanLimits, *, cost_scales=None
         ) -> List[StrategyOutcomeScore]:
@@ -667,6 +696,7 @@ def score_strategy_outcome_predictions(
     # and zero weights must not acquire an implicit output-token charge.
     weights = dict(DEFAULT_PREDICTED_COST_WEIGHTS
                    if limits.cost_weights is None else limits.cost_weights)
+    weight_diagnostic = _legacy_cost_weight_diagnostic(weights)
     for dim in sorted(common):
         raw=scales.get(dim)
         info=copy.deepcopy(raw) if isinstance(raw,dict) else {'peak':raw,'source':'explicit_plan_limits'}
@@ -815,6 +845,9 @@ def score_strategy_outcome_predictions(
             "partial": not basis or not use_r or any(v["reason"] != "component deduplicated on common dimensions"
                                                     for v in omitted_dims.values()),
         }
+        if weight_diagnostic is not None:
+            score.scoring_basis["cost_weight_diagnostic"] = copy.deepcopy(weight_diagnostic)
+            score.notes.append(weight_diagnostic["message"])
         if reason is not None:
             score.incomparable["prediction" if prediction.status != "valid" else "benefit"] = reason
             scores.append(score)

@@ -1887,6 +1887,14 @@ def cmd_plan_next(args) -> int:
             ids = ", ".join(f"{sid}={c.get('prediction_id')}"
                             for sid, c in by_strategy.items())
             parts.append(f"Predictions: {ids}.")
+        weight_warnings = []
+        for candidate in compared:
+            diagnostic = ((candidate.get("score") or {}).get("scoring_basis")
+                          or {}).get("cost_weight_diagnostic") or {}
+            message = diagnostic.get("message")
+            if message and message not in weight_warnings:
+                weight_warnings.append(message)
+        parts.extend(weight_warnings)
         selected=plan.get('selected_prediction_id')
         score=plan.get('selected_score') or {}
         if selected:

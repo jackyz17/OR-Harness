@@ -182,6 +182,56 @@ class TestSyntheticCAggregation(unittest.TestCase):
                     self.assertEqual(score.utility, 0.6)
                     self.assertEqual(score.scoring_basis["cost_normalized_values"], {})
 
+    def test_legacy_only_weight_config_warns_without_enabling_c_or_blocking_u(self):
+        weights = {"llm_tokens": 1, "solver_runtime_s": 0.5, "latency_s": 0.1}
+        score = synthetic_scores([synthetic_prediction()], cost_weights=weights)[0]
+        diagnostic = score.scoring_basis["cost_weight_diagnostic"]
+        self.assertEqual(diagnostic["ignored_legacy_dimensions"], sorted(weights))
+        self.assertEqual(diagnostic["positive_active_dimensions"], [])
+        self.assertEqual(diagnostic["active_dimensions_without_positive_weight"],
+                         sorted(PREDICTED_COST_DIMENSIONS))
+        self.assertIn(diagnostic["message"], score.notes)
+        self.assertEqual(score.scoring_basis["cost_dimensions"], [])
+        self.assertEqual(score.scoring_basis["cost_weights"], {})
+        self.assertIsNone(score.cost_normalized)
+        self.assertEqual(score.utility, 0.6)
+
+    def test_mixed_legacy_weights_warn_and_still_price_only_retries(self):
+        predictions = [synthetic_prediction("a"),
+                       synthetic_prediction("b", SYNTHETIC_B)]
+        weights = {"llm_tokens": 1, "retries": 2}
+        before = copy.deepcopy(weights)
+        mixed = synthetic_scores(predictions, cost_weights=weights)
+        active_only = synthetic_scores(predictions, cost_weights={"retries": 2})
+        self.assertEqual([s.cost_normalized for s in mixed], [0.0, 1.0])
+        self.assertEqual([s.utility for s in mixed], [s.utility for s in active_only])
+        self.assertEqual(weights, before)
+        for score in mixed:
+            diagnostic = score.scoring_basis["cost_weight_diagnostic"]
+            self.assertEqual(diagnostic["ignored_legacy_dimensions"], ["llm_tokens"])
+            self.assertEqual(diagnostic["positive_active_dimensions"], ["retries"])
+            self.assertEqual(len(diagnostic["active_dimensions_without_positive_weight"]), 3)
+            self.assertEqual(score.scoring_basis["cost_weights"], {"retries": 1.0})
+
+    def test_intentional_active_partial_or_empty_maps_have_no_migration_warning(self):
+        for weights in (None, {}, {"retries": 2}, OLD_WEIGHTS, NEW_WEIGHTS):
+            with self.subTest(weights=weights):
+                score = synthetic_scores([synthetic_prediction()], cost_weights=weights)[0]
+                self.assertNotIn("cost_weight_diagnostic", score.scoring_basis)
+
+    def test_migration_diagnostic_does_not_claim_configured_dimensions_are_charged(self):
+        for retries in (0, 2):
+            with self.subTest(retries=retries):
+                score = synthetic_scores([synthetic_prediction()], cost_scales={},
+                                         cost_weights={"llm_tokens": 1, "retries": retries})[0]
+                diagnostic = score.scoring_basis["cost_weight_diagnostic"]
+                self.assertEqual(diagnostic["positive_active_dimensions"],
+                                 ["retries"] if retries else [])
+                self.assertEqual(score.scoring_basis["cost_dimensions"], [])
+                self.assertEqual(score.scoring_basis["cost_weights"], {})
+                self.assertIsNone(score.cost_normalized)
+                self.assertEqual(score.utility, 0.6)
+
     def test_nonpositive_or_invalid_weights_are_omitted_without_penalty(self):
         for weight in (0, -1, True, float("nan"), float("inf")):
             with self.subTest(weight=weight):
@@ -212,6 +262,8 @@ class TestSyntheticCAggregation(unittest.TestCase):
             self.assertEqual(score.utility, 0.6)
             self.assertEqual(score.scoring_basis["cost_weights"], {})
             self.assertEqual(score.scoring_basis["cost_scales"], {})
+            self.assertEqual(score.scoring_basis["cost_scale_sources"], {})
+            self.assertEqual(score.scoring_basis["cost_normalized_values"], {})
             self.assertEqual(score.scoring_basis["terms"], ["G", "R"])
             for dim in PEAKS:
                 self.assertIn("scale", score.scoring_basis[
@@ -311,6 +363,10 @@ class TestSyntheticCAggregation(unittest.TestCase):
         self.assertEqual({d: s["peak"] for d, s in scales.items()}, PEAKS)
         self.assertTrue(all(s["source"] == "pre_decision_measured_history"
                             for s in scales.values()))
+        scored = synthetic_scores([synthetic_prediction()], cost_scales=scales)[0]
+        self.assertEqual(set(scored.scoring_basis["cost_dimensions"]), set(PEAKS))
+        self.assertTrue(all(s["source"] == "pre_decision_measured_history" for s
+                            in scored.scoring_basis["cost_scale_sources"].values()))
         self.assertEqual(scales, decision_cost_scales(context, []))
         override = decision_cost_scales(context, candidates, {"tool_calls": 31})
         self.assertEqual(override["tool_calls"]["peak"], 31)
@@ -393,6 +449,31 @@ class TestSyntheticCWeightPlanning(unittest.TestCase):
         self.assertIsNone(plan["selected_score"]["cost_normalized"])
         self.assertEqual(plan["selected_score"]["utility"], 0.6)
 
+    def test_plan_override_controls_diagnostics_for_legacy_harness_configuration(self):
+        weights = {"llm_tokens": 1, "retries": 2}
+        harness, _ = self.harness(cost_weights=weights)
+        inherited = self.plan(harness)
+        self.assertIn("cost_weight_diagnostic", inherited["selected_score"]["scoring_basis"])
+        overridden = self.plan(harness, cost_weights=NEW_WEIGHTS)
+        self.assertNotIn("cost_weight_diagnostic", overridden["selected_score"]["scoring_basis"])
+        self.assertEqual(inherited["limits"]["cost_weights"], weights)
+        self.assertEqual(overridden["limits"]["cost_weights"], NEW_WEIGHTS)
+
+    def test_empty_history_without_explicit_scales_reports_inactive_c(self):
+        harness, _ = self.harness()
+        plan = self.plan(harness, cost_scales={})
+        self.assertEqual(plan["limits"]["cost_weights"], NEW_WEIGHTS)
+        for candidate in plan["candidates"]:
+            score = candidate["score"]
+            basis = score["scoring_basis"]
+            self.assertIsNone(score["cost_normalized"])
+            self.assertEqual(score["utility"], 0.6)
+            self.assertEqual(basis["terms"], ["G", "R"])
+            for key in ("cost_dimensions", "cost_scale_sources", "cost_weights"):
+                self.assertFalse(basis[key])
+            for dim in PEAKS:
+                self.assertIn("scale", basis["omitted_cost_dimensions"][dim]["reason"])
+
     def test_harness_external_coefficients_and_beta_zero_are_preserved(self):
         harness, _ = self.harness(alpha=0.7, beta=0.0, gamma=0.3)
         old = self.plan(harness, cost_weights=OLD_WEIGHTS)
@@ -456,6 +537,46 @@ class TestSyntheticCWeightPlanning(unittest.TestCase):
                         for d in basis["cost_dimensions"])
                 self.assertEqual(score["cost_normalized"], round(c, 6))
                 self.assertEqual(score["utility"], round(0.8 - c - 0.2, 6))
+
+    def test_cli_legacy_warning_is_nonblocking_visible_once_and_preserves_config(self):
+        from or_harness import cli
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        provider = SyntheticProvider()
+
+        def build_harness(**kwargs):
+            return ORHarness(**{**kwargs, "world_model": provider,
+                                "embedding": LocalHashEmbeddingBackend()})
+
+        for weights in ({"llm_tokens": 1}, {"llm_tokens": 1, "retries": 2}):
+            for scales in ({}, PEAKS):
+                with self.subTest(weights=weights, scales=scales):
+                    output = io.StringIO()
+                    args = ["--home", temporary.name, "--cost-weights",
+                            ",".join(f"{d}={w}" for d, w in weights.items()),
+                            "plan-next", "--task", json.dumps({
+                                "task_id": "synthetic-migration", "family": "synthetic",
+                                "text": "Synthetic legacy-weight diagnostic fixture."}),
+                            "--candidates", json.dumps([
+                                {"strategy_id": "a"}, {"strategy_id": "b"}]),
+                            "--cost-scales", json.dumps(scales)]
+                    with patch.object(cli, "ORHarness", side_effect=build_harness), \
+                            contextlib.redirect_stdout(output):
+                        status = cli.main(args)
+                    self.assertEqual(status, 0, output.getvalue())
+                    response = json.loads(output.getvalue())
+                    result = response["result"]
+                    score = result["selected_score"]
+                    diagnostic = score["scoring_basis"]["cost_weight_diagnostic"]
+                    self.assertEqual(response["summary"].count(diagnostic["message"]), 1)
+                    self.assertEqual(result["plan"]["limits"]["cost_weights"], weights)
+                    self.assertIsNotNone(result["selected_prediction_id"])
+                    if not scales or "retries" not in weights:
+                        self.assertIsNone(score["cost_normalized"])
+                        self.assertEqual(score["utility"], 0.6)
+                    else:
+                        self.assertEqual(score["scoring_basis"]["cost_weights"],
+                                         {"retries": 1.0})
 
 
 if __name__ == "__main__":

@@ -133,6 +133,21 @@ zero disables that dimension, and an explicit `{}` disables C. No output-token
 weight is silently added to a supplied map. These settings change only C's
 contribution to U; alpha/beta/gamma and H+ keep their existing meanings.
 
+Before an experiment, check the actual launch script and Python configuration
+for old explicit overrides. Remove the override (or use `cost_weights=None`)
+to use the current default; `{}` disables C and is not a request for defaults.
+For example, `--cost-weights llm_tokens=1,retries=2` still gives retries all of
+the positive active weight when retries has valid predictions and a scale.
+It does not activate the new four-dimensional preference. A map containing
+only `llm_tokens`, `solver_runtime_s` or `latency_s` gives no active C weight.
+
+Such legacy keys now produce a **nonblocking**
+`scoring_basis.cost_weight_diagnostic` and a note, also shown once in the CLI
+summary. It names ignored legacy keys, positive active **configured**
+dimensions and active dimensions without a positive configured weight. It
+does not migrate, merge, reject or replace the supplied map. Intentional
+active-only partial maps and explicit empty maps keep their existing behavior.
+
 For example, switch between the default and the previous preference using the
 existing CLI option (put global options before `plan-next`):
 
@@ -164,6 +179,7 @@ candidate, while `execution_refusal_reason` explains the others.
 | `scoring_basis.cost_scales`, `cost_scale_sources` | Peaks and their explicit or pre-decision provenance |
 | `scoring_basis.cost_weights` | Positive weights renormalized over the charged dimensions |
 | `scoring_basis.omitted_cost_dimensions`, `incomparable` | Reasons that reported dimensions or whole terms could not be used |
+| `scoring_basis.cost_weight_diagnostic`, `notes` | Nonblocking migration warning when legacy weight keys are present; configured dimensions are distinct from charged dimensions |
 | `cost_normalized` | Aggregated C, rounded to six decimals; null when unavailable |
 | `benefit_value`, `risk_effective`, `scoring_basis.utility_weights`, `utility` | G, R, alpha/beta/gamma and final U |
 
@@ -171,6 +187,23 @@ Recompute C from the full-precision normalized values and weights. Recompute U
 from that **unrounded** C and the reported G/R and external coefficients,
 omitting unavailable terms; round C and U separately to six decimals at the
 end. No new persistent log or database schema is needed.
+
+For each decision in the experiment report, retain `selected_prediction_id`,
+the actual `plan.limits.cost_weights` and each candidate's existing score
+audit. Record the effective `cost_dimensions`, `omitted_cost_dimensions`,
+`cost_weights`, `cost_scale_sources` and whether `terms` contains C. A retained
+scale with `source=pre_decision_measured_history` uses the frozen history p90;
+`source=explicit_plan_limits` uses an explicit scale. Inspect these sources
+per dimension, since one decision can mix them.
+
+An empty history with no explicit scales gives `cost_dimensions=[]`,
+`cost_scale_sources={}`, `cost_weights={}` and `cost_normalized=null`; C is
+absent from `terms` and U uses the remaining comparable terms. Even positive
+configured weights cannot affect that decision. With only some valid scales,
+the effective dimensions and renormalized weights can differ from the full
+default profile. Report this coverage before attributing any early-task
+selection to the new weights. No cold-start scale or candidate-derived peak
+is introduced.
 
 The following are **synthetic fixtures only**, from
 `tests/harness/test_c_aggregation_weights.py`. Fixed peaks in the dimension
