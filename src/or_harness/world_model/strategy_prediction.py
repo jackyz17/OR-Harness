@@ -1742,6 +1742,17 @@ class StrategyOutcomeService:
         header = self.store.loads(header_raw) if header_raw else {}
         refs = {row.get("identity"): row.get("value_ref") for row in header.get("evidence_versions", [])}
         sent = request.get("prediction_context") or {}
+        sent_history = sent.get("history_retrieval") or {}
+        # The frozen context's history_retrieval.config is authoritative.
+        # Its provider view is flat: copy the configuration ACTUALLY SENT,
+        # rather than looking for an absent config child or recomputing it
+        # from today's backend/environment. Case bodies are not copied here.
+        sent_history_config = {
+            key: copy.deepcopy(sent_history[key]) for key in (
+                "backend_model_id", "max_local_cases", "pool_size",
+                "similarity_thresholds", "method_similarity_threshold",
+                "threshold_verified", "threshold_sources")
+            if key in sent_history}
         info["input_selection"] = {
             "evidence": [{"identity": hit.get("identity"), "version_ref": refs.get(hit.get("identity")),
                           "version": hit.get("version")}
@@ -1754,9 +1765,12 @@ class StrategyOutcomeService:
             # request (not merely what the stored context contains): the
             # status/config/accounting plus the local-case counts per signal.
             "history_selection": {
-                "retrieval": {key: copy.deepcopy(
-                    (sent.get("history_retrieval") or {}).get(key))
-                    for key in ("version", "status", "config", "accounting")},
+                "retrieval": {
+                    **{key: copy.deepcopy(sent_history.get(key))
+                       for key in ("version", "status", "accounting")},
+                    "config": sent_history_config,
+                    "config_source": "prediction_context.history_retrieval (actual sent projection)",
+                },
                 "g": copy.deepcopy((sent.get("g_candidate_evidence") or {}).get("selection")),
                 "c": copy.deepcopy((sent.get("cost_evidence") or {}).get("reference_coverage")),
                 "r": copy.deepcopy((sent.get("implementation_r_evidence") or {}).get("selection")),

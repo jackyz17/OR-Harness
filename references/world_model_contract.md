@@ -38,6 +38,25 @@ A new decision can draw on published calibration and completed reviews available
 
 Request selection preserves missing support as unknown and marks background or partial evidence.
 
+The authoritative history-retrieval configuration is frozen at
+`PredictionContext.history_retrieval.config` and retained with the original
+active runtime input. Its actual provider projection is flat under the
+request's `prediction_context.history_retrieval`. The saved prediction's
+`trace.model_info.input_selection.history_selection.retrieval.config` copies
+the fields **actually sent**: backend model id, local-case/pool limits, the
+three admission thresholds, the separate method-relevance threshold,
+verification flag and all four threshold sources. It is a compact projection,
+not a second configuration computed from live environment variables;
+`config_source` identifies its source. The full `threshold_basis`, backend
+source and fallback diagnostics remain in the frozen configuration. After
+runtime-input expiry the saved prediction still retains the sent projection.
+
+The same audit retains retrieval status and admission/pool accounting. Its
+G/R selection counts and C reference coverage copy the final request after
+budget trimming. Use these together to distinguish unverified thresholds,
+an unavailable index, admissions, and delivered/omitted cases. No case bodies
+are duplicated in the configuration audit, and request budgets are unchanged.
+
 The history block (`prediction_execution_pairs`) is delivered through a provider-only compact view derived on every read; the stored block and calibration database are unchanged. Each pair keeps its task conditions, the recorded plan/actual method difference, the original prediction, the real observation, the error, the recorded attribution, the G/C/R metric and observation-rule versions, eligibility/unknown/comparability facts, and a `detail_ref` that restores every reduced field. A crash keeps no observed G (never zero) and an unknown risk label stays unknown. Free-text and audit scaffolding are replaced by references before any case is dropped; cases are dropped only from the tail of the relevance order, and every dropped case is reported with its inspect reference.
 
 Three independent provider-only ceilings apply: history feedback (`OR_HARNESS_HISTORY_FEEDBACK_CHARS`, default 30000), G/C/R evidence (`OR_HARNESS_GCR_EVIDENCE_CHARS`, default 24000 after the local-case ceiling rose to 10 per signal) and other non-core material (`OR_HARNESS_NONCORE_CHARS`, default 20000). The WHOLE request (system prompt + JSON body) is then measured against `OR_HARNESS_INPUT_BUDGET_TOKENS`; the provider's own `count_tokens` is used when exposed, otherwise a labelled conservative estimate counts CJK/JSON-dense text more heavily than `chars/4`. On overflow the history feedback is reduced first, then other non-core blocks, then G/C/R evidence; the current task, candidate, execution constraints and prediction contract are never truncated. If that protected core alone exceeds the bound the request is NOT sent: the prediction is recorded as invalid with `failure.kind=request_over_budget` and its size diagnostics. Inspect `request_size` (`tokens`, `token_basis`, `trimming`, `sendable`, `over_budget`) and `request_omissions` on the saved prediction. See [published feedback and calibration](episode_closeout.md#published-feedback) and [H+ learning labels](induction.md#read-publication-completion-and-learning-separately) for the observation rules.

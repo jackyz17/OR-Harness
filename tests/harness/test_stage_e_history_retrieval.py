@@ -752,7 +752,7 @@ class TestEndToEndHistory(GCase):
         self.close_g("ep1")
         # A DIFFERENT method on the same task: the problem view must still
         # surface the past attempt (similarity is not a method-identity gate).
-        self.predict_g(SPLIT, episode="ep2")
+        prediction = self.predict_g(SPLIT, episode="ep2")
         context = self.provider.requests[-1]["prediction_context"]
         history = context["history_retrieval"]
         self.assertEqual(history["status"], "ok")
@@ -772,6 +772,15 @@ class TestEndToEndHistory(GCase):
         c_block = context["cost_evidence"]
         self.assertIn("global_cost", c_block)
         self.assertEqual(c_block["current_conditions"]["phase_used"], False)
+        audit = prediction.trace.model_info["input_selection"]["history_selection"]
+        self.assertTrue(audit["retrieval"]["config"])
+        self.assertEqual(audit["retrieval"]["accounting"], history["accounting"])
+        self.assertEqual(audit["retrieval"]["status"], "ok")
+        for key, value in audit["retrieval"]["config"].items():
+            self.assertEqual(value, history[key])
+        self.assertEqual(audit["g"], g_block["selection"])
+        self.assertEqual(audit["c"], c_block["reference_coverage"])
+        self.assertEqual(audit["r"], r_block["selection"])
 
     def test_prediction_time_cutoff_excludes_later_executions(self):
         from or_harness.world_model.prediction import ActionSpec

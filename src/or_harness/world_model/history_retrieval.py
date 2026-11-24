@@ -169,43 +169,78 @@ def _env_float(name: str) -> Optional[float]:
     if raw is None or not str(raw).strip():
         return None
     try:
-        return float(str(raw).strip())
+        value = float(str(raw).strip())
     except (TypeError, ValueError):
         return None
+    return value if math.isfinite(value) else None
 
 
 def _backend_thresholds(backend: Any) -> Dict[str, Any]:
     """The per-view cosine floors used for THIS backend, with provenance."""
-    info = getattr(backend, "describe", None)
-    identity = info() if callable(info) else {}
-    model_id = str(identity.get("model_id") or getattr(
-        getattr(backend, "backend", None), "model_id", "") or "")
-    source = str(identity.get("source") or "")
-    key = model_id if model_id in _BACKEND_THRESHOLDS else (
-        "openai-compatible" if source == "remote"
-        else "local-hashing-embedding-v1")
+    from or_harness.strategy.embedding_index import describe_backend
+    identity = describe_backend(backend)
+    model_id = identity.get("model_id")
+    source = identity.get("source") or "unknown"
+    diagnostics: List[str] = []
+    local_key = "local-hashing-embedding-v1"
+    if source == "local-hashing" and model_id == local_key:
+        key = local_key
+        threshold_source = "profile:" + key
+    elif source == "remote":
+        key = (model_id if model_id in _BACKEND_THRESHOLDS
+               and model_id != local_key else "openai-compatible")
+        threshold_source = "profile:" + key
+    else:
+        # Keep the existing generic provisional numbers, but do NOT identify
+        # an unknown backend as hashing (or pretend it has been calibrated).
+        key = "openai-compatible"
+        threshold_source = "fallback:" + key
+        diagnostics.append(
+            "backend identity has no calibrated threshold profile; using "
+            "the unverified generic provisional fallback, not local-hashing "
+            "calibration. No backend identity is inferred from vector width.")
     chosen = copy.deepcopy(_BACKEND_THRESHOLDS[key])
+    chosen["basis"] = (f"Backend model_id={model_id!r}, source={source}. "
+                       + chosen["basis"])
+    if diagnostics:
+        chosen["basis"] += " " + " ".join(diagnostics)
     overrides = {
-        "problem": ("OR_HARNESS_HISTORY_THRESHOLD", "problem"),
-        "candidate_method": ("OR_HARNESS_HISTORY_METHOD_THRESHOLD",
-                             "candidate_method"),
-        "conditions": ("OR_HARNESS_HISTORY_CONDITIONS_THRESHOLD",
-                       "conditions"),
-        "method_relevance": ("OR_HARNESS_HISTORY_METHOD_RELEVANCE_THRESHOLD",
-                             "method_relevance"),
+        "problem": "OR_HARNESS_HISTORY_THRESHOLD",
+        "candidate_method": "OR_HARNESS_HISTORY_METHOD_THRESHOLD",
+        "conditions": "OR_HARNESS_HISTORY_CONDITIONS_THRESHOLD",
+        "method_relevance": "OR_HARNESS_HISTORY_METHOD_RELEVANCE_THRESHOLD",
     }
-    sources: Dict[str, str] = {}
-    for name, (env_name, _key) in overrides.items():
+    sources = {name: threshold_source for name in overrides}
+    override_requested = False
+    for name, env_name in overrides.items():
+        raw = os.environ.get(env_name)
+        if raw is None or not raw.strip():
+            continue
+        override_requested = True
         value = _env_float(env_name)
-        if value is not None:
-            chosen[name] = value
-            sources[name] = f"env:{env_name}"
+        if value is None:
+            diagnostics.append(
+                f"invalid threshold override {env_name} for {name} ignored: "
+                "expected a finite number; the recorded profile value remains in use")
+            continue
+        chosen[name] = value
+        sources[name] = f"env:{env_name}"
+    if override_requested:
+        chosen["verified"] = False
+        chosen["basis"] += (
+            " Manual threshold override requests are not independent "
+            "calibration evidence; the effective configuration is unverified.")
     chosen["threshold_sources"] = sources
-    chosen["model_id"] = model_id or key
+    chosen["model_id"] = model_id
+    chosen["source"] = source
+    chosen["threshold_profile"] = key
+    chosen["threshold_diagnostics"] = diagnostics
     chosen["score_definition"] = (
         "cosine similarity between ONE query view's embedding and the "
-        "execution index document (task text + family/outcome + planned/"
-        "performed method). Each view has its own discovery floor; a row is "
+        "existing execution-index channel: problem uses the task-text vector "
+        "when available, otherwise the legacy full document; method and "
+        "conditions use the full document (task text + family/outcome + "
+        "planned/performed method). Each view has its own discovery floor; a row is "
         "admitted when ANY view reaches its floor, and `similarity.overall` "
         "is the largest score/floor ratio (a relative relevance for "
         "ranking, not a cross-view comparable cosine)")
@@ -214,19 +249,7 @@ def _backend_thresholds(backend: Any) -> Dict[str, Any]:
 
 def history_config(backend: Any = None) -> Dict[str, Any]:
     """The ACTUAL retrieval configuration recorded on every block."""
-    thresholds = (_backend_thresholds(backend) if backend is not None else {
-        "problem": _env_float("OR_HARNESS_HISTORY_THRESHOLD") or 0.82,
-        "candidate_method": _env_float(
-            "OR_HARNESS_HISTORY_METHOD_THRESHOLD") or 0.62,
-        "conditions": _env_float(
-            "OR_HARNESS_HISTORY_CONDITIONS_THRESHOLD") or 0.30,
-        "method_relevance": _env_float(
-            "OR_HARNESS_HISTORY_METHOD_RELEVANCE_THRESHOLD") or 0.62,
-        "threshold_sources": {},
-        "model_id": None,
-        "basis": "configured; no backend identity was available",
-        "score_definition": "cosine similarity of embedding documents",
-    })
+    thresholds = _backend_thresholds(backend)
     return {
         "version": HISTORY_RETRIEVAL_VERSION,
         "max_local_cases": _env_int("OR_HARNESS_HISTORY_MAX_CASES",
@@ -247,6 +270,9 @@ def history_config(backend: Any = None) -> Dict[str, Any]:
         or "configured; no local calibration available",
         "score_definition": thresholds["score_definition"],
         "backend_model_id": thresholds.get("model_id"),
+        "backend_source": thresholds["source"],
+        "threshold_profile": thresholds["threshold_profile"],
+        "threshold_diagnostics": list(thresholds["threshold_diagnostics"]),
     }
 
 
@@ -1240,7 +1266,7 @@ def build_history_retrieval(
                                "above_threshold": 0, "pool_size": 0,
                                "distinct_tasks": 0}
         return block
-    block["backend"] = describe_backend(backend.backend)
+    block["backend"] = describe_backend(backend)
     views = build_query_views(task, profile, candidates)
     block["queries"] = [{"name": view["name"], "kind": view["kind"],
                          "chars": len(view["text"]),

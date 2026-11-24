@@ -710,12 +710,24 @@ def index_dir_for(home: os.PathLike[str] | str) -> Path:
     return Path(home) / INDEX_SUBDIR
 
 
-def describe_backend(backend: EmbeddingBackend) -> Dict[str, Any]:
-    """Non-sensitive backend description for recall results / doctor."""
+def describe_backend(backend: Optional[EmbeddingBackend | EmbeddingIndex]) -> Dict[str, Any]:
+    """Describe the actual backend, including when passed its index wrapper.
+
+    Identity comes from the backend description/type and model id, never
+    from its vector width. Unknown injected backends stay explicitly injected.
+    """
+    if isinstance(backend, EmbeddingIndex):
+        backend = backend.backend
+    if backend is None:
+        return {"source": "unavailable", "model_id": None, "dimension": None}
     describe = getattr(backend, "describe", None)
-    if callable(describe):
-        return dict(describe())
+    identity = dict(describe()) if callable(describe) else {}
     source = ("local-hashing"
               if isinstance(backend, LocalHashEmbeddingBackend) else "injected")
-    return {"source": source, "model_id": backend.model_id,
-            "dimension": backend.dimension}
+    identity.setdefault("source", source)
+    # The index and remote request use this model id. Complete a partial
+    # description without letting a conflicting display label replace it.
+    identity["model_id"] = (getattr(backend, "model_id", None)
+                            or identity.get("model_id"))
+    identity.setdefault("dimension", getattr(backend, "dimension", None))
+    return identity

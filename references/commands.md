@@ -90,6 +90,46 @@ Use `method.actual` to adapt a method that was performed. `method.planned` recor
 
 `auto` needs the URL, model and key. Use `local-hashing` with its own index for offline tests.
 
+Historical-retrieval thresholds are selected from the **actual backend**,
+including when it is wrapped by `EmbeddingIndex`. Model identity is not
+inferred from vector width. Local hashing retains its existing profile:
+problem 0.62, candidate method 0.60, conditions 0.30, method relevance 0.62.
+An uncalibrated remote model, including `GLM-Embedding-3`, uses the existing
+`openai-compatible` provisional profile: 0.45, 0.45, 0.40, 0.45 respectively,
+with `threshold_verified=false`. These numbers are not GLM calibration.
+
+An unknown injected or missing backend never inherits verified hashing
+thresholds. Its configuration explicitly reports an unverified generic
+provisional fallback, its actual model id (or null when unavailable),
+`backend_source` and `threshold_diagnostics`. A missing backend or unusable
+index continues to report degraded local retrieval and retains global
+statistics; no keyword substitute is introduced.
+
+| Independent threshold override | Configuration field |
+|---|---|
+| `OR_HARNESS_HISTORY_THRESHOLD` | `similarity_thresholds.problem` |
+| `OR_HARNESS_HISTORY_METHOD_THRESHOLD` | `similarity_thresholds.candidate_method` |
+| `OR_HARNESS_HISTORY_CONDITIONS_THRESHOLD` | `similarity_thresholds.conditions` |
+| `OR_HARNESS_HISTORY_METHOD_RELEVANCE_THRESHOLD` | `method_similarity_threshold` |
+
+`threshold_sources` records all four sources: `profile:<name>`, an explicit
+`fallback:<name>`, or `env:<variable>`. Manual overrides are independent and
+are not calibration evidence: even one override, or an override equal to a
+default, makes the effective configuration unverified. Zero is preserved.
+Non-finite or malformed overrides are ignored with a diagnostic and also
+cannot certify verification. `threshold_basis` identifies the actual model,
+profile and verification limits. Pool limits, per-view admission, reranking
+and task-diversification behavior are unchanged.
+
+Real-model calibration is a separate experiment. Supply the exact model and
+version, embedding preprocessing/document-builder version, production-shaped
+problem/method/conditions queries, independently labelled relevant and
+irrelevant historical executions (including paraphrased cross-task positives),
+per-view cosine scores and sample counts, and held-out precision/recall and
+admission results. Record method relevance separately from admission. Synthetic
+vectors and a matching embedding dimension cannot establish a real model's
+score distribution or a verified threshold.
+
 ### `orx context --task t.json [--episode ep1] [--top 3] [--cir cir.json] [--math JSON] [--include-unverified] [--no-persist]`
 
 Build and save a frozen prediction input for inspection or explicit reuse. `plan-next` builds its own shared context. Use `--no-persist` for a preview and `orx context --context-id CTX_ID` to read a saved context.
