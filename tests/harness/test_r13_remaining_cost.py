@@ -488,11 +488,18 @@ class TestConditionalCostRequest(CCase):
             "strategy_id": "S04", "method": REUSE, "solver": "highs", "config": {"time_limit": 60}},
             "next-limited")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        # Only the window whose RECORDED limit matches the declared 60 is a
-        # strict reference; the 180-second window is a KNOWN conflict and is
-        # unavailable, never silently used.
-        self.assertEqual([case["cost"]["tool_calls"] for case in evidence["cases"]], [8])
-        self.assertGreaterEqual(evidence["reference_coverage"]["unavailable"], 1)
+        # Solving limits are a COMPARABILITY deduction, not an exclusion: the
+        # 60-second window is strict, the 180-second window stays as a
+        # broader_reference with the known difference recorded.
+        by_tools = {case["cost"]["tool_calls"]: case
+                    for case in evidence["cases"]}
+        self.assertEqual(set(by_tools), {8, 20})
+        self.assertEqual(by_tools[8]["grade"], "strict")
+        self.assertEqual(by_tools[20]["grade"], "broader_reference")
+        self.assertIn("solving config time_limit",
+                      by_tools[20].get("differences") or [])
+        self.assertLess(by_tools[20]["relevance_weight"], 1.0)
+        self.assertEqual(evidence["reference_coverage"]["unavailable"], 0)
 
     def test_unreported_runner_phase_no_longer_limits_cost_evidence(self):
         self.make_history("history", REUSE, 8)

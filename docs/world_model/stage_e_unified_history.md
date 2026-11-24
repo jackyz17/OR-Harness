@@ -82,15 +82,22 @@ in this repository: its provisional floors are reported with
   attribution.
 - **C**: the ONLY hard constraint is the measurement scope
   (`remaining_to_task_end`, complete window). No phase. `strict` = same known
-  family and no KNOWN solver/config/structure conflict; otherwise
-  `broader_reference` (weak). Four dimensions only; missing dimensions are
-  named, never zero-filled. Reusable artifacts are optional context, not a
-  phase.
+  family and no known structure/solver/config difference. A KNOWN difference
+  (e.g. a HiGHS candidate looking at a CBC history) or an unknown condition
+  keeps the case as `broader_reference` with `differences`/
+  `unknown_conditions` and a lower `relevance_weight` — it is NOT discarded.
+  Four dimensions only; missing dimensions are named, never zero-filled.
+  Reusable artifacts are optional context, not a phase. A remaining-task cost
+  window is one reference (`covers_execution_ids`), never one case per
+  execution in the window.
 - **R**: reranked by same solver interface, then candidate-method similarity,
   then general similarity. Each case carries the three events' labels on one
   bound attempt; `evidence_status` distinguishes `closed_pair` (calibration
   material) from `execution_only` (visible execution fact, never a calibration
-  sample).
+  sample). A closed pair's G and R labels are attributed ONLY to the bound
+  execution (`bound_execution_id`), never to every execution in the same
+  remaining-task window; the C window is carried by ONE
+  `cost_carrier_execution_id` and lists `covers_execution_ids`.
 
 ## Global statistics
 
@@ -100,7 +107,11 @@ identity, no future observation):
 - **G** (`wm-g-global/1`): observed/predicted/scored counts, distinct
   tasks/episodes, observed/predicted mean, MAE, signed bias direction, Brier,
   AUC when both classes exist, reliability bins when n ≥ 8, unknown counts with
-  reasons.
+  reasons. ALL prediction-calibration values (means, MAE, bias, Brier, AUC,
+  bins) use the SAME scored `(prediction, observation)` pairs; an observed
+  label without a prediction is counted separately and never paired by array
+  position. `signed_error = predicted - observed`, so a POSITIVE signed mean
+  means `over_predicted` (the model predicted higher).
 - **C** (`wm-c-global/1`): per active dimension n, p50, p90, predicted-vs-actual
   sample count, median absolute/relative error, mean log ratio and error
   direction, Spearman rank correlation, incomplete observation count and
@@ -142,6 +153,17 @@ correction multiplier, and never a joint/max probability for R.
   summary). It is not a new database.
 - A dimension that is never completely observed stays incomplete forever; no
   estimate is substituted.
+
+## Attribution and validity notes
+
+- The task-vector fast path re-applies the full-document recall validity rules:
+  the record must still exist, still have `source=executed`, must not postdate
+  the frozen moment, and its CURRENT retrieval document digest must match the
+  indexed one. Dropped rows are counted by reason in `accounting`
+  (`excluded_invalid_source`, `excluded_stale_index`, `excluded_missing_record`,
+  `excluded_unreadable_task_text`, `excluded_after_cutoff`).
+- A closed pair's G/R labels belong to its bound execution only; a
+  remaining-task cost window is ONE reference carried by one execution.
 
 ## Index requirement
 

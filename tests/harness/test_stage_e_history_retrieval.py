@@ -22,7 +22,7 @@ from types import SimpleNamespace
 
 from g_fixtures import COUPLED, SPLIT, GCase
 
-from or_harness.core.schema import ExecutionRecord
+from or_harness.core.schema import ExecutionRecord, ProblemProfile
 from or_harness.world_model.contracts import (
     FAITHFUL_G_METRIC,
     FAITHFUL_G_OBSERVATION_VERSION,
@@ -31,9 +31,12 @@ from or_harness.world_model.contracts import (
     RETRIES_FUTURE_VERSION,
 )
 from or_harness.world_model.history_retrieval import (
+    _attach_evaluation_facts,
     _diversify,
     _method_digest,
     _passes_admission,
+    _pool_row as _resolve_pool_row,
+    _evaluation_fact,
     build_history_retrieval,
     build_query_views,
     decision_cost_scales,
@@ -48,6 +51,9 @@ from or_harness.world_model.history_retrieval import (
 )
 from or_harness.world_model.r_signal import (
     global_event_base_rates, technical_r_statistics,
+)
+from or_harness.strategy.embedding_index import (
+    document_digest, document_execution,
 )
 
 
@@ -786,6 +792,306 @@ class TestEndToEndHistory(GCase):
             cutoff=float(execution.created_at) - 1.0)
         self.assertEqual(blocked["pool"], [])
         self.assertEqual(blocked["accounting"]["excluded_after_cutoff"], 1)
+
+
+# ---------------------------------------------------------------------------
+# P0-1: GLOBAL G calibration is computed on ONE aligned scored sample
+# ---------------------------------------------------------------------------
+
+class TestGlobalGAlignment(unittest.TestCase):
+    @staticmethod
+    def _pair(evaluation_id, *, observed, predicted=None, task_id="t1",
+              episode_id="e1"):
+        benefit = {"observed": observed,
+                   "metric": FAITHFUL_G_METRIC,
+                   "observation_rule_version":
+                       FAITHFUL_G_OBSERVATION_VERSION}
+        if predicted is not None:
+            benefit["predicted"] = predicted
+            benefit["signed_error"] = predicted - observed
+        return {"evaluation_id": evaluation_id, "task_id": task_id,
+                "episode_id": episode_id, "benefit": benefit}
+
+    def test_bias_direction_positive_means_over_predicted(self):
+        # predicted 0.9, observed 0 -> the model predicted HIGHER.
+        stats = global_g_statistics([self._pair("ev1", observed=0,
+                                                predicted=0.9)])
+        self.assertEqual(stats["bias_direction"], "over_predicted")
+        self.assertGreater(stats["signed_error_mean"], 0)
+        # predicted 0.3, observed 1 -> the model predicted LOWER.
+        stats = global_g_statistics([self._pair("ev2", observed=1,
+                                                predicted=0.3)])
+        self.assertEqual(stats["bias_direction"], "under_predicted")
+        self.assertLess(stats["signed_error_mean"], 0)
+
+    def test_predicted_and_observed_means_use_the_same_scored_sample(self):
+        pairs = [
+            self._pair("ev0", observed=1),              # label, no prediction
+            self._pair("ev1", observed=0, predicted=0.9),
+            self._pair("ev2", observed=1, predicted=0.3),
+        ]
+        stats = global_g_statistics(pairs)
+        self.assertEqual(stats["n_observed"], 3)
+        self.assertEqual(stats["n_scored"], 2)
+        self.assertEqual(stats["n_observed_without_prediction"], 1)
+        # Both means come from the SAME two scored pairs, not from 3 vs 2.
+        self.assertEqual(stats["observed_mean"], 0.5)
+        self.assertEqual(stats["predicted_mean"], 0.6)
+        self.assertEqual(stats["observed_without_prediction_mean"], 1.0)
+        self.assertEqual(stats["mae"], (0.9 + 0.7) / 2)
+
+    def test_reliability_bins_never_pair_by_array_index(self):
+        pairs = [self._pair("ev-observed-only", observed=0)]
+        # Four high-probability pairs, all observed failures; four
+        # low-probability pairs, all observed successes.
+        for index in range(4):
+            pairs.append(self._pair(f"hi{index}", observed=0,
+                                    predicted=0.95))
+        for index in range(4):
+            pairs.append(self._pair(f"lo{index}", observed=1,
+                                    predicted=0.05))
+        stats = global_g_statistics(pairs)
+        bins = {round(entry["lo"], 2): entry
+                for entry in stats["reliability_bins"]}
+        high = bins[0.8]
+        low = bins[0.0]
+        self.assertEqual((high["n"], high["observed_rate"]), (4, 0.0))
+        self.assertEqual((low["n"], low["observed_rate"]), (4, 1.0))
+        self.assertEqual(stats["brier"], 0.95 ** 2)
+
+
+# ---------------------------------------------------------------------------
+# P0-2: only the measurement window is a hard exclusion
+# ---------------------------------------------------------------------------
+
+class TestCostComparabilityDeductions(unittest.TestCase):
+    def _case(self, evaluation_id, *, solver="highs", values=None,
+              family="assignment", structure=None, config=None):
+        case = _c_evaluation(evaluation_id,
+                             values=values or {"tool_calls": 8},
+                             family=family, structure=structure)
+        case["cost"]["actual_solving_conditions"] = [{
+            "solver": solver, "config": dict(config or {})}]
+        return case
+
+    def test_different_solver_is_kept_as_weak_reference(self):
+        candidate = _candidate(solver="highs")
+        # Historical case solved with CBC, same remaining-task window.
+        cbc = self._case("ev-cbc", solver="cbc")
+        block = select_c_history_evidence(
+            _history([_pool_row("ex1", evaluation=cbc)],
+                     candidate=candidate),
+            context=_context(), candidate=candidate)
+        self.assertEqual(len(block["cases"]), 1)
+        case = block["cases"][0]
+        self.assertEqual(case["grade"], "broader_reference")
+        self.assertIn("solver highs vs cbc", case["differences"])
+        self.assertLess(case["relevance_weight"], 1.0)
+        self.assertEqual(case["cost"]["tool_calls"], 8)
+        self.assertEqual(block["reference_coverage"]["unavailable"], 0)
+
+    def test_different_structure_and_config_are_differences_not_exclusions(self):
+        candidate = _candidate(config={"time_limit": 60})
+        history_case = self._case(
+            "ev-other-structure", values={"tool_calls": 20},
+            structure={"problem_class": "scheduling"},
+            config={"time_limit": 180})
+        block = select_c_history_evidence(
+            _history([_pool_row("ex1", evaluation=history_case)],
+                     candidate=candidate),
+            context=_context(), candidate=candidate)
+        case = block["cases"][0]
+        self.assertEqual(case["grade"], "broader_reference")
+        self.assertIn("structure.problem_class", case["differences"])
+        self.assertIn("solving config time_limit", case["differences"])
+        # Strict cases rank first; a difference lowers relevance but keeps
+        # the observed value available.
+        self.assertEqual(case["cost"]["tool_calls"], 20)
+
+    def test_scope_mismatch_stays_the_only_hard_exclusion(self):
+        candidate = _candidate()
+        attempt = _c_evaluation("ev-attempt", values={"tool_calls": 3},
+                                scope="attempt")
+        block = select_c_history_evidence(
+            _history([_pool_row("ex1", evaluation=attempt)],
+                     candidate=candidate),
+            context=_context(), candidate=candidate)
+        self.assertEqual(block["cases"], [])
+        self.assertEqual(block["reference_coverage"]["unavailable"], 1)
+
+
+# ---------------------------------------------------------------------------
+# P0-3: the task-vector path re-applies the vector-recall validity rules
+# ---------------------------------------------------------------------------
+
+class _FakeBank:
+    def __init__(self, records):
+        self.records = records
+
+    def get(self, execution_id):
+        return self.records.get(execution_id)
+
+
+class _FakeStore:
+    def __init__(self, text):
+        self.text = text
+
+    def get_task_text(self, task_id, digest):
+        return self.text
+
+
+class _FakeHarness:
+    def __init__(self, record, text):
+        self.bank = _FakeBank({record.execution_id: record})
+        self.store = _FakeStore(text)
+
+
+def _record(execution_id="ex1", *, source="executed", created_at=100.0):
+    return ExecutionRecord(
+        execution_id=execution_id, task_id="t", strategy_id="S04",
+        source=source, created_at=created_at,
+        task_text_digest="text-digest",
+        profile_snapshot=ProblemProfile(problem_id="t", family="assignment"),
+        quality={"status": "optimal", "feasible": True},
+        solver={"name": "highs"},
+        method_planned={"name": "m", "steps": ["s"]},
+    )
+
+
+class TestPoolValidity(unittest.TestCase):
+    TEXT = "Solve the assignment task."
+
+    def _deepcopy_record(self):
+        import copy as _copy
+        record = _record()
+        return record, _copy.deepcopy(record)
+
+    def _call(self, record, *, expected=None, cutoff=None, source_record=None):
+        harness = _FakeHarness(source_record or record, self.TEXT)
+        recalled = {"execution_id": record.execution_id,
+                    "task_id": "t", "strategy_id": "S04",
+                    "task_text_excerpt": self.TEXT, "method": {},
+                    "profile_cell": None}
+        return _resolve_pool_row(harness, recalled,
+                                 view_scores={"problem": 0.9},
+                         floors={"problem": 0.62},
+                         cutoff=cutoff, query_cell=None,
+                         expected_doc_digest=expected)
+
+    def test_stale_index_document_is_excluded(self):
+        record = _record()
+        row, reason = self._call(record, expected="not-the-current-digest")
+        self.assertIsNone(row)
+        self.assertEqual(reason, "stale_index")
+
+    def test_matching_document_digest_is_admitted(self):
+        record = _record()
+        expected = document_digest(document_execution(record, self.TEXT))
+        row, reason = self._call(record, expected=expected)
+        self.assertIsNotNone(row)
+        self.assertIsNone(reason)
+        self.assertEqual(row["execution_id"], "ex1")
+
+    def test_non_executed_source_is_excluded(self):
+        record = _record(source="agent_reported")
+        row, reason = self._call(record)
+        self.assertIsNone(row)
+        self.assertEqual(reason, "invalid_source")
+
+    def test_record_after_cutoff_is_excluded(self):
+        record = _record(created_at=100.0)
+        row, reason = self._call(record, cutoff=50.0)
+        self.assertIsNone(row)
+        self.assertEqual(reason, "after_cutoff")
+
+
+# ---------------------------------------------------------------------------
+# P1: one evaluation is attributed to the BOUND execution / one C carrier
+# ---------------------------------------------------------------------------
+
+class TestEvidenceAttribution(unittest.TestCase):
+    def _pair(self):
+        return {
+            "evaluation_id": "ev1",
+            "task_id": "t1",
+            "episode_id": "e1",
+            "execution_ids": ["ex1", "ex2"],
+            "execution_conditions": {"execution_id": "ex1",
+                                     "comparable": True},
+            "benefit": {"observed": 1, "predicted": 0.7,
+                        "metric": FAITHFUL_G_METRIC,
+                        "observation_rule_version":
+                            FAITHFUL_G_OBSERVATION_VERSION},
+            "cost_observed_fact": {
+                "values": {"tool_calls": 10},
+                "conditions": {
+                    "scope": "remaining_to_task_end",
+                    "window_coverage": "complete",
+                    "family": "assignment",
+                    "structure": {"problem_class": "milp"},
+                    "solver_conditions": {"constraints": {}},
+                    "actual_solving_conditions": [{"solver": "highs",
+                                                   "config": {}}],
+                    "retry_observation_rule_version":
+                        RETRIES_FUTURE_VERSION,
+                },
+                "source_refs": ["ex1", "ex2"],
+            },
+            "risk_actual": [{"event": "implementation_failure", "label": 1,
+                             "brier": 0.09, "label_basis": "fixture"}],
+        }
+
+    def _history_with_pair(self):
+        bound = _pool_row("ex1", method=0.8)
+        other = _pool_row("ex2", method=0.8)
+        pair = self._pair()
+        attached = _attach_evaluation_facts([bound, other], [pair])
+        self.assertEqual(attached["bound_rows"], 1)
+        self.assertEqual(attached["cost_rows"], 1)
+        candidate = _candidate()
+        return _history([bound, other], candidate=candidate), candidate
+
+    def test_g_label_is_attributed_only_to_the_bound_execution(self):
+        history, candidate = self._history_with_pair()
+        block = select_g_history_evidence(history, candidate=candidate,
+                                          task_id="t")
+        labelled = [case for case in block["cases"]
+                    if (case.get("g") or {}).get("observed") in (0, 1)]
+        self.assertEqual(len(labelled), 1)
+        self.assertEqual(labelled[0]["execution_id"], "ex1")
+        self.assertEqual(labelled[0]["bound_execution_id"], "ex1")
+        self.assertEqual(labelled[0]["evaluation_id"], "ev1")
+        # The other execution in the window is still a method case, but its
+        # G label is UNKNOWN and it carries no evaluation id.
+        other = next(case for case in block["cases"]
+                     if case["execution_id"] == "ex2")
+        self.assertIsNone(other["g"]["observed"])
+        self.assertNotIn("evaluation_id", other)
+
+    def test_cost_window_is_one_reference_with_covers_ids(self):
+        history, candidate = self._history_with_pair()
+        block = select_c_history_evidence(history, context=_context(),
+                                          candidate=candidate)
+        self.assertEqual(len(block["cases"]), 1)
+        case = block["cases"][0]
+        self.assertEqual(case["execution_id"], "ex1")
+        self.assertEqual(case["covers_execution_ids"], ["ex1", "ex2"])
+        self.assertEqual(case["cost"]["tool_calls"], 10)
+
+    def test_r_risk_label_is_attributed_only_to_the_bound_execution(self):
+        history, candidate = self._history_with_pair()
+        block = select_r_history_evidence(history, context=_context(),
+                                          candidate=candidate)
+        bound = next(case for case in block["cases"]
+                     if case["execution_id"] == "ex1")
+        other = next(case for case in block["cases"]
+                     if case["execution_id"] == "ex2")
+        self.assertEqual(bound["evidence_status"], "closed_pair")
+        self.assertEqual(bound["evaluation_id"], "ev1")
+        self.assertEqual(bound["events"]["implementation_failure"]["label"], 1)
+        # The non-bound execution keeps ITS record-derived event label.
+        self.assertEqual(other["evidence_status"], "execution_only")
+        self.assertNotIn("evaluation_id", other)
 
 
 # ---------------------------------------------------------------------------

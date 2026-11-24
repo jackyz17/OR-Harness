@@ -114,7 +114,7 @@ keyword claim.
 
 | module | result |
 |---|---|
-| `test_stage_e_history_retrieval` (new) | 34/34 OK |
+| `test_stage_e_history_retrieval` (new) | 47/47 OK |
 | `test_vector_recall` | 59/59 OK |
 | `test_r_technical` | 55/55 OK |
 | `test_r13_remaining_cost` | 39/39 OK |
@@ -167,3 +167,35 @@ call loop and was explicitly out of this stage's scope ("不需要进行大规�
   formula, weights and early/late coefficients are unchanged; the source
   population changed from condition groups to the global distribution, which
   is the intended removal of the phase/groups dependency.
+
+## 6. Review remediation (P0/P1)
+
+- **P0-1 G global calibration** — `global_g_statistics` now builds ONE aligned
+  scored `(prediction, observation)` sample. Means/MAE/signed bias/Brier/AUC/
+  reliability bins all use it; labels without a prediction are counted
+  separately (`n_observed_without_prediction`,
+  `observed_without_prediction_mean`) and are never paired by array index.
+  `signed_error = predicted - observed`, so a positive mean is
+  `over_predicted` (predicted higher); the reported direction follows that
+  definition.
+- **P0-2 C comparability** — `_cost_grade` now treats ONLY an incomparable
+  measurement window (different scope or incomplete coverage) as
+  `unavailable`. Known solver/config/structure/family differences keep the
+  case as `broader_reference` with a `differences` list, `unknown_conditions`
+  and a lower `relevance_weight`; strict cases rank first, then fewer
+  differences, then similarity. A HiGHS candidate can use a CBC history's
+  modelling/token/tool-call cost.
+- **P0-3 retrieval validity** — `_pool_row` re-applies the full-document
+  recall rules for every row (including task-vector-only admissions): record
+  exists, `source=executed`, not after the frozen moment, and the current
+  document digest matches the indexed one. Drops are counted by reason in
+  `accounting`.
+- **P1 attribution** — a closed pair's G and R labels are attached only to its
+  bound execution (`execution_conditions.execution_id`); a remaining-task cost
+  window is ONE reference carried by one execution, with
+  `covers_execution_ids` and a deduplicated `evaluation_id`. Selectors filter
+  by these explicit ids instead of array position.
+
+Tests added: global-G bias/alignment/bins (3), C comparability deductions (3),
+task-vector validity (4), evidence attribution (3). `test_stage_e_history_retrieval`
+is now 47/47.

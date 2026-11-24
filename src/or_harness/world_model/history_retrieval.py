@@ -514,32 +514,86 @@ def _diversify(rows: Sequence[Dict[str, Any]], *,
     return selected, report
 
 
+def _pair_bound_execution_id(pair: Dict[str, Any]) -> Optional[str]:
+    """The ONE execution a pair's G/R observation is attributed to.
+
+    A remaining-task evaluation can cover several executions (a window), but
+    the G label and the R labels belong to the BOUND attempt — the execution
+    the prediction was bound to. The close-out records it under
+    ``execution_conditions.execution_id`` (and in the implementation
+    observation). Guessing from the window's first id would attribute one
+    method's outcome to a different method.
+    """
+    conditions = pair.get("execution_conditions") or {}
+    bound = conditions.get("execution_id") if isinstance(conditions, dict) \
+        else None
+    if not bound:
+        observation = pair.get("implementation_observation") or {}
+        if isinstance(observation, dict):
+            bound = observation.get("execution_id")
+    return str(bound) if bound else None
+
+
+def _pair_cost_carrier_id(pair: Dict[str, Any]) -> Optional[str]:
+    """The ONE execution that carries a remaining-task COST reference.
+
+    The cost window observation covers the whole remaining task, so it is a
+    single reference, not one per execution in the window. It is attached to
+    the bound execution when that execution is part of the window, else to
+    the window's first recorded execution (order is the close-out's window
+    order, never re-sorted, so it is deterministic).
+    """
+    execution_ids = [str(execution_id)
+                     for execution_id in (pair.get("execution_ids") or [])]
+    bound = _pair_bound_execution_id(pair)
+    if bound and bound in execution_ids:
+        return bound
+    return execution_ids[0] if execution_ids else None
+
+
 def _attach_evaluation_facts(pool: List[Dict[str, Any]],
-                             pairs: Sequence[Dict[str, Any]]) -> int:
+                             pairs: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     """Join recalled executions to their CLOSED-evaluation pair facts.
 
-    One pair may cover several executions (a window). A pair is attached to
-    every execution it names. When several pairs name the same execution the
-    richer/most recent record wins deterministically — never two copies of
-    the same evaluation.
+    The G/R observation is attached ONLY to the bound execution. The C
+    window reference is attached to ONE canonical carrier execution, so a
+    multi-execution window is never counted as several cost samples. A row
+    that is not the bound execution may still carry the cost fact (its
+    ``evaluation`` block names the bound execution), and the selectors use
+    that explicit attribution rather than array position.
     """
     by_execution: Dict[str, Dict[str, Any]] = {}
+
+    def _offer(execution_id: Optional[str], pair: Dict[str, Any]) -> None:
+        if not execution_id:
+            return
+        current = by_execution.get(str(execution_id))
+        if current is None or _pair_rank(pair) > _pair_rank(current):
+            by_execution[str(execution_id)] = pair
+
     for pair in pairs:
         if not isinstance(pair, dict):
             continue
-        for execution_id in pair.get("execution_ids") or []:
-            key = str(execution_id)
-            current = by_execution.get(key)
-            if current is None or _pair_rank(pair) > _pair_rank(current):
-                by_execution[key] = pair
+        _offer(_pair_bound_execution_id(pair), pair)
+        carrier = _pair_cost_carrier_id(pair)
+        if carrier and carrier != _pair_bound_execution_id(pair):
+            _offer(carrier, pair)
     attached = 0
+    bound_rows = 0
+    cost_rows = 0
     for row in pool:
         pair = by_execution.get(str(row.get("execution_id")))
         if pair is None:
             continue
-        row["evaluation"] = _evaluation_fact(pair)
+        fact = _evaluation_fact(pair)
+        row["evaluation"] = fact
         attached += 1
-    return attached
+        if fact.get("bound_execution_id") == str(row.get("execution_id")):
+            bound_rows += 1
+        if fact.get("cost_carrier_execution_id") == str(row.get("execution_id")):
+            cost_rows += 1
+    return {"attached_rows": attached, "bound_rows": bound_rows,
+            "cost_rows": cost_rows}
 
 
 def _pair_rank(pair: Dict[str, Any]) -> Tuple[int, int, int, str]:
@@ -553,7 +607,16 @@ def _pair_rank(pair: Dict[str, Any]) -> Tuple[int, int, int, str]:
 
 def _evaluation_fact(pair: Dict[str, Any]) -> Dict[str, Any]:
     """The compact, provider-safe facts of one closed evaluation pair."""
-    fact: Dict[str, Any] = {"evaluation_id": pair.get("evaluation_id")}
+    fact: Dict[str, Any] = {
+        "evaluation_id": pair.get("evaluation_id"),
+        # Explicit attribution: the G/R label belongs to the bound attempt;
+        # the cost window covers `covers_execution_ids` and is carried by
+        # `cost_carrier_execution_id` exactly once.
+        "bound_execution_id": _pair_bound_execution_id(pair),
+        "cost_carrier_execution_id": _pair_cost_carrier_id(pair),
+        "covers_execution_ids": [str(execution_id) for execution_id
+                                 in (pair.get("execution_ids") or [])],
+    }
     benefit = pair.get("benefit") or {}
     observed_fact = pair.get("g_observed_fact") or {}
     g_block: Dict[str, Any] = {}
@@ -655,18 +718,20 @@ def _compact_global(value: Any, *, keep_empty: bool = False) -> Any:
 def global_g_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """How this model's G predictions turned out over the closed window.
 
-    Uses ONE label convention (faithful-execution acceptance) so a legacy
-    metric is never mixed into the mean. Diagnostics only: this is never a
-    candidate-specific prior and never a correction coefficient.
+    ONE label convention (faithful-execution acceptance) and ONE aligned
+    sample: every prediction-calibration number (means, MAE, signed bias,
+    Brier, AUC, reliability bins) is computed from the SAME
+    ``(prediction, observation)`` pairs. An observation with no prediction is
+    counted separately and NEVER paired by array index with another task's
+    probability. Diagnostics only: never a candidate prior or correction.
     """
     labels: List[int] = []
-    scored_labels: List[int] = []
-    probabilities: List[float] = []
-    errors: List[float] = []
-    signed: List[float] = []
+    scored: List[Tuple[float, int]] = []
+    observed_without_prediction: List[int] = []
     tasks, episodes = set(), set()
     unknown = 0
     unknown_reasons: Dict[str, int] = {}
+    n_predicted = 0
     for pair in pairs:
         benefit = pair.get("benefit") or {}
         observed_fact = pair.get("g_observed_fact") or {}
@@ -678,67 +743,78 @@ def global_g_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         observed = benefit.get("observed")
         if observed not in (0, 1):
             observed = observed_fact.get("observed")
-        predicted = benefit.get("predicted")
-        predicted = predicted if isinstance(predicted, (int, float)) \
-            and not isinstance(predicted, bool) else None
+        predicted_raw = benefit.get("predicted")
+        predicted = (float(predicted_raw)
+                     if isinstance(predicted_raw, (int, float))
+                     and not isinstance(predicted_raw, bool) else None)
+        if predicted is not None:
+            n_predicted += 1
         if observed in (0, 1):
             labels.append(int(observed))
             tasks.add(str(pair.get("task_id") or "unknown"))
             episodes.add(str(pair.get("episode_id") or "unknown"))
             if predicted is not None:
-                probabilities.append(float(predicted))
-                scored_labels.append(int(observed))
-                errors.append(abs(float(predicted) - int(observed)))
-                signed.append(float(predicted) - int(observed))
-            # A label is one observation; prediction-less labels do not make
-            # the error population larger than the scored population.
+                scored.append((predicted, int(observed)))
+            else:
+                observed_without_prediction.append(int(observed))
             continue
         unknown += 1
         reason = str(benefit.get("reason")
                      or observed_fact.get("label_eligibility")
                      or "no attributable label in the closed pair")
         unknown_reasons[reason] = unknown_reasons.get(reason, 0) + 1
-    n_scored = len(probabilities)
-    observed_mean = _mean([float(label) for label in labels])
+    n_scored = len(scored)
+    scored_labels = [label for _probability, label in scored]
+    probabilities = [probability for probability, _label in scored]
+    errors = [abs(probability - label) for probability, label in scored]
+    signed = [probability - label for probability, label in scored]
+    observed_mean = _mean([float(label) for label in scored_labels])
     predicted_mean = _mean(probabilities)
     bins: List[Dict[str, Any]] = []
     if n_scored >= 8:
         for index in range(5):
-            bucket = [(labels[i], probabilities[i]) for i in range(len(labels))
-                      if i < len(probabilities)
-                      and min(4, int(probabilities[i] * 5)) == index]
+            bucket = [(probability, label) for probability, label in scored
+                      if min(4, int(probability * 5)) == index]
             if bucket:
                 bins.append({
                     "lo": index / 5, "hi": (index + 1) / 5,
                     "n": len(bucket),
                     "mean_prediction": round(
-                        sum(p for _l, p in bucket) / len(bucket), 6),
+                        sum(probability for probability, _label in bucket)
+                        / len(bucket), 6),
                     "observed_rate": round(
-                        sum(label for label, _p in bucket) / len(bucket), 6)})
+                        sum(label for _probability, label in bucket)
+                        / len(bucket), 6)})
     return _compact_global({
         "version": "wm-g-global/1",
         "metric": FAITHFUL_G_METRIC,
         "observation_rule_version": FAITHFUL_G_OBSERVATION_VERSION,
         "scope": ("closed calibration window, decisions made before this "
                   "prediction; same model identity only"),
+        "sample_rule": ("all prediction-calibration metrics use the SAME "
+                        "scored (prediction, observation) pairs; an observed "
+                        "label without a prediction is counted separately and "
+                        "never paired by array position"),
         "n_pairs": len(pairs),
         "n_observed": len(labels),
-        "n_predicted": sum(1 for pair in pairs
-                           if (pair.get("benefit") or {}).get("predicted")
-                           is not None),
+        "n_predicted": n_predicted,
         "n_scored": n_scored,
+        "n_observed_without_prediction": len(observed_without_prediction),
+        "observed_without_prediction_mean": _mean(
+            [float(label) for label in observed_without_prediction]),
         "n_distinct_tasks": len(tasks),
         "n_distinct_episodes": len(episodes),
         "observed_mean": observed_mean,
         "predicted_mean": predicted_mean,
         "mae": _mean(errors),
         "signed_error_mean": _mean(signed),
+        # signed = predicted - observed: a POSITIVE mean means the model
+        # systematically predicted HIGHER than the realized outcome.
         "bias_direction": (None if not signed else
-                           "under_predicted" if sum(signed) > 0 else
-                           "over_predicted" if sum(signed) < 0 else "none"),
+                           "over_predicted" if sum(signed) > 0 else
+                           "under_predicted" if sum(signed) < 0 else "none"),
         "brier": (round(sum((probability - label) ** 2
-                            for label, probability in zip(scored_labels,
-                                                          probabilities))
+                            for probability, label in scored)
                         / n_scored, 6) if n_scored else None),
         "auc": _auc(scored_labels, probabilities),
         "reliability_bins": bins,
@@ -995,19 +1071,40 @@ def _recalled_from_index(harness, execution_id: str) -> Dict[str, Any]:
 
 def _pool_row(harness, recalled: Dict[str, Any], *,
               view_scores: Dict[str, float], floors: Dict[str, Any],
-              cutoff: Optional[float],
-              query_cell: Optional[str]) -> Optional[Dict[str, Any]]:
-    """Resolve one recall hit into the shared pool row, or None to drop it.
+              cutoff: Optional[float], query_cell: Optional[str],
+              expected_doc_digest: Optional[str] = None
+              ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Resolve one recall hit into the shared pool row, or a DROP reason.
 
-    A row that cannot be re-read (record gone) or that lies AFTER the frozen
-    moment is dropped with the reason accounted by the caller.
+    The task-vector channel can name an execution directly from the index
+    without the full-document recall path, so this function re-applies the
+    SAME validity constraints as :mod:`or_harness.strategy.vector_recall`:
+    the record must still exist, its source must still be ``executed``, it
+    must not lie after the frozen moment, and its CURRENT retrieval document
+    must match the indexed document digest (a changed record makes the stored
+    vector describe something that no longer exists). A dropped row is
+    counted by reason — never silently included.
     """
     execution_id = str(recalled.get("execution_id") or "")
     record = harness.bank.get(execution_id) if execution_id else None
     if record is None:
-        return None
+        return None, "missing_record"
+    if str(getattr(record, "source", "executed")) != "executed":
+        return None, "invalid_source"
     if cutoff is not None and float(record.created_at or 0.0) > cutoff:
-        return None
+        return None, "after_cutoff"
+    if expected_doc_digest is not None:
+        from or_harness.strategy.embedding_index import (
+            document_digest, document_execution,
+        )
+        text = (harness.store.get_task_text(record.task_id,
+                                            record.task_text_digest)
+                if record.task_text_digest else None)
+        if text is None:
+            return None, "unreadable_task_text"
+        current = document_digest(document_execution(record, text))
+        if current != expected_doc_digest:
+            return None, "stale_index"
     from or_harness.world_model.r_signal import technical_attempt_fact
     technical = technical_attempt_fact(record)
     record_cell = recalled.get("profile_cell")
@@ -1058,7 +1155,7 @@ def _pool_row(harness, recalled: Dict[str, Any], *,
     inspected = recalled.get("inspect_hint")
     if inspected:
         row["inspect_hint"] = inspected
-    return row
+    return row, None
 
 
 def _passes_admission(view_scores: Dict[str, float],
@@ -1166,6 +1263,8 @@ def build_history_retrieval(
     problem_view = next((view for view in views
                          if view.get("kind") == "problem"), None)
     indexed_items = backend.items(_EXEC_LAYER)
+    index_digests = {str(item.get("id")): item.get("doc_digest")
+                     for item in indexed_items if item.get("id")}
     task_vector_items = [item for item in indexed_items
                          if item.get("task_vector")]
     if problem_view is not None and task_vector_items:
@@ -1221,18 +1320,23 @@ def build_history_retrieval(
         query_cell = None
     floors = config["similarity_thresholds"]
     rows: List[Dict[str, Any]] = []
-    excluded_cutoff = 0
+    dropped: Dict[str, int] = {}
+
+    def _drop(reason: str) -> None:
+        dropped[reason] = dropped.get(reason, 0) + 1
+
     for execution_id, entry in merged.items():
         view_scores = entry["scores"]
         if not _passes_admission(view_scores, floors):
             continue
         recalled = entry["recalled"] or _recalled_from_index(
             harness, execution_id)
-        row = _pool_row(harness, recalled,
-                        view_scores=view_scores, floors=floors,
-                        cutoff=cutoff, query_cell=query_cell)
+        row, reason = _pool_row(
+            harness, recalled, view_scores=view_scores, floors=floors,
+            cutoff=cutoff, query_cell=query_cell,
+            expected_doc_digest=index_digests.get(execution_id))
         if row is None:
-            excluded_cutoff += 1
+            _drop(reason or "invalid")
             continue
         rows.append(row)
     rows.sort(key=lambda row: (
@@ -1256,8 +1360,15 @@ def build_history_retrieval(
         "pool_size": len(pool),
         "distinct_tasks": diversify["n_distinct_tasks"],
         "same_task_extra_attempts": diversify["same_task_extra_attempts"],
-        "n_with_closed_evaluation": attached,
-        "excluded_after_cutoff": excluded_cutoff,
+        "n_with_closed_evaluation": attached["attached_rows"],
+        "n_bound_evaluation_rows": attached["bound_rows"],
+        "n_cost_reference_rows": attached["cost_rows"],
+        "excluded_after_cutoff": dropped.get("after_cutoff", 0),
+        "excluded_invalid_source": dropped.get("invalid_source", 0),
+        "excluded_stale_index": dropped.get("stale_index", 0),
+        "excluded_missing_record": dropped.get("missing_record", 0),
+        "excluded_unreadable_task_text": dropped.get(
+            "unreadable_task_text", 0),
         "views_run": len(views),
         "problem_view_channel": problem_channel,
         "task_vector_items": len(task_vector_items),
@@ -1368,59 +1479,77 @@ def _known(value: Any) -> bool:
 
 
 def _cost_grade(case: Dict[str, Any], current: Dict[str, Any],
-                *, strict: bool) -> Tuple[str, List[str]]:
-    """``(grade, reasons)`` for one historical cost case — NO phase.
+                *, strict: bool) -> Tuple[str, List[str], List[str]]:
+    """``(grade, unknowns, differences)`` for one cost case — NO phase.
 
-    ``strict`` needs the same remaining-task scope, a known same family and
-    no known structure/solver/config conflict. Anything else that still has
-    the SAME measurement scope and no KNOWN conflict is a weak
-    ``broader_reference``; a scope mismatch or a known conflict is
-    unavailable and never relabelled.
+    The ONLY hard exclusion is the measurement window: a case whose coverage
+    is incomplete or whose scope is not the SAME remaining task is
+    ``unavailable`` — its number cannot be compared to a remaining-task
+    forecast at all.
+
+    Every OTHER difference is a comparability deduction, not an exclusion:
+    a different solver (HiGHS vs CBC), a different solver config or a
+    different known structural field still provides real modelling/token/
+    tool-call work. Such cases stay as ``broader_reference`` with an explicit
+    ``differences`` list and a lower ``relevance_weight``; unknown conditions
+    are named as unknowns. This keeps build4's "history exists but no
+    reference was offered" failure from returning.
     """
-    reasons: List[str] = []
     if case.get("window_coverage") != "complete":
-        return "unavailable", ["historical window coverage is not complete"]
+        return ("unavailable",
+                ["historical window coverage is not complete"], [])
     if case.get("scope") != current.get("scope"):
-        return "unavailable", ["measurement scope differs"]
+        return "unavailable", ["measurement scope differs"], []
+    unknowns: List[str] = []
+    blocking_unknowns: List[str] = []
+    differences: List[str] = []
     case_family, current_family = case.get("family"), current.get("family")
-    family_known_equal = (_known(case_family) and _known(current_family)
-                          and case_family == current_family)
-    if not strict:
-        reasons.append("not a strict same-condition match")
-    if not strict and (_known(case_family) and _known(current_family)
-                       and case_family != current_family):
-        reasons.append("historical family differs")
+    if not (_known(case_family) and _known(current_family)):
+        unknowns.append("family unknown")
+    elif case_family != current_family:
+        differences.append(f"family {case_family} vs {current_family}")
     case_structure = case.get("structure") or {}
     current_structure = current.get("structure") or {}
     for key in sorted(set(case_structure) & set(current_structure)):
         if case_structure[key] != current_structure[key]:
-            return "unavailable", [f"known structure conflict: {key}"]
-    if strict and not family_known_equal:
-        if not _known(case_family) or not _known(current_family):
-            reasons.append("family unknown")
-        else:
-            reasons.append("historical family differs")
+            differences.append(f"structure.{key}")
+    for key in sorted(set(case_structure) ^ set(current_structure)):
+        unknowns.append(f"structure.{key} unrecorded on one side")
     requested = current.get("solver_conditions") or {}
-    actuals = case.get("actual_solving_conditions") or []
+    actuals = [actual for actual in
+               (case.get("actual_solving_conditions") or [])
+               if isinstance(actual, dict)]
     requested_solver = requested.get("solver")
     if requested_solver:
         known_solvers = [actual.get("solver") for actual in actuals
-                         if isinstance(actual, dict) and actual.get("solver")]
-        if known_solvers and requested_solver not in known_solvers:
-            return "unavailable", ["known solver conflict"]
+                         if actual.get("solver")]
         if not known_solvers:
-            reasons.append("historical solver interface unrecorded")
+            unknowns.append("historical solver interface unrecorded")
+            blocking_unknowns.append("solver interface unrecorded")
+        elif requested_solver not in known_solvers:
+            differences.append(
+                f"solver {requested_solver} vs "
+                + "/".join(sorted(set(known_solvers))))
     requested_config = requested.get("config") or {}
-    if requested_config and actuals:
-        for actual in actuals:
-            actual_config = (actual or {}).get("config") or {}
-            for key, value in requested_config.items():
-                if key in actual_config and actual_config[key] != value:
-                    return "unavailable", [f"known solving-config conflict: {key}"]
-                if key not in actual_config:
-                    reasons.append(f"solving config {key} unrecorded")
-    grade = "strict" if not reasons else "broader_reference"
-    return grade, reasons
+    if requested_config:
+        if not actuals:
+            unknowns.append("historical solving config unrecorded")
+        for key, value in sorted(requested_config.items()):
+            known = [actual.get("config") or {} for actual in actuals]
+            if not any(key in config for config in known):
+                unknowns.append(f"solving config {key} unrecorded")
+                blocking_unknowns.append(f"solving config {key} unrecorded")
+                continue
+            if any(config.get(key) != value
+                   for config in known if key in config):
+                differences.append(f"solving config {key}")
+    # A KNOWN difference always weakens the reference. An unknown auxiliary
+    # STRUCTURE field is informational (it cannot prove a difference); an
+    # unrecorded DECLARED solver/config is blocking because the comparability
+    # of the solving setup cannot be confirmed.
+    grade = ("strict" if strict and not differences
+             and not blocking_unknowns else "broader_reference")
+    return grade, unknowns, differences
 
 
 def _g_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
@@ -1461,6 +1590,8 @@ def _g_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
             "reason": (g_block.get("reason")
                        or "no attributable G label in this closed pair"),
         }
+    if evaluation.get("bound_execution_id"):
+        case["bound_execution_id"] = evaluation["bound_execution_id"]
     if evaluation.get("task_check") is not None:
         case["task_check"] = (evaluation.get("task_check") or {}).get("state")
     else:
@@ -1503,6 +1634,14 @@ def select_g_history_evidence(
     ranked: List[Tuple[Tuple[int, int, int, float, str], Dict[str, Any]]] = []
     for row in pool:
         evaluation = row.get("evaluation") or {}
+        if "bound_execution_id" in evaluation:
+            bound = evaluation.get("bound_execution_id")
+            if not bound or str(bound) != str(row.get("execution_id")):
+                # The pair's G label belongs to the bound attempt. Attaching
+                # it to a DIFFERENT execution in the same window would credit
+                # one method with another method's outcome. A pair that
+                # records no bound execution cannot attribute its label at all.
+                evaluation = {}
         g_block = evaluation.get("g") or {}
         metric = g_block.get("metric")
         rule = g_block.get("observation_rule_version")
@@ -1585,6 +1724,7 @@ def _provider_global_cost(global_cost: Dict[str, Any]) -> Dict[str, Any]:
 
 def _c_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
             grade: str, reasons: Sequence[str],
+            differences: Sequence[str],
             current: Dict[str, Any]) -> Dict[str, Any]:
     evaluation = row.get("evaluation") or {}
     cost = evaluation.get("cost") or {}
@@ -1607,6 +1747,11 @@ def _c_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
         "missing_dimensions": missing,
         "scope": cost.get("scope"),
         "window_coverage": cost.get("window_coverage"),
+        # A remaining-task cost window is ONE reference. `covers_execution_ids`
+        # says which executions it spans; it is not repeated as one case per
+        # execution.
+        "covers_execution_ids": list(
+            evaluation.get("covers_execution_ids") or []),
         "work": {
             "name": ((row.get("method") or {}).get("actual") or {}).get("name")
             or ((row.get("method") or {}).get("planned") or {}).get("name"),
@@ -1615,10 +1760,21 @@ def _c_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
             "reusable_artifacts": bool(cost.get("reusable_artifacts")),
         },
     }
+    if evaluation.get("evaluation_id"):
+        case["evaluation_id"] = evaluation["evaluation_id"]
     if predicted:
         case["predicted"] = predicted
-    if grade != "strict" and reasons:
-        case["grade_reasons"] = list(dict.fromkeys(reasons))[:4]
+    if grade == "strict":
+        case["relevance_weight"] = 1.0
+    else:
+        if reasons:
+            case["unknown_conditions"] = list(dict.fromkeys(reasons))[:6]
+        if differences:
+            case["differences"] = list(dict.fromkeys(differences))[:6]
+        # A comparability deduction, not an exclusion: the more known
+        # differences, the weaker the reference.
+        case["relevance_weight"] = round(
+            max(0.3, 0.9 - 0.1 * len(set(differences))), 2)
     case["source_refs"] = [str(row.get("execution_id"))] + (
         [str(evaluation["evaluation_id"])]
         if evaluation.get("evaluation_id") else [])
@@ -1642,31 +1798,50 @@ def select_c_history_evidence(
     cap = int(limit or config.get("max_local_cases") or DEFAULT_MAX_LOCAL_CASES)
     current = _current_cost_conditions(context, candidate)
     pool = history.get("pool") or []
-    ranked: List[Tuple[Tuple[int, int, float, str], Dict[str, Any]]] = []
-    counts = {"strict": 0, "broader_reference": 0, "unavailable": 0}
+    ranked: List[Tuple[Tuple[int, int, int, float, str],
+                       Dict[str, Any]]] = []
+    counts = {"strict": 0, "broader_reference": 0, "unavailable": 0,
+              "without_observed_values": 0}
+    seen_evaluations: set = set()
     for row in pool:
         evaluation = row.get("evaluation") or {}
+        if "cost_carrier_execution_id" in evaluation:
+            carrier = evaluation.get("cost_carrier_execution_id")
+            if not carrier or str(carrier) != str(row.get("execution_id")):
+                # This execution is part of a window whose cost reference is
+                # already carried by ONE canonical execution; it must not be
+                # a second copy of the same sample.
+                continue
+        evaluation_id = evaluation.get("evaluation_id")
+        if evaluation_id is not None:
+            if str(evaluation_id) in seen_evaluations:
+                continue
+            seen_evaluations.add(str(evaluation_id))
         cost = evaluation.get("cost") or {}
         values = {dim: value for dim, value in (cost.get("values") or {}).items()
                   if dim in PREDICTED_COST_DIMENSIONS
                   and _number(value) is not None}
         if not values:
-            counts["unavailable"] += 1
+            counts["without_observed_values"] += 1
             continue
         similarity = _method_scores(row, history, candidate)
         strict = (cost.get("scope") == current.get("scope")
                   and _known(cost.get("family"))
                   and cost.get("family") == current.get("family"))
-        grade, reasons = _cost_grade(cost, current, strict=strict)
+        grade, reasons, differences = _cost_grade(
+            cost, current, strict=strict)
         counts[grade] += 1
         if grade == "unavailable":
             continue
         key = (1 if grade == "strict" else 0,
+               -len(set(differences)),
                len(values),
                float(similarity.get("overall") or 0.0),
                str(row.get("execution_id")))
         ranked.append((key, _c_case(row, similarity=similarity, grade=grade,
-                                    reasons=reasons, current=current)))
+                                    reasons=reasons,
+                                    differences=differences,
+                                    current=current)))
     ranked.sort(key=lambda item: item[0], reverse=True)
     cases = [case for _key, case in ranked[:cap]]
     # Keep the grades visible after the cap: a weak reference must never
@@ -1683,6 +1858,7 @@ def select_c_history_evidence(
                                     if case["grade"] == "broader_reference"),
         },
         "unavailable": counts["unavailable"],
+        "n_without_observed_values": counts["without_observed_values"],
         "n_cases_included": len(cases),
         "n_cases_omitted": max(0, len(ranked) - len(cases)),
         "unavailable_reason": (
@@ -1717,12 +1893,16 @@ def select_c_history_evidence(
                             else "insufficient_evidence"),
         "degraded": copy.deepcopy(history.get("degraded") or []),
         "missing": list(history.get("missing") or []),
-        "applicability": ("the measurement window is the SAME remaining task "
-                          "for every case; strict = same known family and no "
-                          "known solver/structure conflict, "
-                          "broader_reference = same scope with an auxiliary "
-                          "condition unknown/different; no phase is used. "
-                          "Missing dimensions are unknown, never zero."),
+        "applicability": ("the ONLY hard exclusion is an incomparable "
+                          "measurement window. strict = same known family and "
+                          "no known structure/solver/config difference. A "
+                          "known difference (solver, config, structure, "
+                          "family) or an unknown condition keeps the case as "
+                          "broader_reference with `differences`/"
+                          "`unknown_conditions` and a lower "
+                          "`relevance_weight` — it is not discarded. No phase "
+                          "is used. Missing dimensions are unknown, never "
+                          "zero."),
         "note": ("Totals already include the work in each reference case. "
                  "Compare added/saved candidate steps; count each step once. "
                  "A broader_reference is NOT a strict calibrated prior. "
@@ -1831,6 +2011,8 @@ def _r_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
         case["reusable_script"] = True
     if evaluation.get("evaluation_id"):
         case["evaluation_id"] = evaluation["evaluation_id"]
+        if evaluation.get("bound_execution_id"):
+            case["bound_execution_id"] = evaluation["bound_execution_id"]
         case["evidence_status"] = "closed_pair"
     else:
         # The execution is visible at the decision moment but its episode is
@@ -1865,6 +2047,14 @@ def select_r_history_evidence(
     method_floor = float(config.get("method_similarity_threshold") or 0.0)
     ranked: List[Tuple[Tuple[int, int, float, str], Dict[str, Any]]] = []
     for row in pool:
+        evaluation = row.get("evaluation") or {}
+        if "bound_execution_id" in evaluation:
+            bound = evaluation.get("bound_execution_id")
+            if not bound or str(bound) != str(row.get("execution_id")):
+                # The technical labels are per ACTUAL execution. A closed
+                # pair's risk label describes its bound attempt only; another
+                # window execution keeps its own record-derived events.
+                row = {**row, "evaluation": {}}
         similarity = _method_scores(row, history, candidate)
         same_interface = bool(interface) and row.get("solver_interface") == interface
         technical = (similarity.get("method") is not None
