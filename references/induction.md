@@ -4,9 +4,34 @@ Compare recorded executions to extract a method, test its scope, and submit the 
 
 ## When to start induction
 
-`plan-next` freezes `capability_gain.decision` as the JSON number `0` or `1` (`wm-hplus-binary/1`). G, C and R determine U. For H+ = 1, use `claim` to state what could improve or extend the prediction-time library, and `verification_conditions` to name a concrete fact to check. For 0, give the basis. The increment can be modelling knowledge as well: how the task statement is translated into decision variables, objective and constraints, together with the assumptions and applicability boundaries of that translation. A standard solving algorithm can still support 1 when this run and its review can test such an increment or boundary that the published strategy library does not cover.
+`plan-next` freezes `capability_gain.decision` as the JSON number `0` or `1` (`wm-hplus-binary/1`). G, C and R determine U; H+ never enters it. The frozen switch only decides whether the completed execution must be REVIEWED afterwards.
+
+### What counts as a knowledge increment
+
+H+ is not a judgement that the task is difficult, that the candidate will succeed, that a trick can be summarised, or that the task uses new variables or constraints. It asks one question:
+
+> After this candidate executes and is reviewed, is there a concrete, reasonable and checkable opportunity to obtain knowledge that the published strategy library does not already cover and that could change a FUTURE modelling or solving decision?
+
+A positive hypothesis should be able to answer, compactly: which specific mechanism, method or method boundary could be learned; what it adds to the library; which fact this run can check; and which future decision or task class it could change. Keep those answers in `claim` and `verification_conditions`; do not turn them into extra fields.
+
+Turning the task statement into decision variables, an objective and constraints is NECESSARY SOLVING WORK, not a knowledge increment by itself. These do not justify H+=1 on their own:
+
+- writing a profit-maximisation objective because the task asks for maximum profit;
+- writing a capacity constraint because the task gives a capacity;
+- declaring variables integer because the task requires integers;
+- adding a time index because the task has periods;
+- building an ordinary LP/MILP model and calling a solver successfully;
+- running a routine constraint or result check on the model just built.
+
+A positive signal is possible when the run can probe a concrete reusable mechanism or boundary, for example: a class of business statement whose constraint mechanism is easy to confuse, with a modelling rule that has clear applicability conditions; a published method that appears to fail under a structure this run can test; a structural reduction that preserves the feasible region or the optimum; a transferable solving-strategy combination; a reusable solver-API or implementation failure mechanism with a reliable repair; or a substantive condition or operating step that published rules do not cover. The test is whether the finding can change how a future agent models or executes a task, not whether this task is complex.
+
+For H+=1, `claim` states the hypothesis and `verification_conditions` names a fact THIS run can check. A condition that needs a later large experiment, or a second complete solve of the same task, is not a valid condition for this run. A 1 requests a review; it does not guarantee a rule or a publication.
+
+For H+=0, `basis` gives the candidate-specific reason and `claim` is omitted. Cite a published rule ID, version and applicable conditions only when the reason is that a rule already covers the proposed increment. When no concrete increment is identified, say so directly; do not cite a rule that is not there, and do not treat "no published rule covers it" as sufficient for 1.
 
 ### Predict H+ at cold start
+
+An empty library or missing historical reviews does not prevent a hypothesis grounded in the task, candidate steps and evidence obtainable during this run. It also does not make every standard modelling step an increment: an ordinary, generally known step without a new mechanism, boundary or operational detail is still H+=0. "No published rule covers it" is necessary background, never sufficient by itself.
 
 Compare the proposed increment with published strategy rules that apply to the candidate in the frozen prediction input. Similar executions, matching structural cells and structural recommendations help find material and checks; they do not establish rule coverage by themselves. A structural recommendation requires confirmed or partial machine support; a rule whose predicates are empty or unmeasured is not offered there and remains discoverable through text retrieval. The **when** paragraph is the ONE semantic applicability statement: the framework checks only deterministic structural conditions (`predicates`, optional; empty means no machine-checkable condition, never unconditional applicability) and never decides whether `when` holds. A different `family` label alone is not a contradiction — a shared mathematical mechanism may transfer. When a recommendation contains a published rule, read its `when`/`do`/`expect` and decide applicability; a retrieval hit is not adoption. For an already-covered 0, cite its visible ID, version and applicable conditions in `basis`.
 
@@ -35,7 +60,16 @@ For a covered control, suppose the frozen input actually shows published rule `1
 
 Use only rule IDs and versions actually present in the input; the control ID above is illustrative. If no concrete reusable increment with a check feasible during this run can be identified, return 0 with that specific reason and omit `claim`. Missing review history alone is not that reason. A 1 schedules a factual review; the review decides whether anything was learned and whether a rule can be published.
 
-When a condition is checked, add an item to the `hplus_verification` list in the `check-task --check` JSON. Supply the original `prediction_id`, the zero-based `condition_index`, `state:"checked"`, a `source`, and locatable `evidence_refs` such as `artifacts.submitted_script` and `task_check.checks`. Use `finding` to record what the check showed. An omitted state or missing support leaves the condition unknown.
+For a standard modelling step, suppose the task states a capacity limit and the candidate simply writes a linear capacity constraint. That is necessary translating work; there is no new mechanism, boundary or operational detail to test. Return 0:
+
+```json
+{
+  "decision": 0,
+  "basis": ["The candidate translates a stated capacity limit into a linear constraint. That is required solving work, not a reusable increment, and no concrete mechanism or method boundary that this run could establish was identified."]
+}
+```
+
+When a condition is checked, add an item to the `hplus_verification` list in the `check-task --check` JSON. Supply the original `prediction_id`, the zero-based `condition_index`, `state:"checked"`, a `source`, and locatable `evidence_refs` such as `artifacts.submitted_script` and `task_check.checks`. Use `finding` to record what the check showed. An omitted state or missing support leaves the condition unknown. Use `not_checked` or `unavailable` honestly when the run could not complete the condition; never mark it checked to close the review, and never run a second complete solve merely to make it show as checked.
 
 During H+ building, close-out schedules one required review per bound executed positive prediction, including failed attempts and incomplete verification. Missing or invalid decisions schedule as 0 with their own diagnostics. Executed H+ = 0 attempts remain available as comparisons.
 
@@ -47,6 +81,62 @@ Read each J from `close-episode` under `result.induction_schedule.pending_ids`. 
 orx induction-status --task T --episode EP
 orx induction-material --induction-id J
 ```
+
+H+=1 schedules the review; it does not prove that knowledge was gained. The review must be allowed to conclude that nothing was learned.
+
+### Review decisions
+
+Compare, in this order:
+
+1. the frozen `claim` and each `verification_condition`;
+2. what the actual execution and checks established — the captured script, result, check report, attached verification and the material cases;
+3. the relevant existing rules and historical executions delivered in the material (including the frozen prediction-time baseline);
+4. whether the verification condition was actually completed.
+
+Then choose the learning result from the evidence, not from the trigger:
+
+- `new_rule`: a genuinely new reusable method or boundary with enough evidence.
+- `revision`: an existing rule's scope or body is wrong or incomplete and the corrected version is supported.
+- `evidence_added`: an existing unchanged rule gains real support; no new body.
+- `already_covered`: published rules already cover the executed method; cite the actual rule version and applicable conditions.
+- `no_new_knowledge`: the execution was a normal modelling/solving run without a reusable increment, or the hypothesis dissolved on inspection.
+- `insufficient_evidence`: the material cannot support either a rule or a supported no-increment conclusion.
+
+`new_rule` and `revision` are never required to settle a positive job. Writing no rule is a successful review when the facts support that conclusion. Do not split one method into several renamed fragments to grow the count, and do not merge methods whose mechanisms differ just to keep the count low.
+
+### Keep the hypothesis outcome separate from the learning result
+
+The review must also say what happened to the ORIGINAL prediction-time hypothesis, using the existing `hypothesis_outcome` (`supported`, `refuted`, `unknown`) and `deviation_reason`. Four cases are different:
+
+1. the claim was supported;
+2. the claim was refuted;
+3. the claim was not sufficiently verified;
+4. the execution revealed different new knowledge unrelated to the claim.
+
+Do not present case 4 as case 1. If the original hypothesis was not verified but an incidental, well-evidenced technique is worth inducing, analyse that finding separately; the original claim's outcome is still recorded as `refuted` or `unknown`. An unfinished verification condition stays `not_checked`, `unavailable` or unknown in the receipt; it is never upgraded to checked to close the job. Use the existing `hypothesis_outcome`, `deviation_reason`, verification records and `basis`; do not invent a second hypothesis-status system.
+
+### Durable knowledge must be usable by a future decision
+
+A published strategy rule is used BEFORE solving a future task. It must be decidable and executable at that decision point:
+
+- **when**: applicability conditions or a method boundary a future agent can judge from real task inputs and the candidate;
+- **do**: concrete modelling or implementation steps that can be executed;
+- **expect**: the guarantee or measured effect the evidence supports.
+
+Strategic knowledge may store reusable modelling methods, solving strategies with applicability conditions, structural reductions and speed-ups, transferable code/API experience, and evidenced method-failure boundaries. It must NOT store benchmark scores, a specific test set's reference answers, a particular task's difference from a hidden reference, strategies that only work once the evaluation result is known, patches made only to pass a particular test, or rules of the form "if the benchmark reference uses domain X, use domain X". Reference answers, checkers and experiment results may be cited as POST-HOC VERIFICATION EVIDENCE, but they cannot be a premise of the strategy itself unless that condition is a real task input the future agent can see.
+
+Do not add knowledge types such as `benchmark_specific` or `modelling_translation`, and do not create a separate classification or storage for them.
+
+### Match the verification claim to the rule's claim
+
+Keep the existing verified / insufficient / refuted semantics and publication flow. Distinguish:
+
+- an exactly derived mathematical property: a valid derivation scopes it; one solid derivation can support the rule without independent task repeats;
+- an empirical success, cost or transfer claim: it needs independent tasks with effective comparison before it is described as a verified general regularity;
+- a technical fact observed in a single run: keep it as a scoped technical fact;
+- an unverified generalisation: keep it as a hypothesis, not a verified rule.
+
+A single observation may be retained as evidence but must not be advertised as a proven cross-task advantage. Do not demand a second complete solve for every entry; the verification method must fit the claimed property.
 
 ## Minimal submissions
 
@@ -106,7 +196,9 @@ of the rule.
 `new_rule` and `revision` are the only results that write a rule.
 `evidence_added`, `already_covered` and `no_new_knowledge` require `basis`;
 `insufficient_evidence` may omit it. Do not write a rule to say there is no
-new knowledge: use the matching no-write result.
+new knowledge: use the matching no-write result. The table lists what each
+result writes; it is not a preference order. For a positive trigger, choose the
+result the evidence supports, including a no-write result.
 
 `publication` is the agent's scoped usage choice, not a verification claim.
 Omit it to leave the new body as a candidate. `state` is
@@ -237,6 +329,10 @@ orx inspect --bank values --value VALUE_REF
 After answering, cite available reference answers, checker results, or user feedback with their source and coverage. Use original-constraint checks or a derivation to support claims about feasibility and why a step transfers.
 
 ## Complete review submissions
+
+A positive trigger does not require a new rule. The review first decides whether
+there is a reusable increment at all; `already_covered`, `no_new_knowledge` and
+`insufficient_evidence` are legitimate conclusions of a complete review.
 
 ### Generalize the method from cases
 
@@ -404,6 +500,78 @@ orx induce --induction-id J \
 
 This completes the review with an unknown learning label. Use it when
 evidence is insufficient for either a rule or a no-increment conclusion.
+
+### Worked review flows
+
+The three outcomes below use the same review protocol and differ only in what
+the evidence supports. EX and J are real IDs; SOURCE_FACT_REF and
+BASELINE_SNAPSHOT_REF come from `result.induction_gate`.
+
+**new_rule — a specific mechanism survived review.** The frozen claim proposed
+that capacity shared between a training phase and a production phase is easy to
+deduct in only one phase. The run's base check, the attached script and the
+comparison with the failed one-phase attempt isolate the step. Read the
+material, then submit:
+
+```bash
+orx induce --induction-id J \
+  --submission '{
+    "result":"new_rule",
+    "rule":{
+      "when":"A model has a training phase and a production phase that share one resource capacity, and the task states the resource is unavailable in both phases.",
+      "do":"Deduct that resource capacity from every phase in which it is unavailable, not only the production phase. Recompute resource usage in both phases and keep the same phase scope in the check.",
+      "expect":"Preserves the stated availability constraint across the whole horizon."
+    },
+    "basis":{"kind":"derivation","refs":["EX","SOURCE_FACT_REF"],
+             "analysis":"The captured one-phase and two-phase runs differ only in the capacity deduction; the two-phase version preserves the stated availability constraint and the objective."},
+    "hypothesis_outcome":"supported",
+    "publication":{"state":"published","reason":"The derivation and the recorded comparison support this scope."}
+  }'
+```
+
+Read `result.induction_receipt`: `outcome=new_rule`, the written version and
+`verification[].state` for each condition. A condition that was not actually
+checked stays `unknown` even when the rule is accepted.
+
+**no_new_knowledge — the hypothesis dissolved.** The frozen claim suggested that
+a standard capacity constraint might hide a modelling trap. The execution shows
+the statement gave the limit directly, the code wrote `sum(q) <= cap`, and the
+recorded check matched the task. There is no reusable increment. Submit:
+
+```bash
+orx induce --induction-id J \
+  --submission '{
+    "result":"no_new_knowledge",
+    "hypothesis_outcome":"refuted",
+    "deviation_reason":"The capacity limit was stated directly; no boundary or mechanism was tested.",
+    "basis":{"kind":"recorded_checks","refs":["EX","task_check.checks"],
+             "analysis":"The recorded check confirms ordinary constraint translation; no step differs from the standard model."}
+  }'
+```
+
+Receipt: `outcome=no_increment`, learning label 0 when the no-increment
+conclusion is supported, and no rule. `hypothesis_outcome` still records
+`refuted`; the hypothesis outcome and the learning result are separate fields.
+
+**insufficient_evidence — the condition was not completed.** The frozen claim
+asked whether a two-solver comparison would expose a numerical boundary, but
+the second solver was unavailable in the sandbox and the run kept only one
+solver's result. The self-check committed what it could; the H+ condition is
+not checked. Submit:
+
+```bash
+orx induce --induction-id J \
+  --submission '{"result":"insufficient_evidence",
+    "hypothesis_outcome":"unknown",
+    "deviation_reason":"The second solver was unavailable; no independent boundary check exists in this execution."}'
+```
+
+Receipt: `outcome=insufficient_material`, learning label unknown, no rule, and
+the verification item stays `unknown`. This is a COMPLETED review, not a failed
+one; it must not be reported as a verified hypothesis. If a run produces both a
+refuted original claim and an unrelated supported finding, record the refuted
+outcome and submit the supported finding as its own `new_rule` with its own
+basis.
 
 ### Read publication, completion and learning separately
 

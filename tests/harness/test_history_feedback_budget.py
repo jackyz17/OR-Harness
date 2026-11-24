@@ -675,8 +675,11 @@ class TestEndToEndPriority(M4Case):
         self.provider.requests.clear()
         prior = os.environ.get("OR_HARNESS_INPUT_BUDGET_TOKENS")
         # A budget that passes the legacy chars/4 check but is too small for
-        # the conservative token estimate: the history must be reduced.
-        os.environ["OR_HARNESS_INPUT_BUDGET_TOKENS"] = "26000"
+        # the conservative token estimate: the history must be reduced. The
+        # figure is a fixture calibration, not a minimum deployment budget:
+        # it stays above the protected core (which includes the system
+        # prompt) while forcing history-first trimming.
+        os.environ["OR_HARNESS_INPUT_BUDGET_TOKENS"] = "28000"
         try:
             prediction = planned_prediction(
                 self.h, task, {"action_type": "execute_strategy",

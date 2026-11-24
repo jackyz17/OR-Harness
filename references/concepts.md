@@ -47,7 +47,7 @@ When relevant memory is sparse, propose a method from the task itself. The resul
 
 A candidate describes the proposed method and its execution conditions, including the solver and settings. **Q** describes quality on the original task. **G** is the benefit forecast used by `plan-next` to score a proposal. By default it estimates the probability of original-task acceptance given faithful execution. **C** forecasts resources over a declared scope. **R** forecasts the probability of technical implementation failure in one attempt. Utility uses G, normalized C, and R on a comparable basis. [Scored selection](strategy_outcome.md)
 
-**H+** is the pre-execution learning decision relative to the rule library available at prediction time. Its hypothesis names what reusable method or boundary the execution could reveal. During H+ building, a bound execution with `H+=1` schedules one review at close-out. An executed `H+=0` skips that review. [H+ review dispatch](induction.md#when-to-start-induction)
+**H+** is the pre-execution learning decision relative to the rule library available at prediction time. Its hypothesis names a concrete reusable method or boundary the execution could reveal — not the task's difficulty, and not a standard translation of the statement into variables, an objective and constraints. During H+ building, a bound execution with `H+=1` schedules one review at close-out; the review may still conclude that no increment was gained. An executed `H+=0` skips that review. [H+ review dispatch](induction.md#when-to-start-induction)
 
 ### Prediction and observation
 

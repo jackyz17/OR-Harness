@@ -50,7 +50,7 @@ Three independent provider-only ceilings apply: history feedback (`OR_HARNESS_HI
 | `benefit` (G) | Expected benefit under the decision's metric, unit and baseline |
 | `cost` (C) | Raw resource estimates in `expected`. `expected_measured` marks supplied dimensions |
 | `risk` (R) | Predicted event probabilities. U uses the MAXIMUM of the events all ranked candidates supplied validly: `implementation_failure`, `timeout`, `environment_failure` |
-| `capability_gain` (H+) | `decision` (`0` or `1`), learning hypothesis, basis, applicability and checkable conditions |
+| `capability_gain` (H+) | `decision` (`0` or `1`), a concrete learning hypothesis, basis, applicability and checkable conditions. It is not a difficulty or success rating |
 | `uncertainty` | Reported uncertainty about the forecast, with any interval kind and coverage supplied by the contract |
 | `trace` | Input and protocol identity, evidence basis, unsupported fields and measured forecast-call cost |
 
@@ -88,7 +88,7 @@ for unknown evidence and historical conventions.
 
 ### H+ and induction
 
-Read the assigned switch in `trace.model_info.hplus`. During library building, close-out schedules a review for an executed, bound positive signal. The review keeps the prediction, actual evidence and supported learning result in an induction receipt that can inform later forecasts. Read the [induction handoff](induction.md#when-to-start-induction) for what to do with its ID.
+Read the assigned switch in `trace.model_info.hplus`. During library building, close-out schedules a review for an executed, bound positive signal. The positive switch records that a concrete, checkable increment hypothesis was proposed; it does not assert that knowledge was gained. The review compares the hypothesis, actual evidence and existing rules and may settle as a new rule, a revision, added evidence, already covered, no new knowledge, or insufficient evidence. The receipt keeps the prediction, actual evidence and supported learning result and can inform later forecasts. Read the [induction handoff](induction.md#when-to-start-induction) for what to do with its ID.
 
 ## 4. Inspect a prediction and its input
 
