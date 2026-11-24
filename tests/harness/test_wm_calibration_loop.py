@@ -706,7 +706,16 @@ class TestFaithfulGObservations(GCase):
         historical = next(row for row in pairs["pairs"] if row["prediction_id"] == old.prediction_id)
         self.assertEqual(historical["benefit"]["observed"], 1.0)
         self.assertEqual(historical["g_observed_fact"]["observed"], 0.0)
+        self.assertEqual(historical['g_observed_fact']['attribution']['failure_source'], 'candidate_method')
+        self.assertTrue(historical['g_observed_fact']['attribution_ref'])
         self.assertEqual(len(pairs["same_task_comparisons"]), 1)
+        local = self.provider.requests[-1]['prediction_context']['g_candidate_evidence']
+        case = next(row for row in local['cases'] if row['execution_id'] == r.execution_id)
+        self.assertEqual(case['g']['observed'], 0)
+        self.assertEqual(case['g']['metric'], 'task_check_passed_given_faithful_execution')
+        self.assertIsNone(case['g']['signed_error'])
+        self.assertEqual(local['global_history']['n_observed'], 2)
+        self.assertEqual(local['global_history']['n_scored'], 1)
 
     def test_legacy_no_result_completion_rule_remains_legacy(self):
         self.provider.payload["benefit"].update(metric="task_result_check_passed", unit="boolean")
@@ -716,7 +725,7 @@ class TestFaithfulGObservations(GCase):
         self.run_g(p, crash=True)
         self.assertEqual(self.close_g()["evaluations"][0]["benefit"]["observed"], 0.0)
 
-    def test_unresolved_evidence_references_leave_g_unknown(self):
+    def test_unresolved_evidence_references_are_rejected_before_changing_a_valid_check(self):
         p = self.predict_g()
         r = self.run_g(p)
         self.check_g(r)
@@ -725,10 +734,11 @@ class TestFaithfulGObservations(GCase):
                 "acceptance_scope": "original_task", "acceptance_id": "factory-coupling/v1",
                 "source": "auditor", "assessment": "checked the code and answer",
                 "evidence_refs": ["artifacts.not-present"]}}
-        self.assertEqual(self.h.check_task_result(r.execution_id, check)["state"], "passed")
+        with self.assertRaisesRegex(ValueError, "evidence_refs must resolve"):
+            self.h.check_task_result(r.execution_id, check)
         b = self.close_g()["evaluations"][0]["benefit"]
-        self.assertEqual(b["label_eligibility"], "unknown")
-        self.assertNotIn("observed", b)
+        self.assertEqual(b["label_eligibility"], "attributable")
+        self.assertEqual(b["observed"], 1)
 
     def test_timeout_and_insufficient_checker_are_unknown(self):
         self.h.executor.timeout_seconds = 1

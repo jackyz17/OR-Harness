@@ -619,6 +619,20 @@ def _provider_method(row, ref):
     return out
 
 
+def _provider_g_attribution(attribution, ref):
+    if not isinstance(attribution, dict):
+        return {}
+    out = {}
+    for key in ("method_fidelity", "failure_source", "source"):
+        if attribution.get(key) not in (None, ""):
+            out[key], _ = _clip(attribution[key], 120)
+    if attribution.get("assessment") not in (None, ""):
+        out["assessment"], clipped = _clip(attribution["assessment"], 280)
+        if clipped:
+            out["assessment_ref"] = ref + ".assessment"
+    return out
+
+
 def _provider_benefit(row, ref):
     """The original prediction, the real observation, the error and the
     attribution the close-out RECORDED (never a cause inferred here)."""
@@ -628,7 +642,7 @@ def _provider_benefit(row, ref):
     out = {}
     for key in ("metric", "observation_rule_version", "label_eligibility",
                 "predicted", "observed", "signed_error", "abs_error",
-                "interval_kind", "interval_coverage", "eligibility"):
+                "interval_kind", "interval_coverage", "eligibility", "attribution_ref"):
         if benefit.get(key) is not None:
             out[key] = copy.deepcopy(benefit[key])
     if benefit.get("reason") is not None:
@@ -657,20 +671,9 @@ def _provider_benefit(row, ref):
         out["notes"] = [_clip(str(item), 160)[0] for item in notes[:2]]
         if len(notes) > 2:
             out["notes_ref"] = f"{ref}.benefit.notes"
-    attribution = benefit.get("attribution")
-    if isinstance(attribution, dict) and attribution:
-        compact = {}
-        for key in ("method_fidelity", "failure_source", "source"):
-            if attribution.get(key) not in (None, ""):
-                compact[key], _ = _clip(attribution[key], 120)
-        if attribution.get("assessment") not in (None, ""):
-            text, clipped = _clip(attribution["assessment"], 280)
-            compact["assessment"] = text
-            if clipped:
-                compact["assessment_ref"] = (f"{ref}.benefit.attribution."
-                                             "assessment")
-        if compact:
-            out["attribution"] = compact
+    attribution = _provider_g_attribution(benefit.get('attribution'), ref + '.benefit.attribution')
+    if attribution:
+        out['attribution'] = attribution
     return out
 
 
@@ -680,9 +683,12 @@ def _provider_observed_fact(row, ref):
         return {}
     out = {}
     for key in ("metric", "observation_rule_version", "observed",
-                "label_eligibility", "acceptance_id", "note"):
+                "label_eligibility", "acceptance_id", "note", "attribution_ref"):
         if fact.get(key) is not None:
             out[key] = copy.deepcopy(fact[key])
+    attribution = _provider_g_attribution(fact.get('attribution'), ref + '.g_observed_fact.attribution')
+    if attribution:
+        out['attribution'] = attribution
     rule = fact.get("acceptance_rule")
     if isinstance(rule, dict) and rule:
         out["acceptance_rule"] = {

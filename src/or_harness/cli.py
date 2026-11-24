@@ -1467,14 +1467,31 @@ def cmd_action(args) -> int:
                          "ACTION_ID")
         if not args.task:
             return _fail("--report requires --task")
-        task = _load_json_arg(args.task)
-        params = _load_json_arg(args.params) if args.params else None
-        outcome = _load_json_arg(args.outcome) if args.outcome else None
+        try:
+            task = _load_json_arg(args.task)
+        except (ValueError, OSError) as exc:
+            return _fail('--task for action must be a task JSON object or JSON file '
+                         '(e.g. --task task.json), not a bare task ID. '
+                         'For G attribution use check-task EXECUTION_ID --check check.json. '
+                         + str(exc))
+        if not isinstance(task, dict) or not task.get('task_id'):
+            return _fail('--task for action must be a JSON object with task_id')
+        parsed = {}
+        for key in ('params', 'outcome', 'cost'):
+            value = getattr(args, key)
+            if value is None:
+                continue
+            try:
+                parsed[key] = _load_json_arg(value)
+            except (ValueError, OSError) as exc:
+                return _fail(f'--{key} must be a JSON object or JSON file: {exc}')
+            if not isinstance(parsed[key], dict):
+                return _fail(f'--{key} must be a JSON object')
+        params = parsed.get('params')
+        outcome = parsed.get('outcome')
         cost = None
         if args.cost:
-            cost = _load_json_arg(args.cost)
-            if not isinstance(cost, dict):
-                return _fail("--cost must be a JSON object")
+            cost = parsed['cost']
         result = h.report_action(
             args.report, task, episode_id=args.episode, params=params,
             outcome=outcome, status=args.status, cost=cost)
@@ -2591,7 +2608,7 @@ def build_parser() -> argparse.ArgumentParser:
                 "the answer satisfies the task. Never replace a benchmark "
                 "reference with your own value and call the task passed."))
     p.add_argument("execution_id", metavar="EXECUTION_ID")
-    p.add_argument("--check", default=None, metavar="JSON",
+    p.add_argument("--check", default=None, metavar="JSON_OR_FILE",
                    help=("the check basis, e.g. '{\"reference_objective\": "
                          "10755, \"reference_source\": \"bench_declared\", "
                          "\"integer\": {\"variables\": [\"x1\", "
@@ -2601,7 +2618,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "({coefficients, constant?, tolerance?}), "
                          "semantic_probe ([{path, equals|min|max|in}]), "
                          "reference_source (bench_declared|independent|"
-                         "self_derived), reference_version, intent "
+                         "self_derived), reference_version, optional sourced "
+                         "g_attribution (saved separately from the checker verdict), intent "
                          "(relaxation|intermediate). Omitted: the verdict is "
                          "`insufficient` — never a default pass. A probe path "
                          "that does not resolve reports `insufficient`, NOT a "
@@ -2793,7 +2811,8 @@ def build_parser() -> argparse.ArgumentParser:
                             "finish_task) or amend an action's cost")
     p.add_argument("--report", default=None, metavar="TYPE",
                    help="action type to report (agent_reported)")
-    p.add_argument("--task", default=None)
+    p.add_argument("--task", default=None,
+                   help="task JSON object or JSON file with task_id (not a bare ID)")
     p.add_argument("--episode", default=None)
     p.add_argument("--params", default=None, help="JSON params")
     p.add_argument("--outcome", default=None, help="JSON outcome")

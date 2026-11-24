@@ -623,8 +623,9 @@ def _attach_evaluation_facts(pool: List[Dict[str, Any]],
 
 
 def _pair_rank(pair: Dict[str, Any]) -> Tuple[int, int, int, str]:
-    benefit = pair.get("benefit") or pair.get("g_observed_fact") or {}
-    observed = 1 if benefit.get("observed") in (0, 1) else 0
+    from or_harness.world_model.g_signal import _pair_g_observation
+    label, _ = _pair_g_observation(pair)
+    observed = 1 if label is not None else 0
     cost_values = (pair.get("cost_observed_fact") or {}).get("values") or {}
     risk = len(pair.get("risk_actual") or [])
     return (observed, len(cost_values), risk,
@@ -643,15 +644,16 @@ def _evaluation_fact(pair: Dict[str, Any]) -> Dict[str, Any]:
         "covers_execution_ids": [str(execution_id) for execution_id
                                  in (pair.get("execution_ids") or [])],
     }
-    benefit = pair.get("benefit") or {}
-    observed_fact = pair.get("g_observed_fact") or {}
+    from or_harness.world_model.g_signal import pair_g_fact, _pair_g_observation
+    benefit = pair_g_fact(pair)
     g_block: Dict[str, Any] = {}
-    for source in (benefit, observed_fact):
-        for key in ("metric", "observation_rule_version", "observed",
-                    "predicted", "signed_error", "label_eligibility",
-                    "reason"):
-            if key in source and key not in g_block:
-                g_block[key] = copy.deepcopy(source[key])
+    for key in ("metric", "observation_rule_version", "predicted",
+                "signed_error", "label_eligibility", "reason", "attribution_ref"):
+        if key in benefit:
+            g_block[key] = copy.deepcopy(benefit[key])
+    label, _ = _pair_g_observation(pair)
+    if label is not None:
+        g_block['observed'] = label
     if g_block:
         fact["g"] = g_block
     attribution = benefit.get("attribution")
@@ -758,17 +760,14 @@ def global_g_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     unknown = 0
     unknown_reasons: Dict[str, int] = {}
     n_predicted = 0
+    from or_harness.world_model.g_signal import pair_g_fact, _pair_g_observation
     for pair in pairs:
-        benefit = pair.get("benefit") or {}
-        observed_fact = pair.get("g_observed_fact") or {}
-        metric = benefit.get("metric") or observed_fact.get("metric")
-        rule = (benefit.get("observation_rule_version")
-                or observed_fact.get("observation_rule_version"))
+        benefit = pair_g_fact(pair)
+        metric = benefit.get("metric")
+        rule = benefit.get("observation_rule_version")
         if metric != FAITHFUL_G_METRIC or rule != FAITHFUL_G_OBSERVATION_VERSION:
             continue
-        observed = benefit.get("observed")
-        if observed not in (0, 1):
-            observed = observed_fact.get("observed")
+        observed, _ = _pair_g_observation(pair)
         predicted_raw = benefit.get("predicted")
         predicted = (float(predicted_raw)
                      if isinstance(predicted_raw, (int, float))
@@ -786,7 +785,7 @@ def global_g_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             continue
         unknown += 1
         reason = str(benefit.get("reason")
-                     or observed_fact.get("label_eligibility")
+                     or benefit.get("label_eligibility")
                      or "no attributable label in the closed pair")
         unknown_reasons[reason] = unknown_reasons.get(reason, 0) + 1
     n_scored = len(scored)
@@ -1607,15 +1606,17 @@ def _g_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
             "metric": g_block.get("metric"),
             "rule": g_block.get("observation_rule_version"),
         }
-        recorded = evaluation.get("attribution") or g_block.get("attribution")
-        if isinstance(recorded, dict) and recorded:
-            case["recorded_cause"] = recorded
     else:
         case["g"] = {
             "observed": None,
             "reason": (g_block.get("reason")
                        or "no attributable G label in this closed pair"),
         }
+    recorded = evaluation.get("attribution") or g_block.get("attribution")
+    if isinstance(recorded, dict) and recorded:
+        case["recorded_cause"] = recorded
+    if g_block.get('attribution_ref'):
+        case['g']['attribution_ref'] = g_block['attribution_ref']
     if evaluation.get("bound_execution_id"):
         case["bound_execution_id"] = evaluation["bound_execution_id"]
     if evaluation.get("task_check") is not None:

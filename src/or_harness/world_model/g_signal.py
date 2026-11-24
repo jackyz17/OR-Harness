@@ -183,31 +183,52 @@ def select_conditional_g(calibration, *, profile, conditions, convention, scope=
     return out
 
 
+def pair_g_fact(row):
+    """One observation currency: a faithful-G case never inherits legacy error fields."""
+    for key in ("g_observed_fact", "benefit"):
+        block = row.get(key)
+        if isinstance(block, dict) and block:
+            return block
+    return {}
+
+
 def _pair_g_observation(row):
     """The observed G label a pair actually carries, or ``None``.
 
-    The current home is ``benefit.observed``; a legacy pair may carry the
-    same fact under ``g_observed_fact.observed``. A crash, an execution
+    A separate ``g_observed_fact`` takes precedence over a legacy benefit
+    currency; otherwise use ``benefit.observed``. A crash, an execution
     error or an ineligible audit has NO label and is never read as 0.
     """
-    for key in ("benefit", "g_observed_fact"):
-        block = row.get(key)
-        if not isinstance(block, dict):
-            continue
-        observed = block.get("observed")
-        if isinstance(observed, (int, float)) and not isinstance(observed, bool) \
-                and observed in (0, 1):
-            return int(observed), block
-    return None, {}
+    block = pair_g_fact(row)
+    observed = block.get("observed")
+    if block.get("label_eligibility") not in (None, "attributable"):
+        return None, block
+    if isinstance(observed, (int, float)) and not isinstance(observed, bool) and observed in (0, 1):
+        return int(observed), block
+    return None, block
 
 
 def _pair_convention(row):
-    for key in ("benefit", "g_observed_fact"):
-        block = row.get(key)
-        if isinstance(block, dict) and (block.get("metric")
-                                        or block.get("observation_rule_version")):
-            return block.get("metric"), block.get("observation_rule_version")
-    return None, None
+    block = pair_g_fact(row)
+    return block.get("metric"), block.get("observation_rule_version")
+
+
+def require_g_attribution_location(value, *, path="check", allow_root=True):
+    """Reject a misplaced declaration instead of silently accepting inert G data."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            location = path + "." + str(key)
+            if key == "g_attribution":
+                if not allow_root:
+                    raise ValueError(
+                        f"{location}: submit g_attribution only as a top-level key of "
+                        "check-task --check JSON (API: check_task_result); "
+                        "action reports and acceptance_rule.spec do not submit G attribution")
+                continue
+            require_g_attribution_location(child, path=location, allow_root=False)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            require_g_attribution_location(child, path=f"{path}[{index}]", allow_root=False)
 
 
 def checked_attribution(record, declaration):
@@ -218,7 +239,7 @@ def checked_attribution(record, declaration):
     issues = []
     for key, choices in {
         "method_fidelity": ("faithful", "deviated", "unknown"),
-        "failure_source": ("candidate_method", "implementation", "environment", "unknown"),
+        "failure_source": ("candidate_method", "implementation", "environment", "reference_conflict", "unknown"),
         "acceptance_scope": ("original_task", "partial", "unknown"),
     }.items():
         if out.get(key) not in choices:
@@ -226,6 +247,9 @@ def checked_attribution(record, declaration):
     for key in ("source", "assessment", "acceptance_id"):
         if not isinstance(out.get(key), str) or not out[key].strip():
             issues.append(f"{key} must name the assessment/source/acceptance standard")
+    for key in ("execution_id", "task_id"):
+        if key in out and out[key] != getattr(record, key):
+            issues.append(f"{key} does not match this execution")
     features = record.execution_features or {}
     available = {
         "artifacts." + key: ref for key, ref in (features.get("artifacts") or {}).items()
@@ -238,17 +262,26 @@ def checked_attribution(record, declaration):
             "sha256": hashlib.sha256(json.dumps(features["solution_variables"],
                 sort_keys=True, ensure_ascii=False).encode()).hexdigest()}
     refs = out.get("evidence_refs")
-    if not isinstance(refs, list) or not refs or any(
+    if not isinstance(refs, list) or any(
             not isinstance(ref, str) or ref not in available for ref in refs):
         issues.append("evidence_refs must resolve to this execution's code/result evidence")
         refs = []
-    if not set(refs).intersection(("artifacts.submitted_script", "solver.code_hash")):
+    if out.get("method_fidelity") in ("faithful", "deviated") and not set(refs).intersection(("artifacts.submitted_script", "solver.code_hash")):
         issues.append("method fidelity needs a code reference")
-    if not set(refs).intersection(("artifacts.workspace_result", "execution_features.solution_variables")):
+    if out.get("acceptance_scope") == "original_task" and not set(refs).intersection(("artifacts.workspace_result", "execution_features.solution_variables")):
         issues.append("acceptance needs a result reference")
+    resolved = out.get('resolved_refs')
+    if resolved is not None and (not isinstance(resolved, dict) or any(
+            not isinstance(resolved.get(ref), dict)
+            or resolved[ref].get('sha256') != available[ref].get('sha256') for ref in refs)):
+        issues.append('resolved_refs hashes do not match this execution evidence')
     out["resolved_refs"] = {ref: copy.deepcopy(available[ref]) for ref in refs}
     from or_harness.core.evidence_encoding import method_fingerprint
     for key in ('method_planned','method_actual'):
+        if key in out and method_key(out[key]) != method_key(getattr(record, key)):
+            issues.append(f"{key} does not match this execution")
+        if key+'_fingerprint' in out and out[key+'_fingerprint'] != method_fingerprint(getattr(record, key)):
+            issues.append(f"{key}_fingerprint does not match this execution")
         out.pop(key,None)
         out[key+'_fingerprint']=method_fingerprint(getattr(record,key))
     out["execution_id"] = record.execution_id
@@ -270,7 +303,8 @@ def _assessment_key(execution_id, report):
     return 'g_assessment|' + digest([str(execution_id), revision])
 
 
-def save_g_assessment(store, record, report, attribution):
+def save_g_assessment(store, record, report, attribution, *, prediction_id=None,
+                      execution_action_id=None):
     """Own G-only evidence in the world-model log; the task check stays generic.
 
     Also used when an old inline assessment is rewritten by a normal bank
@@ -303,6 +337,8 @@ def save_g_assessment(store, record, report, attribution):
         value = {'evaluation_version': 'wm-g-assessment/1',
             'observation_rule_version': FAITHFUL_G_OBSERVATION_VERSION,
             'execution_id': str(execution_id),
+            'execution_action_id': execution_action_id or raw.get('action_id'),
+            'prediction_id': prediction_id,
             'task_id': str(raw.get('task_id') or report.get('task_id') or ''),
             'episode_id': report.get('episode_id'),
             'check_action_id': report.get('action_id'),
@@ -338,6 +374,8 @@ def read_g_assessment(store, record, report=None):
                 value.get('episode_id') != report.get('episode_id') or
                 value.get('check_signature') != _check_signature(report)):
             return {'issues': ['G assessment does not match this execution/check revision']}, reference
+        if record.action_id and value.get('execution_action_id') and value['execution_action_id'] != record.action_id:
+            return {'issues': ['G assessment does not match this execution action']}, reference
         return copy.deepcopy(value['attribution']), reference
     # Opening a historical bank never migrates or writes its records.
     legacy = report.get('g_attribution') or {}
@@ -398,6 +436,8 @@ def observe_faithful_g(summary, records, prediction, *, store=None):
             reasons.append("method_actual was not recorded")
         if audit.get("method_fidelity") != "faithful":
             reasons.append("execution deviated from the candidate or fidelity is unknown")
+        if audit.get("failure_source") == "reference_conflict":
+            reasons.append("reference_conflict: reference/acceptance evidence remains unresolved")
         from or_harness.core.evidence_encoding import method_fingerprint
         bound_methods=all(audit.get(key+'_fingerprint')==method_fingerprint(getattr(record,key))
             if key+'_fingerprint' in audit else audit.get(key)==method_key(getattr(record,key))

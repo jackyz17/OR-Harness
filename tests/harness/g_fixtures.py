@@ -90,12 +90,18 @@ class GCase(HarnessTestCase):
         check = copy.deepcopy(check_spec) if check_spec is not None else {"semantic_probe": [{
             "path": "execution_features.solution_variables.CFC", "equals": 1}]}
         if evidence:
+            refs = ["artifacts." + key for key in ("submitted_script", "workspace_result")
+                    if key in (record.execution_features.get("artifacts") or {})]
+            # A synthetic crash has no result to assess. Submit that lack of
+            # coverage honestly instead of citing a nonexistent result file.
+            if 'artifacts.workspace_result' not in refs:
+                coverage = "unknown"
             check["g_attribution"] = {
                 "method_fidelity": fidelity, "failure_source": failure,
                 "acceptance_scope": coverage, "acceptance_id": acceptance,
                 "source": "test auditor reviewed captured script and result",
                 "assessment": "Code follows the recorded factory-selection steps; compare the recorded BE=1 and CFC values against the same-factory requirement.",
-                "evidence_refs": ["artifacts.submitted_script", "artifacts.workspace_result"]}
+                "evidence_refs": refs}
         return self.h.check_task_result(record.execution_id, check)
 
     def close_g(self, episode="ep1"):

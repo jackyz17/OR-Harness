@@ -121,14 +121,26 @@ check that actually verifies the mechanism is allowed. See [self-check detail an
 examples](references/self_check.md) for the layer criteria, failure handling and
 worked cases.
 
-`check.json` declares only the deterministic checks the framework can compute; it
-is not the whole self-check, and an inapplicable basis must not be declared for
-form. EX is `result.execution_id` from `execute`.
+`check.json` declares the deterministic checks the framework can compute; it is
+not the whole self-check, and an inapplicable basis must not be declared for
+form. After reviewing the captured method/code/result, include one sourced
+`g_attribution` in the same JSON through the [G attribution interface](references/episode_closeout.md#g-attribution-evidence).
+Use `method_fidelity` and `acceptance_scope` honestly; when the evidence cannot
+support a judgement, record `unknown` with the available references. EX is
+`result.execution_id` from `execute`.
 
 ```bash
 orx check-task EX --check check.json [--verification verify.json]
 orx record --from-staged EX
 ```
+
+`result.g_assessment_ref` acknowledges the saved attribution. Invalid or
+misplaced attribution is rejected before the check is written. `check-task` is
+the sole G submission interface; `action --report verify` only reports an
+external action. The framework derives G from the saved facts at close-out.
+Unknown is a normal outcome: do not repeat checks or run a full independent
+solve merely to obtain G=1 or G=0; re-check only for changed facts or a corrected
+check.
 
 Read `result.state`:
 

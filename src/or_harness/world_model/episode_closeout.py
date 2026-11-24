@@ -4762,10 +4762,10 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
     possible (its prediction was archived, or the record is gone). What the
     calibration reads is the DERIVED one:
 
-    - a task check that now FAILS turns the benefit observation into 0.0
-      (the answer does not satisfy the task), while the measured COST stays
-      exactly what it was: the answer was wrong, but it really did cost what
-      it cost, so a correction must not take a valid measurement with it;
+    - G is re-derived through the SAME faithful-execution attribution and
+      acceptance adapter used at close-out: a failed check alone is never
+      a candidate-method failure. Legacy metrics keep their own rules;
+      measured COST stays exactly what the execution actually consumed;
     - a task check that was WITHDRAWN restores the un-gated observation;
     - an execution WITHDRAWN from the evidence set (``exclude``) makes the
       evaluation uncountable — the fact itself is gone, so there is nothing
@@ -4828,11 +4828,16 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
     stored_check = (stored_benefit.get("task_check") or {}).get("state")
     derived_check = (derived_benefit.get("task_check") or {}).get("state")
     if stored_benefit.get("observed") != derived_benefit.get("observed") \
-            or stored_check != derived_check:
+            or stored_check != derived_check \
+            or stored_benefit.get('attribution_ref') != derived_benefit.get('attribution_ref') \
+            or stored_benefit.get('attribution') != derived_benefit.get('attribution') \
+            or stored_benefit.get('reason') != derived_benefit.get('reason'):
         changed["benefit"] = {
             "stored_observed": stored_benefit.get("observed"),
             "derived_observed": derived_benefit.get("observed"),
             "task_check": derived_benefit.get("task_check"),
+            "stored_attribution_ref": stored_benefit.get('attribution_ref'),
+            "derived_attribution_ref": derived_benefit.get('attribution_ref'),
             "cost_preserved": True,
         }
     if (stored.risk or {}).get("scored") != (derived.risk or {}).get("scored"):
@@ -4957,8 +4962,8 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
                 ("; a cost dimension's measurement moved (a late host-usage "
                  "amend), so more of the real spend is now scored"
                  if "cost" in changed else
-                 ". A task-result verdict changed after the evaluation was "
-                 "written")))),
+                 ". A task-result verdict or its G attribution changed after "
+                 "the evaluation was written")))),
         "stored_state": stored_state,
         "derived_state": derived_state,
     }
@@ -5251,7 +5256,7 @@ def build_paired_feedback(
                 observe_faithful_g(case, records, declared, store=harness.store)
                 if "observed" in case.benefit:
                     row["g_observed_fact"] = {k: copy.deepcopy(v) for k, v in case.benefit.items()
-                        if k in ("metric", "observation_rule_version", "observed", "acceptance_id", "acceptance_rule", "evidence_refs", "verified_objective")}
+                        if k in ("metric", "observation_rule_version", "observed", "acceptance_id", "acceptance_rule", "evidence_refs", "verified_objective", "attribution", "attribution_ref")}
                     row["execution_conditions"] = copy.deepcopy(case.benefit.get("execution_conditions"))
                     row["g_observed_fact"]["label_eligibility"] = "attributable"
                     row["g_observed_fact"]["note"] = "real execution fact; the historical prediction/error retains its original metric"
@@ -6377,7 +6382,7 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     benefit_row: Dict[str, Any] = {
         k: copy.deepcopy(benefit[k]) for k in (
             "metric", "observation_rule_version", "label_eligibility",
-            "acceptance_id", "acceptance_rule", "evidence_refs", "verified_objective") if k in benefit
+            "acceptance_id", "acceptance_rule", "evidence_refs", "verified_objective", "attribution_ref") if k in benefit
     }
     if prediction.benefit is None and benefit.get("label_eligibility") == "attributable":
         row["g_observed_fact"] = {k: copy.deepcopy(benefit[k]) for k in (

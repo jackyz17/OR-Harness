@@ -2565,6 +2565,14 @@ class ORHarness:
         The report also generates a POST snapshot (merged into the
         episode's progress chain) so the next action inherits what this
         action established."""
+        for key, value in (('task', task), ('params', params), ('outcome', outcome)):
+            if (key == 'task' or value is not None) and not isinstance(value, dict):
+                raise ValueError(f'{key} must be a JSON object')
+        if not task.get('task_id'):
+            raise ValueError('task must contain task_id')
+        from or_harness.world_model.g_signal import require_g_attribution_location
+        require_g_attribution_location(
+            {"params": params, "outcome": outcome}, path="action", allow_root=False)
         outcome = copy.deepcopy(outcome or {})
         reported_usage = host_usage if host_usage is not None else outcome.get("host_usage")
         if reported_usage is not None:
@@ -7205,6 +7213,11 @@ class ORHarness:
         ``intent`` (``relaxation`` / ``intermediate``) marking an execution
         whose answer is deliberately NOT the task's answer.
 
+        Optional top-level ``g_attribution`` is validated before writing and
+        stored separately from that generic rule. Invalid declarations raise
+        ``ValueError``; valid Unknown assessments can close normally. The
+        returned ``g_assessment_ref`` is also linked by the verify action.
+
         Three verdicts, and none of them is a default:
 
         - ``passed`` — every DECLARED basis held on the recorded values. It
@@ -7269,15 +7282,53 @@ class ORHarness:
         if record is None:
             raise ValueError(f'unknown execution_id {execution_id!r}: unavailable or withdrawn evidence')
         task_id = str(record.task_id)
+        if check is not None and not isinstance(check, dict):
+            raise ValueError('check must be a JSON object')
+        check = check if check is not None else {}
+        from or_harness.world_model.g_signal import (
+            checked_attribution, require_g_attribution_location, save_g_assessment,
+        )
+        require_g_attribution_location(check)
+        # Resolve the producing action, not the newest verify action linked
+        # to the same execution. Explicit ownership claims must agree.
+        execution_action = self.actions.get(record.action_id) if record.action_id else None
+        if execution_action is None:
+            execution_action = next((a for a in self.actions.query(task_id=task_id)
+                if a.action_type == 'execute_strategy' and a.source != 'hypothetical'
+                and a.linked_execution_id == execution_id), None)
+        execution_action_id = execution_action.action_id if execution_action else record.action_id
+        resolved_episode = episode_id
+        if execution_action is not None:
+            if episode_id is not None and episode_id != execution_action.episode_id:
+                raise ValueError('episode_id does not match the action that produced this execution')
+            resolved_episode = execution_action.episode_id
+        attribution = None
+        prediction_id = (execution_action.params or {}).get('prediction_id') if execution_action else None
+        if 'g_attribution' in check:
+            attribution = checked_attribution(record, check['g_attribution'])
+            issues = list(attribution.get('issues') or [])
+            for key, expected in (('episode_id', resolved_episode),
+                                  ('execution_action_id', execution_action_id),
+                                  ('strategy_id', record.strategy_id)):
+                if key in attribution and attribution[key] != expected:
+                    issues.append(f'{key} does not match this execution')
+            supplied_prediction = attribution.get('prediction_id')
+            if supplied_prediction is not None and supplied_prediction != prediction_id:
+                declared = self.strategy_predictions.get(supplied_prediction) if isinstance(supplied_prediction, str) else None
+                if (prediction_id is not None or declared is None or not execution_action_id or
+                        declared.trace.model_info.get('bound_action_id') != execution_action_id):
+                    issues.append('prediction_id is not bound to this execution')
+                else:
+                    prediction_id = supplied_prediction
+            if issues:
+                raise ValueError('invalid g_attribution: ' + '; '.join(issues) +
+                    '. Use unknown fidelity/acceptance_scope and available evidence when '
+                    'attribution is uncertain, or omit g_attribution for a generic task check.')
         # The AGENT's own verification evidence (a separate source, separate
         # storage). Validated and captured BEFORE any write so a bad bundle
         # cannot leave a half-written check behind.
         verification_block = (self._normalize_verification(record, verification)
                               if verification is not None else None)
-        resolved_episode = episode_id
-        if resolved_episode is None:
-            action = self.actions.by_execution(execution_id)
-            resolved_episode = action.episode_id if action is not None else None
         report = verify_task_result(record, check or {})
         from or_harness.strategy.rule_support import inherit_assessments
         inherit_assessments(record,report,check or {})
@@ -7315,20 +7366,19 @@ class ORHarness:
         if verification_block is not None:
             verification_block["action_id"] = action.action_id
         g_assessment_ref = None
-        g_issues = []
         with self.store.transaction():
-            if isinstance(check, dict) and 'g_attribution' in check:
-                from or_harness.world_model.g_signal import checked_attribution, save_g_assessment
-                attribution = checked_attribution(record, check['g_attribution'])
-                g_issues = list(attribution.get('issues') or [])
-                g_assessment_ref = save_g_assessment(self.store, record, report, attribution)
+            if attribution is not None:
+                g_assessment_ref = save_g_assessment(
+                    self.store, record, report, attribution, prediction_id=prediction_id,
+                    execution_action_id=execution_action_id)
             self.actions.end_action(
                 action.action_id, status="completed",
                 outcome={"state": report["state"],
                          "execution_id": execution_id,
                          "checks_run": [c.get("check") for c in report["checks"]],
                          "n_diffs": len(report["diffs"]),
-                         "unchecked": list(report["scope"]["unchecked"])},
+                         "unchecked": list(report["scope"]["unchecked"]),
+                         **({'g_assessment_ref': g_assessment_ref} if g_assessment_ref else {})},
                 linked_execution_id=execution_id, rollup="own")
             # (2) The fact annotation contains no G evaluation payload.
             if not retained:
@@ -7375,8 +7425,6 @@ class ORHarness:
         result['dependent_rule_validation']=dependencies
         if g_assessment_ref:
             result['g_assessment_ref'] = g_assessment_ref
-        if g_issues:
-            result['g_assessment_issues'] = g_issues
         if rule_validation is not None:
             result["rule_validation"] = rule_validation
         if republished is not None:
@@ -7714,9 +7762,13 @@ class ORHarness:
                 "prove the model is wrong; neither decides the next action for "
                 "you. Correct a check or its evidence on this same execution "
                 "when that is the problem; plan a new attempt only for a real "
-                "model/implementation problem. For an optional G assessment "
-                "use g_attribution.assessment in one to three sentences with "
-                "necessary evidence references. Use reference answers and "
+                "model/implementation problem. Submit an optional G assessment "
+                "once as top-level g_attribution in check-task --check, not an "
+                "action report; use g_attribution.assessment in one to three "
+                "sentences with necessary evidence references. Unknown is a "
+                "normal outcome: do not repeat checks or add solves just to "
+                "obtain a numeric G label. Use failure_source=reference_conflict "
+                "for an unresolved reference discrepancy. Use reference answers and "
                 "external correctness feedback only after the answer is "
                 "committed, for offline analysis rather than a return to "
                 "solving — never change the task to match a reference value"),

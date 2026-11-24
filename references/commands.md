@@ -219,7 +219,7 @@ Use `--adapted-from` and `--adaptation` to cite past cases. Use `--used-entry-id
 
 Check original task requirements against a staged or recorded execution. `check-task` writes a `verify` action and `execution_features.task_check`. It never runs the solver again, so a corrected check or a late check on the same execution does not create a solving attempt or consume a retry.
 
-**Before answering** The self-check is the agent's, not the tool's: check the model against the original task, then check the result against both. A solver's `optimal` proves only that the written model was solved. Use the base check on every task; add targeted enhanced checks only for concrete reasons, continue while an unresolved doubt can still change the conclusion, and stop when the evidence is sufficient. Do not default to a complete independent re-solve, and check the model-to-statement correspondence before trusting a second algorithm or solver. See [self-check detail](self_check.md) for the two layers, failure handling and examples. `--check` declares ONLY the bases the framework can compute; it is not the whole self-check.
+**Before answering** The self-check is the agent's, not the tool's: check the model against the original task, then check the result against both. A solver's `optimal` proves only that the written model was solved. Use the base check on every task; add targeted enhanced checks only for concrete reasons, continue while an unresolved doubt can still change the conclusion, and stop when the evidence is sufficient. Do not default to a complete independent re-solve, and check the model-to-statement correspondence before trusting a second algorithm or solver. See [self-check detail](self_check.md) for the two layers, failure handling and examples. `--check` takes a JSON object or JSON file containing the computable bases and optional G/H+ evidence annotations; it is not the whole self-check.
 
 | Check key | Use |
 |---|---|
@@ -229,6 +229,7 @@ Check original task requirements against a staged or recorded execution. `check-
 | `recompute_objective` | Compute the objective from the variables with coefficients the agent declares |
 | `semantic_probe` | Apply `{path, equals\|min\|max\|in}` probes to recorded fields |
 | `intent` | Mark a `relaxation` or `intermediate` result |
+| `g_attribution` | Optional sourced G assessment; saved separately from the generic acceptance rule and checker verdict |
 
 A useful deterministic check is not a proof that the model represents the task: `recompute_objective` with the coefficient you already used in the code can reproduce a unit error (see [the B018 example](self_check.md#b018--a-consistent-answer-with-the-wrong-unit)). The declared bases must come from the task's units and constraints.
 
@@ -239,6 +240,7 @@ Read:
 - `report.diffs[]` — the numeric differences for a failure.
 - `report.scope.basis` — the declared bases evaluated; `report.scope.unchecked` — only declared checks that could not run, with the reason; `report.scope.note` — the fixed scope statement. The framework does not scan the task text for uncovered constraints, so an empty `unchecked` is not a claim that nothing else needed checking.
 - `reflection_material` — the self-check material: `task_text`/`task_ref`, the candidate and performed method, `artifacts` references (script, result.json, error clips), the captured solution with `solution_ref`, the check report, `verification_evidence`, and prior attempts as one-line references. Read it before deciding, and prefer the references over re-reading the whole attempt chain.
+- `result.g_assessment_ref` — the saved G assessment, also referenced by the verify action's `outcome.g_assessment_ref` and the Evaluation's `benefit.attribution_ref`. A generic check without G attribution has no such reference. Invalid declarations return an actionable error before writing; valid Unknown attribution is accepted.
 
 **Independent verification** When the agent runs its own verification (a separate script, an enumeration, a hand computation), attach the evidence to this same execution:
 
@@ -258,7 +260,7 @@ Read:
 
 When the selected prediction has H+=1, the same `--check` JSON may include `hplus_verification` items for its frozen verification conditions (see [the H+ review handoff](induction.md#when-to-start-induction)). They check the predicted knowledge hypothesis, not an extra task requirement. Reuse self-check evidence where it applies; if the condition cannot be checked, record `not_checked`/`unavailable`. A complete re-solve is not the default, but an affordable check that actually verifies the mechanism is allowed — never one run merely to make the state show as checked.
 
-A failed check or a failed verification is corrected by re-running `check-task` on the same execution with better evidence or a correct check; a real model or implementation change requires a fresh `plan-next` selection and a new execution. See [G attribution evidence](episode_closeout.md#g-attribution-evidence) for a sourced G assessment.
+A changed fact or incorrect check can be corrected by re-running `check-task` on the same execution; a real model or implementation change requires a fresh `plan-next` selection and a new execution. Submit a sourced G assessment once through this same interface. Unknown does not require repeated checks or extra solving to force a numeric label. See [G attribution evidence](episode_closeout.md#g-attribution-evidence), including unresolved reference conflicts.
 
 **After answering** Benchmark evaluators compare the locked answer with reference evidence outside the retry loop; reference comparisons are for evaluation and offline analysis, never a reason to return to solving. For offline checks use `reference_objective` or `reference_status` with `reference_source` (`bench_declared\|independent\|self_derived`) and an available `reference_version`. The default objective tolerance is `1e-6 * max(1, abs(reference))`. Omitted source is treated as `self_derived`. See [offline use of reference evidence](induction.md#read-material-and-choose-comparisons).
 
@@ -327,6 +329,8 @@ Inspect current problem, progress and budget. The command returns the current vi
 ### `orx action --report TYPE --task t.json [--episode ep1] [--params JSON] [--outcome JSON] [--cost JSON] | --amend-cost ACTION_ID --cost JSON`
 
 Record an action performed outside `execute`. Choose `model|select_strategy|verify|finish_task` and supply observed parameters, outcome and cost. Supplied cost dimensions are marked measured. Read the action with `inspect --bank actions`. Use `--amend-cost` to replace its cost.
+
+`--task` requires a task JSON object or JSON file containing `task_id`, not a bare task ID. `--params`, `--outcome` and `--cost` also require JSON objects or JSON files; malformed input returns a named argument error. `action --report verify` records an agent-reported action and does not submit G attribution. Use only `check-task EX --check check.json` for that; putting `g_attribution` in action params/outcome is rejected with the correct interface.
 
 ### `orx budget --task ID [--episode ep1] [--declare llm_tokens=50000,...]`
 
