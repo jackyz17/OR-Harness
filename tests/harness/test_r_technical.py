@@ -216,15 +216,20 @@ class TestRFeedback(RCase):
         self.assertEqual(stats["groups"][0]["technical_successes"], 1)
 
     def test_frozen_context_keeps_only_history_visible_at_its_decision(self):
-        self.body(episode="past")
+        past = self.body(episode="past")
         self.close_g("past")
         ctx = self.h.build_prediction_context(self.task, "frozen")
-        self.body(episode="later", text="raise ValueError('network flow failure')\n")
+        later = self.body(episode="later",
+                          text="raise ValueError('network flow failure')\n")
         self.close_g("later")
         self.h.predict_strategy_outcome(self.task, {"action_type": "execute_strategy", "strategy_id": "S04",
             "solver": "highs", "method": COUPLED}, "frozen", context=ctx)
-        group = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]["groups"][0]
-        self.assertEqual((group["n_attempts"], group["technical_failures"], group["technical_successes"]), (1, 0, 1))
+        evidence = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]
+        # The frozen context's local cases were selected BEFORE the later
+        # execution existed: only the past attempt can appear.
+        execution_ids = {case["execution_id"] for case in evidence["cases"]}
+        self.assertIn(past.execution_id, execution_ids)
+        self.assertNotIn(later.execution_id, execution_ids)
 
     def test_unpredicted_execution_supplies_first_request_history_and_reusable_script(self):
         r = self.body(episode="unpredicted")
@@ -235,11 +240,11 @@ class TestRFeedback(RCase):
         self.task = dict(self.task, task_id="new-task")
         self.predict_r(episode="first")
         evidence = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]
-        self.assertEqual(len(evidence["groups"]), 1)
-        g = evidence["groups"][0]
-        self.assertEqual(g["technical_successes"], 1)
-        self.assertEqual(g["reusable_scripts"][0]["execution_id"], r.execution_id)
-        self.assertTrue(g["reusable_scripts"][0]["artifact"]["sha256"])
+        self.assertEqual(len(evidence["cases"]), 1)
+        case = evidence["cases"][0]
+        self.assertEqual(case["execution_id"], r.execution_id)
+        self.assertEqual(case["events"]["implementation_failure"]["label"], 0)
+        self.assertTrue(case.get("reusable_script"))
         self.assertNotIn("technical_r", self.provider.requests[-1]["prediction_context"]["strategy_outcome_calibration"])
 
     def test_omitted_r_still_counts_labels_and_future_open_attempts_do_not_leak(self):
@@ -249,25 +254,43 @@ class TestRFeedback(RCase):
         p2 = self.predict_r(episode="open")
         self.body(p2, text="raise ValueError('bad network flow')\n")
         self.predict_r(episode="next")
-        g = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]["groups"][0]
-        self.assertEqual((g["n_attempts"], g["technical_failures"], g["technical_successes"]), (1, 0, 1))
-        self.assertNotIn("mean_brier", g)
+        evidence = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]
+        # The closed attempt is a calibration case; the still-open attempt is
+        # visible as an EXECUTION-ONLY technical fact (it happened before
+        # this decision) but it never becomes a calibration label.
+        by_status = {}
+        for case in evidence["cases"]:
+            by_status.setdefault(case.get("evidence_status"), []).append(case)
+        self.assertEqual(len(by_status.get("closed_pair") or []), 1)
+        self.assertTrue(by_status.get("execution_only"))
+        for case in by_status.get("execution_only") or []:
+            self.assertNotIn("evaluation_id", case)
+            self.assertNotIn("brier", case["events"]["implementation_failure"])
+        # The GLOBAL base rates still count the closed window only.
+        rates = evidence["global_event_base_rates"]
+        self.assertEqual(rates["implementation_failure"]["n_known_labels"], 1)
         self.assertEqual(self.h.calibration_summary()["technical_r"]["coverage"]["n_reported_probabilities"], 0)
 
-    def test_missing_agent_identity_uses_history_but_other_interface_does_not(self):
+    def test_missing_agent_identity_uses_history_but_other_interface_is_not_same_interface(self):
         self.body(episode="history")
         self.close_g("history")
         self.provider.payload = payload()
         planned_prediction(self.h,self.task, {"action_type": "execute_strategy", "strategy_id": "S04",
             "solver": "pulp", "method": COUPLED}, "other-interface")
-        self.assertFalse(self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]["groups"])
+        other = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]
+        # A different solver interface is NOT labelled as same-interface
+        # evidence. It may still be a weaker technical case when the method
+        # itself is similar, but its relevance code says so.
+        self.assertFalse(any(case["relevance"] == "same_solver_interface"
+                             for case in other["cases"]))
         self.h.execution_context = {}
         self.predict_r(episode="missing")
         evidence = self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]
-        self.assertEqual(len(evidence["groups"]), 1)
+        self.assertGreaterEqual(len(evidence["cases"]), 1)
         self.assertEqual(evidence["missing"], [])
         self.assertNotIn("execution_agent", evidence)
-        self.assertNotIn("execution_agent", evidence["groups"][0]["conditions"])
+        for case in evidence["cases"]:
+            self.assertNotIn("execution_agent", case.get("conditions") or {})
 
     def test_usage_report_identity_does_not_split_technical_history(self):
         for episode, model in (("first", "model-a"), ("second", "model-b")):
@@ -679,13 +702,20 @@ class TestMultiEventRCalibration(RCase):
                        episode="next")
         evidence = self.provider.requests[-1][
             "prediction_context"]["implementation_r_evidence"]
-        self.assertEqual(tuple(evidence["events"]),
-                         ("implementation_failure", "timeout",
-                          "environment_failure"))
-        group = evidence["groups"][0]
-        self.assertEqual(group["events"]["timeout"]["occurred"], 1)
-        self.assertEqual(
-            group["events"]["environment_failure"]["occurred"], 1)
-        # Prediction diagnostics stay in the audit, not the evidence block.
-        self.assertNotIn("mean_brier", group["events"]["timeout"])
+        rates = evidence["global_event_base_rates"]
+        self.assertEqual(set(rates), {"implementation_failure", "timeout",
+                                      "environment_failure"})
+        self.assertEqual(rates["timeout"]["occurred"], 1)
+        self.assertEqual(rates["environment_failure"]["occurred"], 1)
+        # Local cases describe the observed labels of the bound attempts;
+        # the model's OWN prediction diagnostics stay separate, in the
+        # global_prediction_performance block (never mixed into an observed
+        # label).
+        case_events = [case["events"] for case in evidence["cases"]]
+        self.assertTrue(case_events)
+        for events in case_events:
+            self.assertEqual(set(events), {"implementation_failure",
+                                           "timeout",
+                                           "environment_failure"})
+        self.assertIn("global_prediction_performance", evidence)
         self.assertIn("timeout", evidence["event_definitions"])

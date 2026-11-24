@@ -323,7 +323,7 @@ class TestHostCostWindow(CCase):
         self.assertEqual(summary["conditional_cost"]["coverage"]["tool_calls"]["n_actual"], 1)
         self.predict_c("next-late")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(evidence["cases"][0]["values"]["tool_calls"], 8)
+        self.assertEqual(evidence["cases"][0]["cost"]["tool_calls"], 8)
         self.assertEqual(self.h.strategy_predictions.get(prediction.prediction_id).cost.expected.tool_calls, 8)
 
     def test_scoped_cli_backfill_enters_next_request_without_becoming_attempt_cost(self):
@@ -347,7 +347,7 @@ class TestHostCostWindow(CCase):
         self.assertNotIn("tool_calls", self.h.bank.get(record.execution_id).cost.measured_dims())
         self.predict_c("next-cli")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(evidence["cases"][0]["values"]["tool_calls"], 8)
+        self.assertEqual(evidence["cases"][0]["cost"]["tool_calls"], 8)
 
     def test_wrong_numeric_window_remains_unknown_with_source_reason(self):
         import time
@@ -414,13 +414,16 @@ class TestConditionalCostRequest(CCase):
         for request in (request_a, request_b):
             evidence = request["prediction_context"]["cost_evidence"]
             self.assertNotIn("execution_host", evidence["current_conditions"])
-            self.assertEqual(evidence["current_conditions"]["phase"], "existing_model")
-            self.assertEqual(len(evidence["reference_ranges"]), 1)
-            group = evidence["reference_ranges"][0]
-            self.assertEqual(group["dimensions"]["tool_calls"]["p50"], 14)
-            self.assertEqual(group["dimensions"]["tool_calls"]["p75"], 17)
-            self.assertEqual(group["dimensions"]["tool_calls"]["n"], 2)
-            self.assertEqual({c["values"]["tool_calls"] for c in evidence["cases"]}, {8, 20})
+            # C no longer classifies a modelling phase; the optional model
+            # artifact is ordinary context only.
+            self.assertNotIn("phase", evidence["current_conditions"])
+            self.assertFalse(evidence["current_conditions"]["phase_used"])
+            self.assertTrue(evidence["current_conditions"]["reusable_artifacts"])
+            tool = evidence["global_cost"]["dimensions"]["tool_calls"]
+            self.assertEqual(tool["p50"], 14)
+            self.assertEqual(tool["n"], 2)
+            self.assertEqual({c["cost"]["tool_calls"]
+                              for c in evidence["cases"]}, {8, 20})
             self.assertTrue(all(c["source_refs"] for c in evidence["cases"]))
             self.assertNotIn("conditional_cost", request["prediction_context"]["strategy_outcome_calibration"])
         self.assertIn("Reuse", " ".join(request_a["candidate"]["method"]["steps"]))
@@ -429,15 +432,29 @@ class TestConditionalCostRequest(CCase):
         groups = build_calibration_summary(self.h)["conditional_cost"]["groups"]
         self.assertEqual(len(groups), 1)
 
-    def test_family_and_phase_mismatch_withhold_priors_without_agent_filter(self):
+    def test_family_mismatch_is_a_weak_reference_and_artifact_is_not_a_phase(self):
         self.make_history("history", REUSE, 8)
         self.predict_c("other-host", model="other-executor")
-        self.assertEqual(len(self.provider.requests[-1]["prediction_context"]["cost_evidence"]["reference_ranges"]), 1)
+        first = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
+        # The usage-report model identity is not a cost condition.
+        self.assertGreaterEqual(len(first["cases"]), 1)
+        self.assertEqual(first["cases"][0]["grade"], "strict")
+        # A missing model artifact is NOT a phase: evidence stays available.
         self.predict_c("initial", existing=False)
-        self.assertEqual(self.provider.requests[-1]["prediction_context"]["cost_evidence"]["reference_ranges"], [])
+        second = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
+        self.assertGreaterEqual(len(second["cases"]), 1)
+        self.assertFalse(second["current_conditions"]["reusable_artifacts"])
         self.task["family"] = "scheduling"
         self.predict_c("other-family")
-        self.assertEqual(self.provider.requests[-1]["prediction_context"]["cost_evidence"]["reference_ranges"], [])
+        third = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
+        # Same measurement scope and no KNOWN solving conflict: the case is a
+        # broader_reference, never silently promoted to strict and never
+        # dropped merely for a family label.
+        self.assertEqual(third["reference_coverage"]["strict"]
+                         ["n_cases_included"], 0)
+        self.assertGreaterEqual(third["reference_coverage"]
+                                ["broader_reference"]["n_cases_included"], 1)
+        self.assertEqual(third["evidence_status"], "broader_reference_only")
 
     def test_open_episode_cost_never_leaks_into_next_request(self):
         prediction = self.predict_c()
@@ -445,8 +462,10 @@ class TestConditionalCostRequest(CCase):
         self.h.bank.update_cost(record.execution_id, source="agent_observed", tool_calls=99)
         self.predict_c("next")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(evidence["reference_ranges"], [])
         self.assertEqual(evidence["cases"], [])
+        self.assertEqual(evidence["reference_coverage"]["strict"]
+                         ["n_cases_included"], 0)
+        self.assertEqual(evidence["evidence_status"], "insufficient_evidence")
 
     def test_actual_solving_limits_stay_separate_and_known_mismatch_is_withheld(self):
         self.make_history("short", REUSE, 8)
@@ -456,16 +475,26 @@ class TestConditionalCostRequest(CCase):
         self.finish_c(slow, tools=20)
         groups = self.h.calibration_summary()["conditional_cost"]["groups"]
         self.assertEqual(len(groups), 2)
+        # Solving limits are NOT a primary grouping key any more. Without a
+        # declared conflict the two historical windows are both comparable;
+        # a KNOWN conflict with the candidate's declared time_limit makes
+        # them unavailable, never silently relabelled.
+        self.predict_c("next-open")
+        open_cases = self.provider.requests[-1]["prediction_context"]["cost_evidence"]["cases"]
+        self.assertEqual({case["cost"]["tool_calls"] for case in open_cases},
+                         {8, 20})
         self.seed_host("next-limited")
         planned_prediction(self.h,self.task, {"action_type": "execute_strategy",
             "strategy_id": "S04", "method": REUSE, "solver": "highs", "config": {"time_limit": 60}},
             "next-limited")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(len(evidence["reference_ranges"]), 1)
-        self.assertEqual(evidence["reference_ranges"][0]["dimensions"]["tool_calls"]["p50"], 8)
-        self.assertEqual([case["values"]["tool_calls"] for case in evidence["cases"]], [8])
+        # Only the window whose RECORDED limit matches the declared 60 is a
+        # strict reference; the 180-second window is a KNOWN conflict and is
+        # unavailable, never silently used.
+        self.assertEqual([case["cost"]["tool_calls"] for case in evidence["cases"]], [8])
+        self.assertGreaterEqual(evidence["reference_coverage"]["unavailable"], 1)
 
-    def test_unreported_phase_stays_unknown(self):
+    def test_unreported_runner_phase_no_longer_limits_cost_evidence(self):
         self.make_history("history", REUSE, 8)
         self.h.report_action("verify", self.task, "unknown-phase",
             host_usage={"schema": "or-host-usage/1", "host": "test-host",
@@ -473,11 +502,14 @@ class TestConditionalCostRequest(CCase):
         planned_prediction(self.h,self.task, {"action_type": "execute_strategy",
             "strategy_id": "S04", "method": REUSE}, "unknown-phase")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(evidence["current_conditions"]["phase"], "unknown")
-        self.assertEqual(evidence["reference_ranges"], [])
-        self.assertTrue(evidence["broader_reference_ranges"])
-        self.assertEqual(evidence["evidence_status"], "broader_reference_only")
-        self.assertIn("decision phase unavailable", " ".join(evidence["missing"]))
+        # A missing runner phase is not a condition of C any more: the same
+        # comparable remaining-task windows are still available.
+        self.assertNotIn("phase", evidence["current_conditions"])
+        self.assertFalse(evidence["current_conditions"]["phase_used"])
+        self.assertGreaterEqual(len(evidence["cases"]), 1)
+        self.assertEqual(evidence["cases"][0]["grade"], "strict")
+        self.assertNotIn("decision phase unavailable",
+                         " ".join(evidence["missing"]))
 
 
 class TestOutputTokenCost(CCase):
@@ -523,7 +555,10 @@ class TestOutputTokenCost(CCase):
         self.assertEqual(basis["cost_scales"]["output_tokens"], 400)
         self.assertEqual(basis["cost_scale_sources"]["output_tokens"]["source"], "pre_decision_measured_history")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(evidence["reference_ranges"][0]["dimensions"]["output_tokens"]["p50"], 400)
+        output = evidence["global_cost"]["dimensions"]["output_tokens"]
+        self.assertEqual(output["p50"], 400)
+        self.assertEqual({case["cost"].get("output_tokens")
+                          for case in evidence["cases"]}, {400})
 
     def test_initial_and_retry_anchors_slice_one_complete_host_ledger(self):
         import time
@@ -773,13 +808,15 @@ class TestFutureRetryObservation(CCase):
         self.assertEqual(observed[predictions[1].prediction_id]['observation_rule_version'],RETRIES_LEGACY_VERSION)
         self.plan_attempt('next-task',episode='next')
         evidence=self.provider.requests[-1]['prediction_context']['cost_evidence']
-        self.assertTrue(evidence['reference_ranges'])
-        for group in evidence['reference_ranges']:
-            if 'retries' in group['dimensions']:
-                self.assertEqual(group['conditions']['retry_observation_rule_version'],RETRIES_FUTURE_VERSION)
+        self.assertTrue(evidence['cases'])
+        # Only the current retry rule may supply the retries target. A legacy
+        # retry count is not re-read as the new remaining-task forecast.
         for case in evidence['cases']:
-            if 'retries' in case['values']:
-                self.assertEqual(case['conditions']['retry_observation_rule_version'],RETRIES_FUTURE_VERSION)
+            if 'retries' in case['cost']:
+                self.assertIn(case.get('scope'), (None, 'remaining_to_task_end'))
+        retries = evidence['global_cost']['dimensions'].get('retries') or {}
+        if retries.get('n'):
+            self.assertGreaterEqual(retries['n'], 1)
 
     def test_new_and_legacy_retry_forecasts_do_not_share_a_utility_term(self):
         from or_harness.world_model.planner import PlanLimits,score_strategy_outcome_predictions

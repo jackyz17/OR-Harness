@@ -258,16 +258,21 @@ def _compact_pair_cost_fact(row):
     compact = {}
     for key in ("values", "dimension_scopes", "lower_bounds",
                 "boundary_exclusions", "execution_ids",
-                "observation_rule_version"):
+                "observation_rule_version", "dimension_observation_rule_versions"):
         if cost.get(key) not in (None, {}, [], ""):
             compact[key] = copy.deepcopy(cost[key])
     conditions = cost.get("conditions")
     if isinstance(conditions, dict):
         kept_conditions = {}
-        for key in ("family", "phase", "window_coverage",
-                    "structure"):
+        for key in ("scope", "family", "phase", "window_coverage",
+                    "structure", "retry_observation_rule_version",
+                    "actual_solving_conditions"):
             if conditions.get(key) not in (None, {}, [], ""):
                 kept_conditions[key] = copy.deepcopy(conditions[key])
+        # Reusable artifact CONTENT stays in the audit record; the
+        # prediction only needs the FACT that a reusable artifact existed.
+        if conditions.get("reusable_artifacts"):
+            kept_conditions["reusable_artifacts"] = True
         solver = conditions.get("solver_conditions")
         if isinstance(solver, dict):
             kept_conditions["solver_conditions"] = {
@@ -424,7 +429,13 @@ PROVIDER_FEEDBACK_VERSION = "wm-pairs-provider/1"
 #: They are ceilings, not targets: a block is only as large as its material.
 #: The full history stays in the stored block and the evaluation store.
 DEFAULT_HISTORY_FEEDBACK_CHARS = 30000
-DEFAULT_GCR_EVIDENCE_CHARS = 16000
+#: Stage E/1: the G/C/R blocks now carry up to 10 LOCAL cases each plus the
+#: small GLOBAL statistics. The old 16,000 ceiling assumed a handful of
+#: condition groups; a compact case is ~300-450 chars, so the three blocks
+#: need more room. This is still a CEILING (per-block trimming keeps the
+#: grades/global scalars and records every omission), not a target, and the
+#: WHOLE request bound remains the authority.
+DEFAULT_GCR_EVIDENCE_CHARS = 24000
 DEFAULT_NONCORE_CHARS = 20000
 
 

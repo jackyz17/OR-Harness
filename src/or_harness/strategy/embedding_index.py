@@ -531,7 +531,9 @@ class EmbeddingIndex:
 
     # -- writes --------------------------------------------------------------------
 
-    def rebuild(self, layer: str, documents: Iterable[Tuple[str, str]]
+    def rebuild(self, layer: str, documents: Iterable[Tuple[str, str]],
+                *, aux_documents: Optional[
+                    Iterable[Tuple[str, str]]] = None
                 ) -> Dict[str, Any]:
         """Full rebuild from ``(id, document_text)`` pairs, atomically.
 
@@ -547,22 +549,47 @@ class EmbeddingIndex:
             raise ValueError(
                 f"backend returned {len(vectors)} vectors for {len(rows)} "
                 "documents")
+        aux_rows = [(str(doc_id), str(text))
+                    for doc_id, text in (aux_documents or [])]
+        aux_vectors = (self.backend.embed_documents(
+            [text for _, text in aux_rows]) if aux_rows else [])
+        if len(aux_vectors) != len(aux_rows):
+            raise ValueError(
+                f"backend returned {len(aux_vectors)} vectors for "
+                f"{len(aux_rows)} auxiliary documents")
+        aux_by_id = {doc_id: vector for (doc_id, _text), vector
+                     in zip(aux_rows, aux_vectors)}
         dimension = (len(vectors[0]) if vectors else self.backend.dimension)
+        items = []
+        for (doc_id, text), vector in zip(rows, vectors):
+            item = {"id": doc_id, "doc_digest": document_digest(text),
+                    "vector": vector}
+            if doc_id in aux_by_id:
+                # The TASK-TEXT-only vector. A task-text query compared with
+                # the whole execution document loses cosine mass to the
+                # method/outcome suffix, so its similarity depends on how much
+                # method text the document happens to carry. The auxiliary
+                # vector makes the problem view compare like with like.
+                item["task_vector"] = aux_by_id[doc_id]
+            items.append(item)
         payload = {
             "schema_version": INDEX_SCHEMA_VERSION,
             "model_id": self.backend.model_id,
             "dimension": dimension,
             "layer": layer,
             "built_at": time.time(),
-            "items": [{"id": doc_id, "doc_digest": document_digest(text),
-                       "vector": vector}
-                      for (doc_id, text), vector in zip(rows, vectors)],
+            "auxiliary": {"task_text": bool(aux_by_id),
+                          "n_task_vectors": len(aux_by_id)},
+            "items": items,
         }
         self._publish(layer, payload)
         return {"layer": layer, "items": len(rows),
-                "model_id": self.backend.model_id, "dimension": dimension}
+                "model_id": self.backend.model_id, "dimension": dimension,
+                "task_vectors": len(aux_by_id)}
 
-    def upsert(self, layer: str, documents: Iterable[Tuple[str, str]]
+    def upsert(self, layer: str, documents: Iterable[Tuple[str, str]],
+               *, aux_documents: Optional[
+                   Iterable[Tuple[str, str]]] = None
                ) -> Dict[str, Any]:
         """Incremental write of ``(id, document_text)`` pairs.
 
@@ -605,11 +632,23 @@ class EmbeddingIndex:
                     payload = existing
                     payload["items"] = list(existing.get("items") or [])
             vectors = self.backend.embed_documents([text for _, text in rows])
+            aux_rows = [(str(doc_id), str(text))
+                        for doc_id, text in (aux_documents or [])]
+            aux_vectors = (self.backend.embed_documents(
+                [text for _, text in aux_rows]) if aux_rows else [])
+            aux_by_id = {doc_id: vector for (doc_id, _text), vector
+                         in zip(aux_rows, aux_vectors)}
             by_id = {item.get("id"): item for item in payload["items"]}
             for (doc_id, text), vector in zip(rows, vectors):
-                by_id[doc_id] = {"id": doc_id,
-                                 "doc_digest": document_digest(text),
-                                 "vector": vector}
+                item = {"id": doc_id,
+                        "doc_digest": document_digest(text),
+                        "vector": vector}
+                if doc_id in aux_by_id:
+                    item["task_vector"] = aux_by_id[doc_id]
+                by_id[doc_id] = item
+            if aux_by_id:
+                payload["auxiliary"] = {"task_text": True,
+                                        "n_task_vectors": len(aux_by_id)}
             payload["items"] = [by_id[k] for k in sorted(by_id)]
             payload["model_id"] = self.backend.model_id
             if vectors:

@@ -1069,6 +1069,41 @@ class ORHarness:
         else:
             cell_evidence = cell_evidence_from_stats(self.stats, profile,
                                                      strategies)
+        # ONE frozen historical-execution retrieval for this decision. It is
+        # gathered NOW for a current decision and bounded to the decision
+        # moment (the root snapshot's time): an execution recorded after the
+        # decision can never enter its history. A historical reconstruction
+        # does not gather it at all — reading today's index would fabricate
+        # a retrieval for an earlier state — and reports the gap instead.
+        if historical:
+            history_retrieval: Dict[str, Any] = {
+                "version": "wm-history/1",
+                "status": "not_reconstructed",
+                "pool": [],
+                "global": {},
+                "accounting": {},
+                "degraded": [{
+                    "part": "local_history",
+                    "reason": ("historical reconstruction: today's "
+                               "execution index and closed-episode window "
+                               "were NOT consulted (a later execution would "
+                               "leak into an earlier decision)")}],
+                "missing": ["history_retrieval: no retrieval was saved with "
+                            "the supplied snapshot, so none is rebuilt"],
+            }
+            history_notes.append(
+                "MISSING: the unified historical retrieval was not saved "
+                "with this snapshot; it is NOT gathered from today's index")
+        else:
+            from or_harness.world_model.history_retrieval import (
+                build_history_retrieval,
+            )
+            history_retrieval = build_history_retrieval(
+                self, task=effective_task, profile=profile,
+                candidates=spec_list, episode_id=episode_id,
+                cutoff=float(getattr(snapshot, "created_at", 0.0) or 0.0),
+                paired_feedback=paired_feedback_block,
+                strategy_calibration=strategy_calibration)
         context = build_context(
             task=task, profile=profile, snapshot=snapshot,
             recall_result=recall_result, derivation=derivation,
@@ -1080,6 +1115,7 @@ class ORHarness:
             cell_evidence=cell_evidence,
             strategy_calibration=strategy_calibration,
             paired_feedback=paired_feedback,
+            history_retrieval=history_retrieval,
             prediction_reminders=(strategy_calibration.get("reminders")
                                   if not historical else []),
             hplus_feedback=hplus_feedback,
@@ -1568,9 +1604,14 @@ class ORHarness:
             candidate_ref.episode_id = episode_id
 
         if context is None:
+            # The candidate is the retrieval ANCHOR for this single
+            # prediction too: the unified history request carries its
+            # declared method as one query view, exactly as a multi-candidate
+            # plan does. A context built without the candidate would silently
+            # degrade to problem-text-only retrieval.
             context = self.build_prediction_context(
-                task, episode_id, cir=cir, context_spec=None,
-                candidates=None)
+                task, episode_id, cir=cir,
+                candidates=[candidate_ref])
         else:
             problems = context_identity_problems(
                 context, task_id=task_id,

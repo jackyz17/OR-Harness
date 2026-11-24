@@ -217,3 +217,15 @@ PYTHONPATH=src:tests/harness python -m unittest \
   tests.harness.test_wm_calibration_loop \
   tests.harness.test_history_feedback_budget
 ```
+
+---
+
+> **Superseded by stage E/1 (unified historical retrieval).** The evidence
+> selection described here (G shared-method keywords, C condition groups with a
+> phase classification, R solver-interface condition groups) has been replaced
+> by `src/or_harness/world_model/history_retrieval.py`. See
+> `docs/world_model/stage_e_unified_history.md`: LOCAL cases come from one
+> embedding-recalled pool reranked per signal, GLOBAL statistics are separate,
+> and C no longer uses a modelling phase. The four-dimensional C prediction
+> contract (`wm-c-predict/4`) and the observation rules in this document are
+> unchanged.

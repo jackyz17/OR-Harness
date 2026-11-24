@@ -21,30 +21,35 @@ RUNNER = {"phase": "initial_modelling", "source": "test runner configuration"}
 class TestFirstProposal(CCase):
     def history_without_seed_actions(self):
         self.h = ORHarness(home=self.home, world_model=self.provider,
-            embedding=LocalHashEmbeddingBackend(), execution_context=RUNNER)
+            embedding=LocalHashEmbeddingBackend())
         self.addCleanup(self.h.close)
         p = planned_prediction(self.h,self.task, {
-            "action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE}, "history")
-        self.assertEqual(self.h.actions.query(task_id=self.task["task_id"],action_type="model"), [])
+            "action_type": "execute_strategy", "strategy_id": "S04",
+            "solver": "highs", "method": REUSE}, "history")
+        self.assertEqual(
+            self.h.actions.query(task_id=self.task["task_id"],
+                                 action_type="model"), [])
         r = self.run_g(p)
         self.check_g(r)
         self.finish_c(p)
 
     def call_cli(self, new_task, *, explicit=None):
         from or_harness import cli
-        args = ["--home", self.home, "--world-model", "http://fixture.invalid::predicting-model",
+        args = ["--home", self.home, "--world-model",
+                "http://fixture.invalid::predicting-model",
                 "--wm-timeout", "1", "--wm-max-tokens", "256"]
         if explicit is not None:
             args += ["--execution-context", json.dumps(explicit)]
-        args += ["plan-next", "--task", json.dumps(new_task), "--episode", "first",
-            "--candidates", json.dumps([{"action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE}])]
-        # Substitute only network/provider construction. _harness, snapshot,
-        # CLI parsing, published retrieval and the predictor are real.
+        args += ["plan-next", "--task", json.dumps(new_task), "--episode",
+                 "first", "--candidates",
+                 json.dumps([{"action_type": "execute_strategy",
+                              "strategy_id": "S04", "method": REUSE}])]
         def harness(**kwargs):
             return ORHarness(embedding=LocalHashEmbeddingBackend(), **kwargs)
         output = io.StringIO()
         with patch.object(cli, "ORHarness", side_effect=harness), patch(
-                "or_harness.world_model.provider.HttpChatProvider", return_value=self.provider), \
+                "or_harness.world_model.provider.HttpChatProvider",
+                return_value=self.provider), \
                 contextlib.redirect_stdout(output):
             status = cli.main(args)
         self.assertEqual(status, 0, output.getvalue())
@@ -54,82 +59,83 @@ class TestFirstProposal(CCase):
         self.history_without_seed_actions()
         task = dict(self.task, task_id="brand-new-task")
         self.assertFalse(self.h.actions.query(task_id=task["task_id"]))
-        with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": json.dumps(RUNNER)}):
-            view = self.call_cli(task)
+        view = self.call_cli(task)
         e = view["cost_evidence"]
-        self.assertEqual((len(e["reference_ranges"]), len(e["cases"])), (1, 1))
-        self.assertEqual(e["current_conditions"]["phase"], "initial_modelling")
+        self.assertEqual(e["version"], "wm-c-history/1")
+        # The unified retrieval surfaced the closed execution as a LOCAL
+        # case: the four remaining-task actuals are there and the window is
+        # the comparable one.
+        self.assertGreaterEqual(len(e["cases"]), 1)
+        case = e["cases"][0]
+        self.assertEqual(case["scope"], "remaining_to_task_end")
+        self.assertEqual(case["grade"], "strict")
+        self.assertIn("tool_calls", case["cost"])
+        self.assertNotIn("phase", e["current_conditions"])
+        self.assertNotIn("phase_basis", e["current_conditions"])
+        self.assertFalse(e["current_conditions"]["phase_used"])
         self.assertNotIn("execution_host", e["current_conditions"])
         self.assertNotIn("execution_host", view["solving_context"])
-        self.assertIn("execution_context", e["current_conditions"]["phase_basis"])
-        actions=self.h.actions.query(task_id=task["task_id"])
-        self.assertEqual(len(actions),1)
-        self.assertEqual(actions[0].action_type,"select_strategy")
-        self.assertEqual(actions[0].params["kind"],"plan_next")
-        self.assertEqual(actions[0].status,"completed")
+        actions = self.h.actions.query(task_id=task["task_id"])
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].action_type, "select_strategy")
+        self.assertEqual(actions[0].params["kind"], "plan_next")
+        self.assertEqual(actions[0].status, "completed")
         self.assertIsNone(actions[0].linked_execution_id)
         self.assertIsNotNone(actions[0].outcome["selected_prediction_id"])
 
-    def test_explicit_runner_flag_overrides_environment_and_unknown_inputs_stay_unknown(self):
+    def test_runner_phase_input_no_longer_changes_cost_evidence(self):
         self.history_without_seed_actions()
-        with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": json.dumps(dict(RUNNER, phase="existing_model"))}):
-            view = self.call_cli(dict(self.task, task_id="explicit"), explicit=RUNNER)
-            self.assertEqual(len(view["cost_evidence"]["cases"]), 1)
-        with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": ""}):
-            view = self.call_cli(dict(self.task, task_id="unknown"))
-        e = view["cost_evidence"]
-        self.assertEqual(e["current_conditions"]["phase"], "unknown")
-        # A missing phase is NOT guessed. It allows only a explicitly graded
-        # broader_reference, never a strict same-phase prior.
-        self.assertFalse(e["reference_ranges"])
-        self.assertTrue(e["broader_reference_ranges"])
-        self.assertEqual(e["reference_coverage"]["strict"]["n_groups_available"], 0)
-        self.assertEqual(
-            e["reference_coverage"]["broader_reference"]["n_groups_available"], 1)
-        self.assertEqual(e["evidence_status"], "broader_reference_only")
-        self.assertTrue(all(
-            group["reference_grade"] == "broader_reference"
-            for group in e["broader_reference_ranges"]))
-        self.assertIn("decision phase unavailable", " ".join(e["missing"]))
+        first = self.call_cli(dict(self.task, task_id="explicit"),
+                              explicit={"phase": "initial_modelling"})
+        second = self.call_cli(dict(self.task, task_id="explicit-2"),
+                               explicit={"phase": "existing_model"})
+        third = self.call_cli(dict(self.task, task_id="unknown"))
+        for view in (first, second, third):
+            current = view["cost_evidence"]["current_conditions"]
+            self.assertNotIn("phase", current)
+            self.assertNotIn("phase_basis", current)
+            self.assertFalse(current["phase_used"])
+            # The historical cases cannot depend on a phase classification
+            # either: the same comparable windows are selected.
+            self.assertEqual(
+                [case["execution_id"] for case in view["cost_evidence"]["cases"]],
+                [case["execution_id"] for case in first["cost_evidence"]["cases"]])
 
-    def test_file_configuration_and_frozen_context_do_not_read_future_runner_state(self):
-        config = Path(self.home) / "runner.json"
-        config.write_text(json.dumps(RUNNER))
-        with patch.dict(os.environ, {"OR_EXECUTION_CONTEXT": str(config)}):
-            h = ORHarness(home=self.home, world_model=self.provider, embedding=LocalHashEmbeddingBackend())
-        self.addCleanup(h.close)
-        snapshot = h.snapshot(self.task, "first")
-        ctx = h.build_prediction_context(self.task, "first")
-        h.execution_context.update(phase="existing_model")
-        p = h.predict_strategy_outcome(self.task, {"action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE},
-            "first", context=h.get_prediction_context(ctx.context_id))
-        e = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertEqual(e["current_conditions"]["phase"], "initial_modelling")
-        historical = h.build_prediction_context(self.task, "first", snapshot=snapshot)
-        self.assertNotIn("execution_host", historical.solving_context)
-        self.assertEqual(p.trace.model_info["cost_conditions"]["phase"], "initial_modelling")
-
-    def test_real_model_progress_advances_the_initial_phase(self):
-        self.h.execution_context = copy.deepcopy(RUNNER)
+    def test_model_artifact_is_optional_context_not_a_phase(self):
         first = self.predict_g(episode="first")
-        self.assertEqual(first.trace.model_info["cost_conditions"]["phase"], "initial_modelling")
-        self.h.report_action("model", self.task, "first", outcome={"artifact": "model.lp", "status": "available"})
+        first_conditions = first.trace.model_info["cost_conditions"]
+        self.assertNotIn("phase", first_conditions)
+        self.assertFalse(first_conditions["reusable_artifacts"])
+        self.h.report_action("model", self.task, "first",
+                             outcome={"artifact": "model.lp",
+                                      "status": "available"})
         later = self.predict_g(episode="first")
-        self.assertEqual(later.trace.model_info["cost_conditions"]["phase"], "existing_model")
+        later_conditions = later.trace.model_info["cost_conditions"]
+        self.assertNotIn("phase", later_conditions)
+        self.assertNotIn("phase_basis", later_conditions)
+        # The artifact is kept as ORDINARY context for cost prediction; it
+        # is never converted into a model phase.
+        self.assertTrue(later_conditions["reusable_artifacts"])
 
     def test_cost_history_is_not_split_by_usage_report_model(self):
         self.history_without_seed_actions()
         p = planned_prediction(self.h, self.task, {
-            "action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE}, "second-history")
+            "action_type": "execute_strategy", "strategy_id": "S04",
+            "solver": "highs", "method": REUSE}, "second-history")
         r = self.run_g(p)
         self.check_g(r)
         self.finish_c(p, model="another-execution-model")
-        view = self.call_cli(dict(self.task, task_id="new-task"), explicit=RUNNER)
+        view = self.call_cli(dict(self.task, task_id="new-task"))
         evidence = view["cost_evidence"]
-        self.assertEqual(len(evidence["reference_ranges"]), 1)
-        self.assertEqual(evidence["reference_ranges"][0]["n_distinct_episodes"], 2)
-        self.assertEqual(len(evidence["cases"]), 2)
-        self.assertNotIn("execution_host", evidence["reference_ranges"][0]["conditions"])
+        # Both closed episodes are recalled as local cases: the usage-report
+        # model identity is not a cost condition.
+        self.assertGreaterEqual(len(evidence["cases"]), 2)
+        for case in evidence["cases"]:
+            self.assertNotIn("execution_host", case)
+            self.assertEqual(case["scope"], "remaining_to_task_end")
+        tool = evidence["global_cost"]["dimensions"].get("tool_calls") or {}
+        self.assertGreaterEqual(tool.get("n", 0), 2)
+        self.assertIsNotNone(tool.get("p50"))
 
 
 class TestHostMeterIntegrity(CCase):
@@ -177,8 +183,13 @@ class TestHostMeterIntegrity(CCase):
         self.assertEqual(evaluation["benefit"]["observed"], 1)
         self.predict_c("next")
         e = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
-        self.assertNotIn("tool_calls", e["reference_ranges"][0]["dimensions"])
-        self.assertNotIn("tool_calls", e["cases"][0]["values"])
+        self.assertTrue(e["cases"])
+        case = e["cases"][0]
+        # The contradictory aggregate is NOT a complete tool_calls
+        # observation: it must not appear as a usable cost number, and the
+        # missing dimension is named instead of zero-filled.
+        self.assertNotIn("tool_calls", case["cost"])
+        self.assertIn("tool_calls", case["missing_dimensions"])
 
     def test_token_conflict_keeps_legitimate_tool_total(self):
         e, _ = self.settle(details=[{"id": "m1", "kind": "model", "prompt_tokens": 60, "completion_tokens": 40}])

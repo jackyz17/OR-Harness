@@ -73,3 +73,11 @@ PYTHONPATH=src:tests/harness python -m unittest discover -s tests/harness
 | Fixture 和回归 | `tests/harness/c_fixtures.py`（新增）、`g_fixtures.py`、`test_r13_remaining_cost.py`、`test_cost_eligibility.py`、`test_calibration_v2.py`、`test_wm_calibration_loop.py`、`test_episode_closeout.py` |
 | 运行时及参考文档 | `SKILL.md`、`references/strategy_outcome.md`、`world_model_contract.md`、`prediction_context.md`、`episode_closeout.md`、`commands.md` |
 | 验收产物 | 本文、`docs/c_signal_request_example.json` |
+
+
+> **Stage E/1 update.** The provider `cost_evidence` block is no longer the
+> condition-group selection described above. It is now the unified-history
+> block `wm-c-history/1`: LOCAL similar executions with the four remaining-task
+> actuals plus a GLOBAL pre-decision distribution. The phase classification was
+> removed from C retrieval, grouping and prediction; the audit summary still
+> carries `conditional_cost` for inspection.

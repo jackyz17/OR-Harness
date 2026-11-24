@@ -352,6 +352,22 @@ def _cap_list(block: Dict[str, Any], path: Tuple[str, ...], limit: int,
         node[key] = value[:limit]
 
 
+def _cap_history_cases(block: Dict[str, Any], limit: int,
+                       removed: List[Dict[str, Any]]) -> None:
+    """Cap the local-case list of a unified-history evidence block.
+
+    Cases are already relevance-ordered, so the tail is dropped first. The
+    COVERAGE counters are refreshed by the block's own refresher afterwards:
+    a trimmed list must never leave a stale count that makes the shown set
+    look like the full population. The GLOBAL statistics are scalars and are
+    not part of this cap.
+    """
+    cases = block.get("cases")
+    if isinstance(cases, list) and len(cases) > limit:
+        removed.append({"field": "cases", "n_removed": len(cases) - limit})
+        block["cases"] = cases[:limit]
+
+
 def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
                         kind: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Reduce one G/C/R evidence block ceiling, keeping the applicable part.
@@ -371,40 +387,41 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
         "capability": "stored prediction context",
     }.get(kind, "stored prediction context")
     if kind == "g_candidate_evidence":
-        _cap_list(block, ("cases",), 2, removed)
-        selection = block.get("selection")
-        if isinstance(selection, dict):
-            selection["n_cases_included"] = len(block.get("cases") or [])
-            selection["n_cases_omitted_by_budget"] = max(
-                0, int(selection.get("n_included") or 0)
-                - selection["n_cases_included"])
+        from or_harness.world_model.history_retrieval import (
+            refresh_g_history_coverage,
+        )
+        _cap_history_cases(block, 6, removed)
+        refresh_g_history_coverage(block)
     elif kind == "implementation_r_evidence":
+        from or_harness.world_model.history_retrieval import (
+            refresh_r_history_coverage,
+        )
         node = block
         if "event_definitions" in node:
             node.pop("event_definitions", None)
             removed.append({"field": "event_definitions",
                             "ref": "request.risk_convention.event_definitions"})
-        groups = node.get("groups")
-        if isinstance(groups, list):
-            for group in groups:
-                if not isinstance(group, dict):
-                    continue
-                _cap_list(group, ("reusable_scripts",), 1, removed)
-                _cap_list(group, ("source_refs",), 5, removed)
+        _cap_history_cases(block, 6, removed)
+        # The GLOBAL base rates are scalar counts: they are background the
+        # model must keep even when local case bodies are reduced.
+        for entry in (block.get("cases") or []):
+            if isinstance(entry, dict):
+                for key in ("source_refs",):
+                    values = entry.get(key)
+                    if isinstance(values, list) and len(values) > 3:
+                        removed.append({"field": key,
+                                        "n_removed": len(values) - 3})
+                        entry[key] = values[:3]
+        refresh_r_history_coverage(block)
     elif kind == "cost_evidence":
-        _cap_list(block, ("cases",), 3, removed)
-        _cap_list(block, ("broader_reference_cases",), 3, removed)
-        _cap_list(block, ("reference_ranges",), 3, removed)
-        _cap_list(block, ("broader_reference_ranges",), 3, removed)
+        from or_harness.world_model.history_retrieval import (
+            refresh_c_history_coverage,
+        )
+        _cap_history_cases(block, 6, removed)
         conditions = block.get("current_conditions")
         if isinstance(conditions, dict):
             _cap_list(conditions, ("reusable_artifacts",), 2, removed)
-        # A trimmed list must not leave a stale "included" count that makes a
-        # weak reference look like the strict population.
-        from or_harness.world_model.cost_signal import (
-            refresh_cost_evidence_coverage,
-        )
-        refresh_cost_evidence_coverage(block)
+        refresh_c_history_coverage(block)
     elif kind == "retrieval_evidence":
         hits = block.get("hits")
         if isinstance(hits, list) and len(hits) > 8:
@@ -444,13 +461,20 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
         if not progress:
             break
     if kind == "cost_evidence":
-        from or_harness.world_model.cost_signal import (
-            refresh_cost_evidence_coverage,
+        from or_harness.world_model.history_retrieval import (
+            refresh_c_history_coverage,
         )
-        refresh_cost_evidence_coverage(block)
+        refresh_c_history_coverage(block)
     elif kind == "implementation_r_evidence":
-        from or_harness.world_model.r_signal import refresh_r_evidence_support
-        refresh_r_evidence_support(block)
+        from or_harness.world_model.history_retrieval import (
+            refresh_r_history_coverage,
+        )
+        refresh_r_history_coverage(block)
+    elif kind == "g_candidate_evidence":
+        from or_harness.world_model.history_retrieval import (
+            refresh_g_history_coverage,
+        )
+        refresh_g_history_coverage(block)
     if removed:
         block["budget_trim"] = {
             "removed": removed,
@@ -596,66 +620,105 @@ def _history_summary(block: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _minimal_global_g(global_history: Dict[str, Any]) -> Dict[str, Any]:
+    keys = ("n_observed", "n_predicted", "n_scored", "n_distinct_tasks",
+            "n_distinct_episodes", "observed_mean", "predicted_mean", "mae",
+            "signed_error_mean", "bias_direction", "brier", "auc", "support")
+    return {key: global_history.get(key) for key in keys
+            if global_history.get(key) is not None}
+
+
+def _minimal_global_cost(global_cost: Dict[str, Any]) -> Dict[str, Any]:
+    dimensions = {}
+    for dim, entry in (global_cost.get("dimensions") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        dimensions[dim] = {key: entry.get(key) for key in (
+            "n", "p50", "p90", "n_predicted_actual", "error_direction",
+            "n_incomplete") if entry.get(key) is not None}
+    return {"dimensions": dimensions, "support": global_cost.get("support")}
+
+
+def _minimal_global_r(block: Dict[str, Any]) -> Dict[str, Any]:
+    events = {}
+    for name, entry in (block.get("global_event_base_rates") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        events[name] = {key: entry.get(key) for key in (
+            "occurred", "not_occurred", "unknown", "n_known_labels",
+            "occurrence_rate") if entry.get(key) is not None}
+    performance = {}
+    for name, entry in (block.get("global_prediction_performance")
+                        or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        performance[name] = {key: entry.get(key) for key in (
+            "n_scorable", "mean_brier", "brier_support")
+            if entry.get(key) is not None}
+    return {"events": events, "prediction_performance": performance}
+
+
 def _gcr_evidence_summary(key, block):
-    """The smallest honest form of a G/C/R evidence block.
+    """The smallest honest form of a unified-history G/C/R evidence block.
 
     Used only when the WHOLE request is still over its bound after per-block
-    trimming. It keeps the GRADES, counts and source pointers - never a
-    shortened list that could make a weak reference look strict - and drops
-    the per-case bodies, which remain in the stored context and
-    ``orx calibration``.
+    trimming. It keeps the GRADES, the coverage counts, the MINIMAL global
+    values (counts, distribution percentiles, error direction, event rates)
+    and the source pointers — and drops the per-case bodies, which remain in
+    the stored context.
     """
     block = block if isinstance(block, dict) else {}
-    detail_ref = {
-        "cost_evidence": "orx calibration #conditional_cost / stored context",
-        "implementation_r_evidence": (
-            "orx calibration #technical_r / stored prediction context"),
-        "g_candidate_evidence": "prediction_context.prediction_execution_pairs",
-    }.get(key, "stored prediction context")
+    detail_ref = "stored prediction context #history_retrieval"
     if key == "cost_evidence":
         return {
+            "version": block.get("version"),
             "observation_rule_version": block.get("observation_rule_version"),
             "current_conditions": copy.deepcopy(block.get("current_conditions")),
             "reference_coverage": copy.deepcopy(block.get("reference_coverage")),
             "evidence_status": block.get("evidence_status"),
-            "reference_ranges": [],
-            "broader_reference_ranges": [],
             "cases": [],
-            "broader_reference_cases": [],
+            "global_cost": _minimal_global_cost(
+                block.get("global_cost") or {}),
             "missing": list(block.get("missing") or []),
             "applicability": block.get("applicability"),
             "omitted_for_size": True,
             "detail_ref": detail_ref,
             "note": ("per-case cost bodies were omitted to keep the full "
-                     "request within its bound; strict/broader/unavailable "
-                     "grades and counts are retained and the cases remain in "
-                     "the stored context"),
+                     "request within its bound; the strict/broader counts and "
+                     "the GLOBAL cost distribution are retained and the "
+                     "cases remain in the stored context"),
         }
     if key == "implementation_r_evidence":
-        summary = {**{k: copy.deepcopy(v) for k, v in block.items()
-                      if k in ("solver_interface", "event_definitions",
-                               "missing", "support", "note")},
-                   "groups": [],
-                   "global_event_base_rates": copy.deepcopy(
-                       block.get("global_event_base_rates") or {}),
-                   "omitted_for_size": True,
-                   "detail_ref": detail_ref,
-                   "detail_note": ("condition groups were omitted to keep the "
-                                   "full request within its bound; the wider "
-                                   "global base rates and support remain, and "
-                                   "the per-condition facts remain in the "
-                                   "stored context")}
-        return summary
+        return {
+            "version": block.get("version"),
+            "solver_interface": block.get("solver_interface"),
+            "event_definitions": copy.deepcopy(
+                block.get("event_definitions") or {}),
+            "selection": copy.deepcopy(block.get("selection")),
+            "cases": [],
+            **_minimal_global_r(block),
+            "missing": list(block.get("missing") or []),
+            "support": block.get("support"),
+            "global_scope": block.get("global_scope"),
+            "omitted_for_size": True,
+            "detail_ref": detail_ref,
+            "note": ("local technical cases were omitted to keep the full "
+                     "request within its bound; the global event rates and "
+                     "prediction performance remain, and the per-case facts "
+                     "remain in the stored context"),
+        }
     return {
         "version": block.get("version"),
         "selection": copy.deepcopy(block.get("selection")),
-        "global_calibration_role": block.get("global_calibration_role"),
+        "global_history": _minimal_global_g(
+            block.get("global_history") or {}),
+        "degraded": copy.deepcopy(block.get("degraded") or []),
         "cases": [],
         "omitted_for_size": True,
         "detail_ref": detail_ref,
-        "note": ("candidate method cases were omitted to keep the full "
-                 "request within its bound; their full bodies remain in the "
-                 "prediction-execution pairs and the evaluation store"),
+        "note": ("local G cases were omitted to keep the full request within "
+                 "its bound; the global G diagnostic remains and the full "
+                 "cases remain in the stored context"),
     }
 
 

@@ -55,6 +55,21 @@ class IndexSynchronizer:
             return None
         return document_execution(record, text)
 
+    def execution_task_document(self, record) -> Optional[str]:
+        """The TASK TEXT alone — the auxiliary vector of one execution item.
+
+        The full retrieval document adds the family/outcome and the method,
+        so a task-text query compared with it loses cosine mass to that
+        suffix (the loss grows with the method's length). The auxiliary
+        vector keeps the problem view comparable: same task text scores the
+        same whatever method the past attempt used. None when the text was
+        never captured; the item then simply carries no task vector.
+        """
+        if not record.task_text_digest:
+            return None
+        return self.store.get_task_text(record.task_id,
+                                        record.task_text_digest)
+
     def entry_document(self, entry) -> str:
         return document_entry(entry)
 
@@ -71,9 +86,13 @@ class IndexSynchronizer:
                     "reason": "task text unavailable (legacy record or never "
                               "captured); the fact is saved and stays visible "
                               "through profile retrieval and `orx inspect`"}
+        task_document = self.execution_task_document(record)
+        auxiliary = ([(record.execution_id, task_document)]
+                     if task_document else None)
         try:
             out = self.index.upsert(LAYER_EXECUTION,
-                                    [(record.execution_id, document)])
+                                    [(record.execution_id, document)],
+                                    aux_documents=auxiliary)
         except Exception as exc:  # noqa: BLE001 - save must not be blocked
             return {"layer": LAYER_EXECUTION, "state": "deferred",
                     "reason": f"embedding failed: {type(exc).__name__}: {exc}"}
@@ -139,7 +158,7 @@ class IndexSynchronizer:
         plan: Dict[str, Any] = {}
         for name in targets:
             if name == LAYER_EXECUTION:
-                pairs, skipped = [], []
+                pairs, task_pairs, skipped = [], [], []
                 for record in self.bank.all():
                     if record.source != "executed":
                         continue
@@ -148,12 +167,17 @@ class IndexSynchronizer:
                         skipped.append(record.execution_id)
                         continue
                     pairs.append((record.execution_id, document))
+                    task_document = self.execution_task_document(record)
+                    if task_document is not None:
+                        task_pairs.append((record.execution_id, task_document))
                 plan[name] = {"documents": pairs,
+                              "aux_documents": task_pairs,
                               "unindexable": skipped}
             else:
                 pairs = [(entry.entry_id, self.entry_document(entry))
                          for entry in self.sbank.list(include_dormant=True) if not (entry.rule or {}).get('merged_into')]
-                plan[name] = {"documents": pairs, "unindexable": []}
+                plan[name] = {"documents": pairs, "aux_documents": [],
+                              "unindexable": []}
         if dry_run:
             return {
                 "dry_run": True,
@@ -172,7 +196,9 @@ class IndexSynchronizer:
                 "embedding=... to ORHarness) before rebuilding the index")
         results: Dict[str, Any] = {}
         for name in targets:
-            results[name] = self.index.rebuild(name, plan[name]["documents"])
+            results[name] = self.index.rebuild(
+                name, plan[name]["documents"],
+                aux_documents=plan[name].get("aux_documents"))
             results[name]["unindexable"] = len(plan[name]["unindexable"])
         return {"dry_run": False, "layers": results,
                 "backend": self.index.backend.model_id}

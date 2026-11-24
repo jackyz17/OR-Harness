@@ -368,15 +368,23 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "budget_exhausted) remain diagnostics and NEVER enter R. G concerns "
     "original-task acceptance given faithful execution; C counts "
     "solving/rework resources. Use the small implementation_r_evidence "
-    "block: per-event, matching solver-interface facts first, not a global "
-    "adjustment. Its optional `global_event_base_rates` block is a separate, "
-    "wider BACKGROUND: it is not the candidate's conditional probability, its "
-    "denominator is known labels only (unknown labels are not non-occurrences), "
-    "and it must not replace a matching condition group. The three events are "
-    "independent: a large maximum is a risk score, never a joint probability. "
-    "Supported common base rates or similar candidate scores are allowed. A "
-    "reusable tested script is evidence of technical execution only, not "
-    "current business correctness.\n"
+    "block: it carries the LOCAL technical cases recalled as most "
+    "similar to THIS candidate (same solver interface, then similar "
+    "implementation steps) plus two separate GLOBAL background blocks. Each "
+    "local case gives the observed label of each of the three events on ONE "
+    "bound attempt and, when a closed pair recorded it, the probability this "
+    "model predicted and its Brier score. Prefer the local cases; the "
+    "`global_event_base_rates` block is a wider BACKGROUND (known-label "
+    "denominator only, unknown labels are not non-occurrences) and "
+    "`global_prediction_performance` says how this model's past R "
+    "probabilities scored. Neither global block is the candidate's "
+    "conditional probability and neither replaces the local technical "
+    "evidence. The three events are independent: a large maximum is a risk "
+    "score, never a joint probability. Supported common base rates or similar "
+    "candidate scores are allowed. A reusable tested script is evidence of "
+    "technical execution only, not current business correctness. No observed "
+    "failure in the history is NOT zero risk: judge the candidate's own "
+    "implementation.\n"
     "  If you give a probability, base it on the SPECIFIC candidate's "
     "evidence (the steps, the environment, comparable history), not on the "
     "solver's reputation. NEVER hardcode a penalty for a particular solver "
@@ -449,23 +457,37 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "under-predicts benefit); NEGATIVE means it over-predicts. Neither sign "
     "is an instruction to change this candidate's G.\n"
     "  * global cost residuals are audit diagnostics, never multipliers "
-    "or instructions to raise/lower C. Use applicable raw cost ranges and "
-    "executed workflows in cost_evidence instead.\n"
+    "or instructions to raise/lower C. Use the `cost_evidence` block: its "
+    "`cases` are LOCAL similar historical executions whose reported cost "
+    "covers the SAME remaining task (never one sandbox attempt), each with "
+    "whatever of the four dimensions was actually observed and a "
+    "`missing_dimensions` list; its `global_cost` block gives the pre-decision "
+    "n/p50/p90 per dimension plus prediction-vs-actual error direction and "
+    "rank correlation. The local cases are the numerical reference; the "
+    "global distribution is BACKGROUND. Do not raise every cost by the global "
+    "error ratio, and do not omit a comparable local number. C no longer uses "
+    "any solving phase: judge the remaining work from the candidate plan, the "
+    "current artifacts and these comparable costs.\n"
     "  * `basis: insufficient_evidence` means too few independent episodes "
     "to say anything: do NOT treat such a group as calibration.\n"
     "  * these are measured PAST errors, not a promise about this "
     "prediction, and they carry NO per-strategy breakdown (they are a "
     "global diagnostic).\n"
-    "  * `prediction_context.g_candidate_evidence` is a compact DERIVED "
-    "selection over the "
-    "paired feedback: observed cases relevant to THIS candidate's recorded "
-    "method and conditions. `comparison_role=strict_condition_match` means "
-    "same task or known same family+structure; "
-    "`partial_condition_similarity` means only some conditions/method terms "
-    "are shared and unknown structure is NOT a match. `recorded_cause` is "
-    "carried only when the close-out attribution recorded it; never invent a "
-    "cause from a failed check or execution status. These cases show method "
-    "fit and boundaries, not a G correction coefficient.\n"
+    "  * `prediction_context.g_candidate_evidence` carries the LOCAL "
+    "historical cases recalled as most similar to THIS candidate's method and "
+    "conditions by the embedding retrieval (not by shared keywords). Its "
+    "`relevance` code says WHY a case was kept: `same_task` (the same task), "
+    "`similar_method` (the candidate-method similarity reached its own "
+    "threshold), `similar_conditions` (same structural cell) or "
+    "`task_similar` (only general text similarity — the method was NOT shown "
+    "similar). Read `method` and the observed G label together; a generic "
+    "word overlap is never a method match. `g.observed` is the recorded label "
+    "and null means UNKNOWN — an execution error is not a G modelling "
+    "failure. `recorded_cause` appears only when the close-out attribution "
+    "recorded it; never invent a cause from a failed check or execution "
+    "status. `global_history` (n observed/tasks/episodes, MAE, Brier, AUC, "
+    "bias direction, reliability bins) is a diagnostic of this model's past "
+    "global error, NOT a candidate-specific prior and NOT a G correction.\n"
     "PAIRED FEEDBACK: the context may carry a `prediction_execution_pairs` "
     "block: the compact, per-episode facts of how THIS model's past "
     "predictions turned out. Each pair names the conditions, the planned "
@@ -1701,6 +1723,17 @@ class StrategyOutcomeService:
                          if isinstance(pair, dict) and pair.get("evaluation_id")],
             "feedback_versions": header.get("feedback_versions") or {},
             "display_cap": copy.deepcopy((sent.get("prediction_execution_pairs") or {}).get("display_capped")),
+            # What the unified history retrieval actually DELIVERED to this
+            # request (not merely what the stored context contains): the
+            # status/config/accounting plus the local-case counts per signal.
+            "history_selection": {
+                "retrieval": {key: copy.deepcopy(
+                    (sent.get("history_retrieval") or {}).get(key))
+                    for key in ("version", "status", "config", "accounting")},
+                "g": copy.deepcopy((sent.get("g_candidate_evidence") or {}).get("selection")),
+                "c": copy.deepcopy((sent.get("cost_evidence") or {}).get("reference_coverage")),
+                "r": copy.deepcopy((sent.get("implementation_r_evidence") or {}).get("selection")),
+            },
             "source": "actually displayed provider input; adoption/effect are separate facts",
         }
         profile = context.joint.profile or {}

@@ -311,6 +311,38 @@ def _event_label_counts(facts):
     return counts
 
 
+def _event_performance(name, scores, facts):
+    """Mean predicted probability by observed outcome + discrimination.
+
+    Computed from the SAME scored samples as the per-event Brier: a
+    probability is compared with the label of the ONE bound attempt. A
+    discrimination value needs positive AND negative outcomes, so it is
+    absent (never zero) when either side is empty.
+    """
+    positive, negative = [], []
+    for sample in scores:
+        fact = facts.get(sample["identity"]) or {}
+        label = (((fact.get("r_events") or {}).get(name)) or {}).get("label")
+        if label == 1:
+            positive.append(float(sample["probability"]))
+        elif label == 0:
+            negative.append(float(sample["probability"]))
+    mean_positive = (round(sum(positive) / len(positive), 6)
+                     if positive else None)
+    mean_negative = (round(sum(negative) / len(negative), 6)
+                     if negative else None)
+    discrimination = (round(mean_positive - mean_negative, 6)
+                      if mean_positive is not None
+                      and mean_negative is not None else None)
+    return {
+        "n_positive_scored": len(positive),
+        "n_negative_scored": len(negative),
+        "mean_probability_observed": mean_positive,
+        "mean_probability_not_observed": mean_negative,
+        "discrimination": discrimination,
+    }
+
+
 def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
     """All actual attempts, labeled per event on the ONE bound attempt.
 
@@ -423,6 +455,7 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
                 "n_scored_distinct_episodes": len(episodes),
                 "brier_support": ("measured" if len(episodes) >= min_samples
                                   else "insufficient_evidence"),
+                **_event_performance(name, name_scores, facts),
             }
         output.append({"observation_rule_version": R_OBSERVATION_VERSION,
             "conditions": group["conditions"], "n_attempts": len(units),
@@ -459,6 +492,7 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
                            / len(name_scores)) if name_scores else None,
             "brier_support": ("measured" if len(episodes) >= min_samples
                               else "insufficient_evidence"),
+            **_event_performance(name, name_scores, facts),
         }
     coverage_by_event = {
         name: {
@@ -559,85 +593,8 @@ def global_event_base_rates(technical_r):
                    "attempts; unresolved or unexecuted candidates are absent"),
         "support": ("measured_global_base_rate" if any_known
                     else "insufficient_evidence"),
-        "note": ("condition groups describe the candidate's solver/structure; "
-                 "this global block is wider background. The three events are "
-                 "independent and the maximum is not a joint probability."),
+        "note": ("local technical cases describe the candidate's own "
+                 "solver/implementation; this global block is wider "
+                 "background. The three events are independent and the "
+                 "maximum is not a joint probability."),
     }
-
-
-def refresh_r_evidence_support(block):
-    """Keep the R support label true after a budget trim."""
-    block = block if isinstance(block, dict) else {}
-    groups = block.get("groups") or []
-    global_rates = block.get("global_event_base_rates") or {}
-    if groups and global_rates:
-        block["support"] = "applicable_facts_with_global_base_rates"
-    elif groups:
-        block["support"] = "applicable_facts"
-    elif global_rates:
-        block["support"] = "global_base_rates_only"
-    else:
-        block["support"] = "insufficient_evidence"
-    return block
-
-
-def select_r_evidence(summary, context, candidate):
-    runner = context.solving_context.get("execution_context") or {}
-    interface = getattr(candidate, "solver", None) or runner.get("solver_interface")
-    missing = []
-    if not interface:
-        missing.append("solver interface unknown")
-    technical_r = (summary or {}).get("technical_r") or {}
-    groups = []
-    for g in technical_r.get("groups") or []:
-        if missing or g.get("observation_rule_version") != R_OBSERVATION_VERSION \
-                or (g.get("conditions") or {}).get("solver_interface") != interface:
-            continue
-        structure = (g.get("conditions") or {}).get("structure") or {}
-        wanted_class = (context.joint.profile or {}).get("problem_class")
-        if g.get("support") == "measured" and wanted_class and structure.get("problem_class") \
-                and wanted_class != structure["problem_class"]:
-            continue
-        item = copy.deepcopy(g)
-        item["conditions"].pop("execution_agent", None)
-        for diagnostic in ("mean_brier", "n_scorable", "n_reported_probabilities", "n_scored_distinct_episodes", "brier_support"):
-            item.pop(diagnostic, None)  # prediction diagnostics stay in audit, not the empirical prior
-        # The SAME trim applies to the per-event block: the model gets the
-        # observed counts for each R event (including timeout and
-        # environment_failure), never its own past Brier diagnostics.
-        for event_entry in (item.get("events") or {}).values():
-            if isinstance(event_entry, dict):
-                event_entry.pop("definition", None)
-                for diagnostic in ("mean_brier", "n_scorable",
-                                   "n_reported_probabilities",
-                                   "n_scored_distinct_episodes",
-                                   "brier_support"):
-                    event_entry.pop(diagnostic, None)
-        item["source_refs"] = item["source_refs"][:6]
-        item["n_source_refs"] = len(g.get("source_refs") or [])
-        item["support_note"] = ("closed attempts for this solver interface; "
-                                "sparse or missing structure supports these "
-                                "cases only")
-        groups.append(item)
-    groups.sort(key=lambda g: (g["conditions"].get("structure") or {}).get("family") !=
-                             (context.joint.profile or {}).get("family"))
-    global_rates = global_event_base_rates(technical_r)
-    support = "applicable_facts" if groups else "insufficient_evidence"
-    if global_rates and not groups:
-        support = "global_base_rates_only"
-    elif global_rates and groups:
-        support = "applicable_facts_with_global_base_rates"
-    return {**R_CONVENTION, "solver_interface": interface,
-            "event_definitions": dict(R_EVENT_DEFINITIONS),
-            "groups": groups[:3],
-            # SEPARATE from the condition groups: a broad background reference
-            # even when no condition group matches. It is not called the
-            # candidate's conditional probability.
-            "global_event_base_rates": global_rates,
-            "missing": missing,
-            "support": support,
-            "note": ("prefer the applicable per-solver-interface event facts; "
-                     "the separate global_event_base_rates block is only broad "
-                     "background. The three events are independent, unknown is "
-                     "not 'did not happen', and the maximum event probability "
-                     "is NOT a joint failure probability.")}

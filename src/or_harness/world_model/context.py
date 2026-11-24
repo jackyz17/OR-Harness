@@ -1918,6 +1918,15 @@ class PredictionContext:
     #: evaluations — no model call, no new storage. An active episode never
     #: sees its own not-yet-closed feedback (only closed episodes appear).
     paired_feedback: Dict[str, Any] = field(default_factory=dict)
+    #: ONE frozen historical-execution retrieval for this decision
+    #: (stage E/1): the candidate-aware embedding pool with the recorded
+    #: execution/evaluation facts, plus the pre-decision GLOBAL statistics.
+    #: G/C/R each rerank this shared pool with their own relevance rule —
+    #: the pool is the single discovery source, and its actual threshold,
+    #: backend and accounting travel with it. Empty on a legacy context or
+    #: when embedding retrieval was unavailable (the degradation is
+    #: explicit inside the block; no keyword fallback is substituted).
+    history_retrieval: Dict[str, Any] = field(default_factory=dict)
     #: DETERMINISTIC rule reminders derived from ``strategy_calibration``
     #: (Q2-ii): measured statistics rendered as "watch this next time"
     #: notes. A pure function of the summary — never a model-written lesson,
@@ -1966,6 +1975,7 @@ class PredictionContext:
         self.reliability = copy.deepcopy(self.reliability)
         self.strategy_calibration = copy.deepcopy(self.strategy_calibration)
         self.paired_feedback = copy.deepcopy(self.paired_feedback)
+        self.history_retrieval = copy.deepcopy(self.history_retrieval)
         self.prediction_reminders = copy.deepcopy(self.prediction_reminders)
         self.hplus_feedback = copy.deepcopy(self.hplus_feedback)
         self.snapshot = copy.deepcopy(self.snapshot)
@@ -2072,8 +2082,7 @@ class PredictionContext:
         if omitted:
             view["omitted"] = omitted
         from or_harness.world_model.g_signal import (
-            select_candidate_method_evidence, select_conditional_g,
-            requested_solving_conditions,
+            select_conditional_g, requested_solving_conditions,
         )
         from or_harness.world_model.contracts import FAITHFUL_G_CONVENTION
         convention = g_convention or FAITHFUL_G_CONVENTION
@@ -2082,24 +2091,65 @@ class PredictionContext:
             conditions=requested_solving_conditions(g_candidate, self.execution_constraints),
             convention=convention,
             scope=getattr(g_candidate, "scope", None), task_id=self.task_id)
+        # ONE frozen historical-execution retrieval, reranked per candidate
+        # by each signal's own light relevance rule. The three blocks share
+        # the SAME discovery pool and the SAME global statistics, but not a
+        # final ranking: G can surface a different case than R from the same
+        # recalled execution. A legacy context (or a degraded retrieval)
+        # carries an explicit status instead of silently substituting the
+        # retired keyword/condition-group matching.
+        from or_harness.world_model.history_retrieval import (
+            select_c_history_evidence, select_g_history_evidence,
+            select_r_history_evidence,
+        )
+        history = self.history_retrieval or {}
+        if history:
+            history_config = history.get("config") or {}
+            view["history_retrieval"] = {
+                "version": history.get("version"),
+                "status": history.get("status"),
+                "backend_model_id": history_config.get("backend_model_id"),
+                "max_local_cases": history_config.get("max_local_cases"),
+                "pool_size": history_config.get("pool_size"),
+                "similarity_thresholds": copy.deepcopy(
+                    history_config.get("similarity_thresholds") or {}),
+                "method_similarity_threshold": history_config.get(
+                    "method_similarity_threshold"),
+                "threshold_verified": history_config.get(
+                    "threshold_verified"),
+                "threshold_sources": copy.deepcopy(
+                    history_config.get("threshold_sources") or {}),
+                "accounting": copy.deepcopy(history.get("accounting") or {}),
+                "queries": [entry.get("name")
+                            if isinstance(entry, dict) else str(entry)
+                            for entry in (history.get("queries") or [])],
+                "degraded": copy.deepcopy(history.get("degraded") or []),
+                "missing": list(history.get("missing") or []),
+                "note": ("the LOCAL cases in g_candidate_evidence / "
+                         "cost_evidence / implementation_r_evidence are "
+                         "reranked from this ONE pool; threshold, backend, "
+                         "pool and admission counts are recorded here. The "
+                         "long threshold calibration note and the full pool "
+                         "remain in the stored context."),
+            }
         if g_candidate is not None:
-            # G's candidate-specific method evidence is DERIVED from the
-            # already-selected paired feedback (one case per evaluation,
-            # pointing back at that block's body). It adds no second history
-            # store and no correction coefficient.
-            method_evidence = select_candidate_method_evidence(
-                self.paired_feedback, candidate=g_candidate,
-                profile=self.joint.profile or {}, convention=convention,
-                scope=getattr(g_candidate, "scope", None), task_id=self.task_id)
-            if method_evidence:
-                # A separate provider-only block: it is derived from the
-                # already-selected pairs and may be reduced by the G/C/R
-                # evidence budget without touching the frozen calibration.
-                view["g_candidate_evidence"] = method_evidence
-            from or_harness.world_model.cost_signal import select_cost_evidence
-            view["cost_evidence"] = select_cost_evidence(self.strategy_calibration, self, g_candidate)
-            from or_harness.world_model.r_signal import select_r_evidence
-            view["implementation_r_evidence"] = select_r_evidence(self.strategy_calibration, self, g_candidate)
+            view["g_candidate_evidence"] = select_g_history_evidence(
+                history, candidate=g_candidate, convention=convention,
+                scope=getattr(g_candidate, "scope", None),
+                task_id=self.task_id)
+            view["cost_evidence"] = select_c_history_evidence(
+                history, context=self, candidate=g_candidate)
+            view["implementation_r_evidence"] = select_r_history_evidence(
+                history, context=self, candidate=g_candidate)
+        elif history:
+            # A caller-supplied non-PredictionContext view still gets the
+            # honest retrieval status (never a fabricated candidate match).
+            view["history_retrieval"]["status"] = (
+                view["history_retrieval"].get("status") or "unknown")
+            view["history_retrieval"]["note"] = (
+                "no candidate was supplied to this view, so the per-signal "
+                "local case selection did not run; the pool and global "
+                "statistics remain in the stored context")
         # Full cost populations are audit data. The provider receives the
         # small applicable selection above, made before volume trimming.
         view["strategy_outcome_calibration"].pop("conditional_cost", None)
@@ -2136,6 +2186,7 @@ class PredictionContext:
             "reliability": copy.deepcopy(self.reliability),
             "strategy_calibration": copy.deepcopy(self.strategy_calibration),
             "paired_feedback": copy.deepcopy(self.paired_feedback),
+            "history_retrieval": copy.deepcopy(self.history_retrieval),
             "prediction_reminders": copy.deepcopy(
                 self.prediction_reminders),
             "hplus_feedback": copy.deepcopy(self.hplus_feedback),
@@ -2183,6 +2234,8 @@ class PredictionContext:
                 dict(data.get("strategy_calibration") or {})),
             paired_feedback=copy.deepcopy(
                 dict(data.get("paired_feedback") or {})),
+            history_retrieval=copy.deepcopy(
+                dict(data.get("history_retrieval") or {})),
             prediction_reminders=copy.deepcopy(
                 list(data.get("prediction_reminders") or [])),
             hplus_feedback=copy.deepcopy(
@@ -2310,6 +2363,7 @@ def build_context(
         reliability: Optional[Dict[str, Any]] = None,
         strategy_calibration: Optional[Dict[str, Any]] = None,
         paired_feedback: Optional[Dict[str, Any]] = None,
+        history_retrieval: Optional[Dict[str, Any]] = None,
         prediction_reminders: Optional[Sequence[Dict[str, Any]]] = None,
         hplus_feedback: Optional[Dict[str, Any]] = None,
         cell_evidence: Optional[Dict[str, Any]] = None,
@@ -2408,6 +2462,7 @@ def build_context(
         reliability=copy.deepcopy(reliability or {}),
         strategy_calibration=calibration_projection(strategy_calibration or {}),
         paired_feedback=copy.deepcopy(paired_feedback or {}),
+        history_retrieval=copy.deepcopy(history_retrieval or {}),
         prediction_reminders=copy.deepcopy(list(prediction_reminders or [])),
         hplus_feedback=copy.deepcopy(hplus_feedback or {}),
         snapshot=snapshot_conditions(snapshot),

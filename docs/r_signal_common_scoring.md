@@ -79,3 +79,9 @@ TMPDIR=$PWD/.tmp_tests PYTHONPATH=src:tests/harness python -m unittest \
 回归经过真实的 predict、execute、record、close-episode、下一次 provider 请求及 plan-next 入口，provider 是明示替身，库均隔离。timeout 用例用真实沙箱墙钟中断（1 秒）与“求解器正常限时返回结果”两种记录分别验证标签；旧预测保留 `wm-r-technical/1` 单事件口径，不回填新概率。
 
 当前工作区运行库没有已记录执行或已关闭 episode；未提供可评估的真实配对样本。这里验证了输入、观测、反馈和计分链路，没有据此宣称 R 的真实判别力或策略选择收益。后续结论需要同口径、有来源、可归因的实际执行样本；旧记录无法区分“中断/正常限时返回”、缺少接口和仅有旧错误类的记录仍可能未知。
+
+
+> **Stage E/1 update.** `implementation_r_evidence` now carries LOCAL
+> technical cases selected by the shared embedding retrieval (cap 10) plus the
+> separate `global_event_base_rates` / `global_prediction_performance` blocks.
+> The per-solver-interface condition groups remain in the audit summary only.

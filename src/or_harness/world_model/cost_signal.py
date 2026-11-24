@@ -143,7 +143,17 @@ def normalize_execution_context(value):
 
 
 def cost_conditions(context, candidate=None):
-    """Freeze only information visible before the decision."""
+    """Freeze only information visible before the decision — NO phase.
+
+    Stage E/1 removed the C phase classification (``initial_modelling`` /
+    ``existing_model`` / ``unknown``). It was derived from
+    ``task_progress.model_artifact`` or the runner's ``execution_context
+    .phase`` and fragmented the history into singleton groups, so most
+    decisions got no numerical reference. A current model artifact is still
+    carried as ORDINARY context (``reusable_artifacts``); it is never
+    converted into a phase label. Legacy records keep their stored phase
+    field readable, but it does not take part in C retrieval or grading.
+    """
     from or_harness.world_model.g_signal import requested_solving_conditions
     solving = context.solving_context or {}
     progress = solving.get("task_progress") or {}
@@ -162,15 +172,15 @@ def cost_conditions(context, candidate=None):
                       if k in ("artifact", "path", "model_ref", "model_digest", "digest", "status")}
                      if isinstance(value, dict) else value)
     runner = solving.get("execution_context") or {}
-    phase = "existing_model" if available else ("initial_modelling" if absent else runner.get("phase", "unknown"))
+    conditions = requested_solving_conditions(candidate,
+                                             context.execution_constraints)
+    if not conditions.get("solver") and runner.get("solver_interface"):
+        conditions["solver"] = runner["solver_interface"]
     return {
         "scope": "remaining_to_task_end",
-        "phase": phase,
-        "phase_basis": ("frozen task_progress.model_artifact" if available or absent else
-                        "frozen execution_context.phase" if runner.get("phase") else "unknown"),
         "reusable_artifacts": ([{"value": artifact_view,
             "evidence_ref": artifact.get("evidence_ref")} ] if available else []),
-        "solver_conditions": requested_solving_conditions(candidate, context.execution_constraints),
+        "solver_conditions": conditions,
         "family": (context.joint.profile or {}).get("family"),
         "structure": {k: v for k, v in (context.joint.profile or {}).items()
                       if k in ("problem_class", "scale_features", "semantic_coupling",
@@ -523,8 +533,13 @@ def conditional_cost_statistics(samples, min_samples=5):
             continue
         seen.add(identity)
         # Reusable artifact CONTENT is explanatory, not a grouping key.
+        # NO phase: stage E/1 removed the C phase classification, so new
+        # observations are grouped by the measurement scope and known
+        # solving/structure conditions only. Legacy stored summaries keep
+        # their historical phase field readable for audit; it is not used by
+        # new C retrieval, grading or prediction.
         grouping = {k: conditions.get(k) for k in (
-            "scope", "window_coverage", "phase", "family", "structure", "solver_conditions", "actual_solving_conditions",
+            "scope", "window_coverage", "family", "structure", "solver_conditions", "actual_solving_conditions",
             'retry_observation_rule_version')}
         grouping['retry_observation_rule_version']=conditions.get('retry_observation_rule_version',RETRIES_LEGACY_VERSION)
         requested = conditions.get("solver_conditions") or {}
@@ -567,387 +582,16 @@ def conditional_cost_statistics(samples, min_samples=5):
             "counting_unit": "deduplicated actual execution window; errors count predictions"}
 
 
-def _known_cost_value(value):
-    """Whether a condition value is actually known.
-
-    ``unknown`` is the profile's explicit unknown bucket and is NOT a match.
-    An empty container is uniform noise here, not a measured condition.
-    """
-    return value not in (None, "", "unknown", [], {})
-
-
-def _cost_condition_diff(left, right, path=""):
-    """Known conflicts vs unknown gaps between two condition trees."""
-    conflicts, unknown = [], []
-    if isinstance(left, dict) and isinstance(right, dict):
-        for key in sorted(set(left) | set(right)):
-            child = f"{path}.{key}" if path else str(key)
-            found_conflicts, found_unknown = _cost_condition_diff(
-                left.get(key), right.get(key), child)
-            conflicts.extend(found_conflicts)
-            unknown.extend(found_unknown)
-        return conflicts, unknown
-    if left is None and right is None:
-        return conflicts, unknown
-    if not _known_cost_value(left) or not _known_cost_value(right):
-        unknown.append(path or "value")
-    elif left != right:
-        conflicts.append(path or "value")
-    return conflicts, unknown
-
-
-def _cost_reference_grade(conditions, current, strict):
-    """Classify one historical cost group against the current decision.
-
-    ``strict`` is the framework's PRE-EXISTING strict applicability rule. A
-    group that fails it is never silently promoted: it is ``broader_reference``
-    only when the core measurement scope is identical AND no KNOWN condition
-    conflicts. A known phase/family/solver/structure mismatch is unavailable.
-    """
-    if strict:
-        return "strict", ["same remaining scope, phase, family, declared "
-                          "solving limits and known structure"], []
-    if conditions.get("window_coverage") != "complete":
-        return None, [], ["historical window coverage is not complete"]
-    if conditions.get("scope") != current.get("scope"):
-        return None, [], ["measurement scope differs"]
-    reasons, unknown = [], []
-    current_phase = current.get("phase")
-    historical_phase = conditions.get("phase")
-    if current_phase not in ("initial_modelling", "existing_model"):
-        reasons.append("current phase unknown")
-    if historical_phase not in ("initial_modelling", "existing_model"):
-        reasons.append("historical phase unknown")
-    if current_phase in ("initial_modelling", "existing_model") \
-            and historical_phase in ("initial_modelling", "existing_model") \
-            and current_phase != historical_phase:
-        return None, [], ["known phase conflict: "
-                          f"{current_phase} vs {historical_phase}"]
-    current_family, historical_family = current.get("family"), conditions.get("family")
-    if current_family and historical_family and current_family != historical_family:
-        return None, [], ["known family conflict"]
-    if not current_family:
-        reasons.append("current family unknown")
-    if not historical_family:
-        reasons.append("historical family unknown")
-    conflicts, missing = _cost_condition_diff(
-        conditions.get("solver_conditions"), current.get("solver_conditions"),
-        "solver_conditions")
-    if conflicts:
-        return None, [], ["known solving-limit conflict: " + ", ".join(conflicts)]
-    if missing:
-        reasons.append("declared solving limits partly unknown")
-        unknown.extend(missing)
-    requested = current.get("solver_conditions") or {}
-    actuals = conditions.get("actual_solving_conditions") or []
-    if not actuals:
-        reasons.append("actual solving conditions unrecorded")
-        unknown.append("actual_solving_conditions")
-    for actual in actuals:
-        actual = actual if isinstance(actual, dict) else {}
-        if requested.get("solver") and actual.get("solver") \
-                and actual["solver"] != requested["solver"]:
-            return None, [], ["known solver conflict"]
-        if requested.get("solver") and not actual.get("solver"):
-            reasons.append("historical solver interface unknown")
-            unknown.append("actual_solving_conditions.solver")
-        actual_config = actual.get("config") or {}
-        for key, value in (requested.get("config") or {}).items():
-            if key in actual_config and actual_config[key] != value:
-                return None, [], [f"known solving-config conflict: {key}"]
-            if key not in actual_config:
-                reasons.append(f"solving config {key} unrecorded")
-                unknown.append(f"actual_solving_conditions.config.{key}")
-    historical_structure = conditions.get("structure") or {}
-    current_structure = current.get("structure") or {}
-    conflicts, missing = _cost_condition_diff(
-        historical_structure, current_structure, "structure")
-    if conflicts:
-        return None, [], ["known structure conflict: " + ", ".join(conflicts)]
-    if missing:
-        reasons.append("structure partly unknown")
-        unknown.extend(missing)
-    if not reasons:
-        # This should not happen if the strict rule failed, but never invent a
-        # stronger grade: an unexplained failure is an unavailable reference.
-        return None, [], ["not strict and no safely comparable scope"]
-    return "broader_reference", list(dict.fromkeys(reasons)), unknown
-
-
-def _bounded_cost_refs(item):
-    refs = [str(ref) for ref in (item.get("source_refs") or [])]
-    item["source_refs"] = refs[:6]
-    item["n_source_refs"] = len(refs)
-    if len(refs) > 6:
-        item["source_refs_ref"] = "orx calibration #conditional_cost"
-    return item
-
-
-def refresh_cost_evidence_coverage(block):
-    """Keep the strict/broader counts true after a budget trim.
-
-    The lists may be shortened by the provider budget; the counts are
-    refreshed so a reduced weak-reference list can never be mistaken for the
-    strict population. ``n_groups_available`` stays the pre-trim selection.
-    """
-    block = block if isinstance(block, dict) else {}
-    coverage = block.setdefault("reference_coverage", {})
-    for name, list_key, case_key in (
-            ("strict", "reference_ranges", "cases"),
-            ("broader_reference", "broader_reference_ranges",
-             "broader_reference_cases")):
-        entry = coverage.setdefault(name, {})
-        entry["n_groups_included"] = len(block.get(list_key) or [])
-        entry["n_groups_omitted"] = max(
-            0, int(entry.get("n_groups_available") or 0)
-            - entry["n_groups_included"])
-        entry["n_cases_included"] = len(block.get(case_key) or [])
-    coverage["unavailable"] = not (block.get("reference_ranges")
-                                   or block.get("broader_reference_ranges"))
-    return block
-
-
-def select_cost_evidence(summary, context, candidate, *, max_groups=4):
-    """Select applicable history BEFORE generic request-size trimming.
-
-    The selection has TWO explicit evidence grades:
-
-    - ``strict``: the pre-existing same remaining-window/phase/family/solving-
-      limit/structure rule;
-    - ``broader_reference``: the SAME measurement scope, but the phase and/or
-      an auxiliary condition is unknown. It is a weak reference and is never
-      mixed into a strict range, a cost scale or a calibrated prior.
-
-    A known phase/family/solver/config/structure conflict is NOT a broad
-    reference: it is unavailable. Dimensions with no reliable observation stay
-    absent (unknown), never zero. Every group/case keeps its sample counts,
-    quantiles, observation scope and bounded source references.
-    """
-    current = cost_conditions(context, candidate)
-    audit = (summary or {}).get("conditional_cost") or {}
-    def applicable(conditions):
-        if current.get("phase") == "unknown":
-            return False
-        if conditions.get("window_coverage") != "complete":
-            return False
-        if any(conditions.get(key) != current.get(key) for key in ("scope", "phase", "family")):
-            return False
-        if ((conditions.get("solver_conditions") or {}).get("constraints") !=
-                current["solver_conditions"].get("constraints")):
-            return False
-        requested = current["solver_conditions"]
-        for actual in conditions.get("actual_solving_conditions") or []:
-            if requested.get("solver") and actual.get("solver") != requested["solver"]:
-                return False
-            if any(k in (actual.get("config") or {}) and actual["config"][k] != v
-                   for k, v in (requested.get("config") or {}).items()):
-                return False
-        a, b = conditions.get("structure") or {}, current.get("structure") or {}
-        return all(a[k] == b[k] for k in a.keys() & b.keys())
-    strict_groups, broad_groups = [], []
-    for raw_group in audit.get("groups") or []:
-        conditions = copy.deepcopy(raw_group.get("conditions") or {})
-        strict = applicable(conditions)
-        grade, reasons, unknown = _cost_reference_grade(conditions, current, strict)
-        if grade is None:
-            continue
-        group = copy.deepcopy(raw_group)
-        group["conditions"] = conditions
-        # A reference range is a C PREDICTION reference. Execution-only
-        # observations (latency_s / solver_runtime_s) stay in the stored
-        # audit summary but never enter the four-dimensional C reference.
-        dimensions = group.get("dimensions")
-        if isinstance(dimensions, dict):
-            for dim in list(dimensions):
-                if dim not in PREDICTED_COST_DIMENSIONS:
-                    dimensions.pop(dim, None)
-        group["reference_grade"] = grade
-        group["grade_reasons"] = reasons
-        if unknown:
-            group["unknown_conditions"] = sorted(set(unknown))
-        if grade == "broader_reference":
-            group["comparability_note"] = (
-                "same remaining-task measurement scope, but the phase or an "
-                "auxiliary condition differs/is unknown: weak reference only, "
-                "NOT a strict same-condition prior")
-        (strict_groups if grade == "strict" else broad_groups).append(group)
-    def sort_groups(groups):
-        groups.sort(key=lambda g: (
-            len((g["conditions"].get("structure") or {}).keys()
-                & (current.get("structure") or {}).keys()),
-            g["conditions"].get("phase") == current.get("phase"),
-            g.get("n_distinct_episodes") or 0), reverse=True)
-    sort_groups(strict_groups)
-    sort_groups(broad_groups)
-    for group in strict_groups + broad_groups:
-        group["conditions"].pop("execution_host", None)
-        if group['conditions'].get('retry_observation_rule_version') != RETRIES_FUTURE_VERSION:
-            group['dimensions'].pop('retries', None)
-        _bounded_cost_refs(group)
-        other = group["conditions"].get("structure") or {}
-        group["unknown_structure_dimensions"] = sorted(
-            other.keys() ^ (current.get("structure") or {}).keys())
-        group["support_note"] = ((group.get("support_note") or "") +
-                                 "; missing structure/undeclared solver settings "
-                                 "remain unknown")
-    method = getattr(candidate, "method", None) or {}
-    words = set(" ".join(map(str, method.get("steps") or [])).lower().split())
-    graded_cases = []
-    for raw_case in audit.get("cases") or []:
-        conditions = copy.deepcopy(raw_case.get("conditions") or {})
-        grade, reasons, unknown = _cost_reference_grade(
-            conditions, current, applicable(conditions))
-        if grade is None:
-            continue
-        case = copy.deepcopy(raw_case)
-        case["conditions"] = conditions
-        values = case.get("values")
-        if isinstance(values, dict):
-            for dim in list(values):
-                if dim not in PREDICTED_COST_DIMENSIONS:
-                    values.pop(dim, None)
-        # Execution-only diagnostics are retained by the stored fact, not
-        # folded into the C reference case.
-        for key in ("lower_bounds", "values_not_scored",
-                    "dimension_observation_rule_versions"):
-            value = case.get(key)
-            if isinstance(value, dict):
-                for dim in list(value):
-                    if dim not in PREDICTED_COST_DIMENSIONS:
-                        value.pop(dim, None)
-        case["reference_grade"] = grade
-        case["grade_reasons"] = reasons
-        if unknown:
-            case["unknown_conditions"] = sorted(set(unknown))
-        if grade == "broader_reference":
-            case["comparability_note"] = (
-                "weak reference: same measurement scope, but phase/auxiliary "
-                "conditions are not the current ones")
-        graded_cases.append(case)
-    def rank(case):
-        steps = ((case.get("method_actual") or {}).get("steps") or [])
-        return (case.get("reference_grade") == "strict",
-                case.get("task_id") == context.task_id,
-                len(words & set(" ".join(map(str, steps)).lower().split())))
-    graded_cases.sort(key=rank, reverse=True)
-    from or_harness.world_model.episode_closeout import _compact_method_steps
-    strict_cases = [c for c in graded_cases if c["reference_grade"] == "strict"][:3]
-    broad_cases = [c for c in graded_cases if c["reference_grade"] != "strict"][:3]
-    for case in strict_cases + broad_cases:
-        (case.get("conditions") or {}).pop("execution_host", None)
-        if (case.get('conditions') or {}).get('retry_observation_rule_version') != RETRIES_FUTURE_VERSION:
-            (case.get('values') or {}).pop('retries', None)
-        _bounded_cost_refs(case)
-        methods = [case.get("method_actual") or {}] + [m.get("method") or {} for m in
-            (case.get("work_facts") or {}).get("method_change_receipts") or []]
-        for observed in methods:
-            if isinstance(observed.get("steps"), list):
-                observed["steps"] = _compact_method_steps(observed["steps"])
-    shown_strict = strict_groups[:max_groups] if max_groups is not None else strict_groups
-    shown_broad = broad_groups[:max_groups] if max_groups is not None else broad_groups
-    coverage = {
-        "current_phase": current.get("phase"),
-        "scope": current.get("scope"),
-        "strict": {
-            "n_groups_available": len(strict_groups),
-            "n_groups_included": len(shown_strict),
-            "n_cases_available": len(strict_cases),
-        },
-        "broader_reference": {
-            "n_groups_available": len(broad_groups),
-            "n_groups_included": len(shown_broad),
-            "n_cases_available": len(broad_cases),
-        },
-        "unavailable": not strict_groups and not broad_groups,
-        "basis": ("strict = same remaining scope/phase/family/known solving "
-                  "limits; broader_reference = same remaining scope with the "
-                  "phase or an auxiliary condition unknown; known conflicts "
-                  "are unavailable, never relabelled"),
-    }
-    missing = []
-    if current.get("phase") == "unknown":
-        missing.append(
-            "decision phase unavailable: broader references only, never a "
-            "strict same-phase prior")
-    if not strict_groups and not broad_groups:
-        missing.append(
-            "no historical cost observation with a comparable remaining-task scope")
-    elif not strict_groups:
-        missing.append("no strict same-condition cost reference; broader "
-                       "references are weak only")
-    out = {
-        "observation_rule_version": COST_OBSERVATION_VERSION,
-        "current_conditions": current,
-        "candidate_work": {"steps_ref": "candidate.method.steps",
-                           "reusable_artifacts_ref": "cost_evidence.current_conditions.reusable_artifacts"},
-        "reference_ranges": shown_strict,
-        "broader_reference_ranges": shown_broad,
-        "cases": strict_cases,
-        "broader_reference_cases": broad_cases,
-        "reference_coverage": coverage,
-        "missing": missing,
-        "applicability": ("strict same remaining window/phase/family/known "
-                          "solving limits; broader_reference is same-scope but "
-                          "phase/auxiliary conditions unknown; known conflicts "
-                          "are unavailable"),
-        "evidence_status": ("strict_and_broader" if strict_groups and broad_groups
-                            else "strict" if strict_groups
-                            else "broader_reference_only" if broad_groups
-                            else "insufficient_evidence"),
-        "note": ("Totals already include the work in each reference case. "
-                 "Compare added/saved candidate steps; count each step once. "
-                 "Sparse ranges describe only the cited executions. A "
-                 "broader_reference is NOT a strict calibrated prior and is "
-                 "never used for a shared decision cost scale."),
-    }
-    return refresh_cost_evidence_coverage(out)
-
 def decision_cost_scales(context, candidates, configured=None):
-    """Resolve shared positive peaks from configuration or frozen actuals.
+    """Shared positive cost peaks for U normalization — no phase, no groups.
 
-    History must apply to every candidate's solving conditions. Neither current
-    forecasts nor model-call spend from this decision contribute a peak.
+    Configured peaks win. Otherwise the peak is the p90 of the pre-decision
+    measured remaining-task history frozen on the context (the global C
+    block). The SAME population is used for every candidate: a shared scale
+    must not depend on which candidate it is scoring, and neither current
+    forecasts nor model-call spend from this decision may contribute a peak.
     """
-    from or_harness.world_model.conditions import digest
-
-    configured = configured or {}
-    if not isinstance(configured, dict):
-        raise ValueError("cost_scales must be a dimension-to-peak object")
-    views = [select_cost_evidence(context.strategy_calibration, context, candidate,
-                                  max_groups=None)
-             for candidate in candidates]
-    groups_by_candidate = [
-        {digest(group["conditions"]): group for group in view["reference_ranges"]}
-        for view in views]
-    common = (set.intersection(*(set(groups) for groups in groups_by_candidate))
-              if groups_by_candidate else set())
-    groups = [groups_by_candidate[0][key] for key in sorted(common)]
-    result = {}
-    for dimension in PREDICTED_COST_DIMENSIONS:
-        # All active dimensions share the remaining-task measurement scope;
-        # legacy attempt/inner-runtime dimensions are never scaled here.
-        scope = "remaining_to_task_end"
-        if dimension in configured:
-            value = configured[dimension]
-            info = copy.deepcopy(value) if isinstance(value, dict) else {"peak": value}
-            result[dimension] = {
-                **info, "source": "explicit_plan_limits",
-                "reference": info.get("reference") or "limits.cost_scales." + dimension,
-                "configuration_ref": "limits.cost_scales." + dimension,
-                "as_of": context.created_at}
-            continue
-        facts = [group for group in groups
-                 if number((group.get("dimensions") or {}).get(dimension, {}).get("max"))
-                 is not None]
-        peaks = [group["dimensions"][dimension]["max"] for group in facts]
-        if peaks and max(peaks) > 0:
-            result[dimension] = {
-                "peak": max(peaks), "scope": scope,
-                "source": "pre_decision_measured_history",
-                "observation_rule_version": COST_OBSERVATION_VERSION,
-                "as_of": context.created_at,
-                "n": sum(group["dimensions"][dimension]["n"] for group in facts),
-                "source_refs": sorted({ref for group in facts
-                                       for ref in group.get("source_refs") or []}),
-                "conditions": [copy.deepcopy(group["conditions"]) for group in facts]}
-    return result
+    from or_harness.world_model.history_retrieval import (
+        decision_cost_scales as _scales,
+    )
+    return _scales(context, candidates, configured)
