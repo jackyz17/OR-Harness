@@ -20,9 +20,9 @@ These are check dimensions, not a fixed checklist. A genuinely continuous proble
 
 ### Layer 2 — enhanced verification only when needed
 
-Options include a small enumeration, an independent verification script, a dual or bound argument, a second exact algorithm, a second solver, or another independent check suited to the structure. Use one only when there is a concrete reason, such as: optimality cannot be confirmed from the available evidence; the solution or objective looks anomalous; a constraint interpretation is genuinely ambiguous; the solver's return disagrees with an independent computation; the structure is complex enough that the base check cannot cover a key error; or a specific modelling assumption needs independent validation.
+Options include a small enumeration, an independent verification script, a dual or bound argument, a second exact algorithm, a second solver, or another independent check suited to the structure. Add one only when there is a concrete reason, such as: optimality cannot be confirmed from the available evidence; the solution or objective looks anomalous; a constraint interpretation is genuinely ambiguous; the solver's return disagrees with an independent computation; the structure is complex enough that the base check cannot cover a key error; or a specific modelling assumption needs independent validation.
 
-Do NOT run a complete independent re-solve as a default step for every task. This does not forbid independent verification: when a second algorithm is genuinely how a complex problem gets a reliable answer, run it. It forbids the automatic "another full solve per task" habit.
+Verification is sufficiency-driven, not count-limited: pick the cheapest check that resolves the open doubt, and when several independent doubts can change the conclusion, address them separately instead of repeating a part already established. Stop once the evidence supports the conclusion. A complete independent re-solve is not the default step for every task, but it is allowed when it is the appropriate way to resolve a specific doubt; when a second algorithm is genuinely how a complex problem gets a reliable answer, run it. The wrong pattern is the automatic "another full solve per task" habit, not a second check that answers a real question.
 
 ## Verify the model, not only the solver
 
@@ -36,7 +36,7 @@ Check the model-to-statement correspondence BEFORE relying on an independent num
 
 ## H+ verification conditions
 
-When the selected prediction has H+=1, its `verification_conditions` test the predicted knowledge hypothesis. They are not a second task requirement. Reuse the same evidence when it supports both. If the condition cannot be checked within a reasonable scope, record `not_checked`, `unavailable` or the protocol's unknown state; do not run a second complete solve just to make the condition show as complete. The offline review decides whether the evidence is sufficient. See [the H+ review handoff](induction.md#when-to-start-induction) for where the check is declared.
+When the selected prediction has H+=1, its `verification_conditions` test the predicted knowledge hypothesis. They are not a second task requirement. Reuse the same evidence when it supports both. If the condition cannot be checked within a reasonable scope, record `not_checked`, `unavailable` or the protocol's unknown state; never run a large task's complete re-solve merely to make the condition show as complete. Proportionate evidence is expected: an affordable small-scale full enumeration, an original-versus-reduced-method comparison, or a targeted reproduction is allowed when it verifies the key mechanism. The offline review decides whether the evidence is sufficient. See [the H+ review handoff](induction.md#when-to-start-induction) for where the check is declared.
 
 ## Failed, insufficient and erroneous checks
 
@@ -55,7 +55,7 @@ An agent-run verification attached with `--verification` is captured as immutabl
 
 ## Examples
 
-The examples show the judgment the framework leaves to the agent: the tool gives numbers and references, not the decision.
+The examples show the judgment the framework leaves to the agent: the tool gives numbers and references, not the decision. They use the original task, the recorded execution and standard mathematics; a reference answer or checker result is used only AFTER commitment as offline evidence, never as a modelling premise.
 
 ### B018 — a consistent answer with the wrong unit
 
@@ -63,7 +63,7 @@ The task prices each chair at 50 and each order at 15 chairs, so one order in th
 
 ### 0087 — a claimed optimum the evidence rejects
 
-A continuous LP was reported optimal at 20, while a grid search found feasible points near 17.725 and a dual bound near 17.714. The size of that difference is enough to review the corner calculation: with the task as stated (continuous, no integrality requirement), 17.714 has an optimality argument because the bound is achievable. Do not add an integer constraint because the reference value happens to be integral — the task is continuous, so the finding is a calculation/verification problem, not a missing domain. Record the bound or derivation as the optimality evidence; the agent decides that, not the tool.
+A continuous LP was reported optimal at 20, while a grid search found feasible points near 17.725 and a dual bound near 17.714. The size of that difference is enough to review the corner calculation: the task states continuous variables (no integrality requirement), and 17.714 has an optimality argument because the bound is achievable. Judge the variable domain from the task statement, not from any external answer: do not add an integer constraint because some outside value happens to be integral — that would change the task. Record the bound or derivation as the optimality evidence; the agent decides that, not the tool.
 
 ### 0312 — two solvers agree on the same wrong model
 

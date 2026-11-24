@@ -78,8 +78,11 @@ constraint residuals and solver status. Add an enhanced check (enumeration,
 independent script, bound/dual, second exact algorithm or solver) only when
 there is a concrete reason: uncertain optimality, an anomalous value, an
 ambiguous constraint reading, a solver/independent disagreement, or a structure
-the base check cannot cover. Do not run a complete independent re-solve as a
-default step for every task.
+the base check cannot cover. Use the minimum sufficient verification: keep
+adding targeted checks while an unresolved doubt can still change the
+conclusion, and stop once the evidence is sufficient. Do not run a complete
+independent re-solve as a default step for every task, and do not treat a fixed
+number of checks as an automatic limit.
 
 ```text
 candidate answer
@@ -92,8 +95,12 @@ and solver report
 concrete reason for enhanced verification? -- no --> read the evidence
    |-- yes
    v
-run ONE targeted independent check and read the ACTUAL evidence
+run the cheapest targeted check for the open doubt; read the ACTUAL evidence
    |
+   v
+does a substantive doubt still block the conclusion? -- yes --> another
+   |                                                        targeted check
+   no
    v
 locate the finding: task reading? model? implementation? recording? the check?
    |
@@ -108,8 +115,9 @@ A second solver on the same wrong model still returns the wrong answer: check
 the model-to-statement correspondence before trusting any independent
 verification. When the prediction has H+=1, its `verification_conditions` check
 the knowledge hypothesis, not a second task requirement; reuse evidence, record
-`not_checked`/`unavailable` when it cannot be checked, and never run a second
-complete solve just to make it show complete. See [self-check detail and
+`not_checked`/`unavailable` when it cannot be checked, and never run a large
+complete re-solve merely to make it show complete — an affordable small-scale
+check that actually verifies the mechanism is allowed. See [self-check detail and
 examples](references/self_check.md) for the layer criteria, failure handling and
 worked cases.
 
@@ -154,40 +162,29 @@ orx close-episode --task T --episode E --terminal STATE
 
 In a benchmark, the evaluator scores the committed answer against any reference outside the solving and retry loop.
 
-Close-out also returns `result.entry_usage`: the strategy entries THIS episode
-actually adopted (the version is resolved from their frozen `used_entries`),
-each with its read-time usage summary and the adoptions that still have no
-effect judgement. Review that list BEFORE moving on: how did each adoption
-turn out — did it help a specific step, prevent an error, improve modelling or
-implementation, or just repeat interface prose? Record the judgement with the
-same close-out call:
+Close-out returns `result.entry_usage`: this episode's adopted rule versions,
+their read-time usage summary, and the adoptions that still need an effect
+judgement. Review them before moving on — did an adoption help a specific step,
+prevent an error, change modelling or implementation, or just repeat interface
+prose? Record a judgement on the same call when the evidence supports one:
 
 ```bash
 orx close-episode --task T --episode E --terminal STATE \
   --attribute-effect '{"entry_id":"2","execution_id":"EX_USED","verdict":"helped","note":"The adopted rule exposed the unit first; the objective then reproduced the reference scale."}'
 ```
 
-This works when H+ = 0 as well: it is management of existing knowledge, not a
-new induction job. A `refuting` verdict keeps the existing default (the
-version is paused); `keep`/`demote`/`promote` is your explicit management
-decision. Retiring stays the explicit `orx retire --entry N --reason ...`
-(with `--evidence-execution-id` for the cited facts). A version must not be
-hurt by evidence about an older version, and a paused version is restored only
-by an explicit management decision.
-
-Read the status WITHOUT reading it as usefulness: `validated`/`published`/
-`fact_checked` say what checks the entry passed, an adoption count is a usage
-fact, and only the agent's `helped|neutral|unrelated|refuting` judgements say
-how the use turned out. `orx inspect --bank strategic --entry N` shows
-`status_view` (publication / verification / usage separately), `utility` per
-version and `forward_calibration` (a calibration diagnostic, not utility).
-See [existing-entry use and utility](references/induction.md#existing-entry-use-and-utility).
+This also works when H+ = 0: it manages existing knowledge, not a new induction
+job. `validated`/`published`/`fact_checked` are check status, adoption counts are
+usage facts, and only your own `helped|neutral|unrelated|refuting` verdicts are
+effect. See [existing-entry use and utility](references/induction.md#existing-entry-use-and-utility)
+for entry status, utility, management actions and version rules.
 
 Close-out publishes calibration and returns scheduled induction IDs in `result.induction_schedule.pending_ids`. When building the library, review each executed prediction with H+ = 1. Continue to the next task when no review is scheduled.
 
 ### 5. Run offline induction
 
-Fetch evidence for each induction ID J.
+H+=1 requires one review; H+=0 adds no induction job. Fetch evidence for each
+scheduled induction ID J.
 
 ```bash
 orx induction-material --task T --induction-id J
@@ -213,7 +210,7 @@ field table and [detailed comparisons](references/induction.md#complete-review-s
 for examples. The legacy `--relation`/`--review` spelling remains only for
 advanced compatibility and cannot be mixed with `--submission`.
 
-When unsure about the input, optionally add `--dry-run` to the same submission command. Fix any reported field or evidence reference, then remove `--dry-run` to submit. A successful preview leaves J pending; check `induction-status` after the real submission.
+When unsure about the input, optionally add `--dry-run` to the same submission command. Fix any reported field or evidence reference, then remove `--dry-run` to submit. A successful preview leaves J pending; run `orx induction-status` after the real submission.
 
 ### 6. Continue with the next task
 

@@ -29,7 +29,7 @@ The action log and execution records supply the observed results for each bound 
 
 - **Benefit** uses the prediction's declared metric, unit, and scope. A strategy window uses the last qualified in-scope attempt for its solution observation. The original-task check is reported under `evaluations[].benefit.task_check` alongside solver quality.
 - **Cost** uses `ExpectedCost.scope`. Add cumulative resource measurements once per attempt, including failed attempts. New remaining-scope `retries` counts additional attempts after the bound baseline, rather than summing execution increments. Read `n_measured` and `complete` before comparing a value.
-- **Risk** uses the observation unit for each [risk event](#the-risk-event-vocabulary-wm-events3). Technical R reads the specific bound attempt.
+- **Risk** uses the observation unit for each [risk event](#the-risk-event-vocabulary-wm-events4). Technical R reads the specific bound attempt.
 
 | Cost scope | Measurements |
 |---|---|

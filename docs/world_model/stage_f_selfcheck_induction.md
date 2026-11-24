@@ -1,5 +1,7 @@
 # Stage F — risk-ordered self-check and stricter H+ induction
 
+> Review-round fixes (proportionate verification guidance, `SKILL.md` §4 trim, induction navigation, benchmark-example boundary and relaxed documentation tests) are documented in [stage_f_review_fixes.md](stage_f_review_fixes.md). Where wording below differs, that document is authoritative.
+
 This stage addresses two behaviour problems in the solving agent:
 
 - **Self-check too heavy.** Build4 showed 28/30 tasks with an independent
@@ -44,7 +46,7 @@ new [references/self_check.md](../../references/self_check.md). The
 | H+ verification | Mentioned only in `induction.md` | §3b and `commands.md` state that `verification_conditions` test the knowledge hypothesis, not a second task requirement; reuse evidence, record `not_checked`/`unavailable`, never run a second full solve just to show the condition complete |
 
 The flow diagram now asks "is there a concrete reason for enhanced
-verification?" and runs at most ONE targeted independent check before the same
+verification?" and runs targeted checks until the evidence is sufficient before the same
 finding-location decision tree. The reference adds two short examples for the
 new rules: "two solvers agree on the same wrong model" and "a failed
 verification script is not a pass"; the existing B018/0087 examples moved there
@@ -90,7 +92,7 @@ It is replaced by an explicit rule set in
 - **Output shape unchanged.** One sentence in `claim` covering mechanism,
   addition, checkable fact and future decision; one check in
   `verification_conditions` feasible during this run (no later large
-  experiment, no second complete solve); `basis`/`applies_to`/
+  experiment as a substitute; affordable small-scale checks are allowed); `basis`/`applies_to`/
   `expected_changes` as before. No new schema.
 - **H+=0.** Candidate-specific reason in `basis`, `claim` omitted. A rule ID,
   version and applicable conditions are cited only for "already covered"; never
@@ -207,7 +209,7 @@ New:
   criteria, model-vs-task rules, H+ verification conditions, failed/insufficient
   handling, report reading and all worked examples (B018, 0087, 0312, failed
   verification script).
-- `tests/harness/test_stage_f_selfcheck_induction.py` — 30 tests: SKILL
+- `tests/harness/test_stage_f_selfcheck_induction.py` — 38 tests: SKILL
   conciseness/link contract, self-check reference contract, H+ prompt contract,
   induction-review contract, receipt-level review flows, and interface
   invariance.
@@ -219,7 +221,7 @@ Targeted regression run from the repo root with
 
 | Module | Result |
 |---|---|
-| `test_stage_f_selfcheck_induction` (new) | 30 / 30 OK |
+| `test_stage_f_selfcheck_induction` (new) | 38 / 38 OK (review round) |
 | `test_hplus_binary` + `test_induction_submission` + `test_hplus` + `test_hplus_experiments` | 53 / 53 OK |
 | `test_task_check` + `test_episode_closeout` + `test_offline_induction` + `test_r14_induction` | 130 / 130 OK |
 | `test_history_feedback_budget` | 25 / 25 OK |
@@ -254,5 +256,6 @@ and two `test_command_surface.TestSameConventionCompletionCompares` tests.
   it visible, and the guidance now names it as a self-check failure.
 - `SKILL.md` stays a flow document: detailed criteria, report fields and worked
   examples are in `references/self_check.md`, and a regression test enforces a
-  line budget plus the absence of the detailed material from the entry doc, so
-  future edits do not silently grow it again.
+  workflow stages and reference links plus the absence of the most detailed
+  reference-only material; it has no fixed line budget and prints a
+  non-blocking size note instead.

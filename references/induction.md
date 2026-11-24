@@ -2,6 +2,23 @@
 
 Compare recorded executions to extract a method, test its scope, and submit the review. Use [SKILL.md](../SKILL.md) for solving and close-out.
 
+## Contents
+
+- [When to start induction](#when-to-start-induction)
+  - [What counts as a knowledge increment](#what-counts-as-a-knowledge-increment)
+  - [Predict H+ at cold start](#predict-h-at-cold-start)
+- [Take a required review](#take-a-required-review)
+  - [Review decisions](#review-decisions)
+  - [Keep the hypothesis outcome separate from the learning result](#keep-the-hypothesis-outcome-separate-from-the-learning-result)
+  - [Durable knowledge must be usable by a future decision](#durable-knowledge-must-be-usable-by-a-future-decision)
+  - [Match the verification claim to the rule's claim](#match-the-verification-claim-to-the-rules-claim)
+- [Minimal submissions](#minimal-submissions)
+- [Read material and choose comparisons](#read-material-and-choose-comparisons)
+- [Complete review submissions](#complete-review-submissions)
+- [Existing-entry use and utility](#existing-entry-use-and-utility)
+- [Scoped checks, costs and corrections](#scoped-checks-costs-and-corrections)
+- [Learning feedback and experiment modes](#learning-feedback-and-experiment-modes)
+
 ## When to start induction
 
 `plan-next` freezes `capability_gain.decision` as the JSON number `0` or `1` (`wm-hplus-binary/1`). G, C and R determine U; H+ never enters it. The frozen switch only decides whether the completed execution must be REVIEWED afterwards.
@@ -25,17 +42,17 @@ Turning the task statement into decision variables, an objective and constraints
 
 A positive signal is possible when the run can probe a concrete reusable mechanism or boundary, for example: a class of business statement whose constraint mechanism is easy to confuse, with a modelling rule that has clear applicability conditions; a published method that appears to fail under a structure this run can test; a structural reduction that preserves the feasible region or the optimum; a transferable solving-strategy combination; a reusable solver-API or implementation failure mechanism with a reliable repair; or a substantive condition or operating step that published rules do not cover. The test is whether the finding can change how a future agent models or executes a task, not whether this task is complex.
 
-For H+=1, `claim` states the hypothesis and `verification_conditions` names a fact THIS run can check. A condition that needs a later large experiment, or a second complete solve of the same task, is not a valid condition for this run. A 1 requests a review; it does not guarantee a rule or a publication.
+For H+=1, `claim` states the hypothesis and `verification_conditions` names a fact THIS run can check. Match the check to the claimed mechanism with minimum sufficient evidence: a complete re-solve is not the default, and a later large experiment cannot substitute for evidence from this run; but an affordable small-scale full enumeration, an original-versus-reduced-method comparison, or a targeted reproduction can verify the mechanism. A 1 requests a review; it does not guarantee a rule or a publication.
 
 For H+=0, `basis` gives the candidate-specific reason and `claim` is omitted. Cite a published rule ID, version and applicable conditions only when the reason is that a rule already covers the proposed increment. When no concrete increment is identified, say so directly; do not cite a rule that is not there, and do not treat "no published rule covers it" as sufficient for 1.
 
 ### Predict H+ at cold start
 
-An empty library or missing historical reviews does not prevent a hypothesis grounded in the task, candidate steps and evidence obtainable during this run. It also does not make every standard modelling step an increment: an ordinary, generally known step without a new mechanism, boundary or operational detail is still H+=0. "No published rule covers it" is necessary background, never sufficient by itself.
+An empty library or missing historical reviews does not prevent a hypothesis grounded in the task, candidate steps and evidence obtainable during this run; even a known method can add a reusable step or boundary. It also does not make every standard modelling step an increment: an ordinary, generally known step without a new mechanism, boundary or operational detail is still H+=0. "No published rule covers it" is necessary background, never sufficient by itself.
 
 Compare the proposed increment with published strategy rules that apply to the candidate in the frozen prediction input. Similar executions, matching structural cells and structural recommendations help find material and checks; they do not establish rule coverage by themselves. A structural recommendation requires confirmed or partial machine support; a rule whose predicates are empty or unmeasured is not offered there and remains discoverable through text retrieval. The **when** paragraph is the ONE semantic applicability statement: the framework checks only deterministic structural conditions (`predicates`, optional; empty means no machine-checkable condition, never unconditional applicability) and never decides whether `when` holds. A different `family` label alone is not a contradiction — a shared mathematical mechanism may transfer. When a recommendation contains a published rule, read its `when`/`do`/`expect` and decide applicability; a retrieval hit is not adoption. For an already-covered 0, cite its visible ID, version and applicable conditions in `basis`.
 
-An empty library or missing historical reviews does not prevent a hypothesis grounded in the task, candidate steps and evidence obtainable during this run. Even a known method can add a reusable step or boundary to this library. For example, take a small finite task whose full enumeration fits this run's budget. With no published applicable rule, the candidate enumerates Y and selects the lower endpoint of each finite integer X interval because the minimization objective increases with X. Its `capability_gain` can be:
+For example, take a small finite task whose full enumeration fits this run's budget. With no published applicable rule, the candidate enumerates Y and selects the lower endpoint of each finite integer X interval because the minimization objective increases with X. Its `capability_gain` can be:
 
 ```json
 {
@@ -69,7 +86,7 @@ For a standard modelling step, suppose the task states a capacity limit and the 
 }
 ```
 
-When a condition is checked, add an item to the `hplus_verification` list in the `check-task --check` JSON. Supply the original `prediction_id`, the zero-based `condition_index`, `state:"checked"`, a `source`, and locatable `evidence_refs` such as `artifacts.submitted_script` and `task_check.checks`. Use `finding` to record what the check showed. An omitted state or missing support leaves the condition unknown. Use `not_checked` or `unavailable` honestly when the run could not complete the condition; never mark it checked to close the review, and never run a second complete solve merely to make it show as checked.
+When a condition is checked, add an item to the `hplus_verification` list in the `check-task --check` JSON. Supply the original `prediction_id`, the zero-based `condition_index`, `state:"checked"`, a `source`, and locatable `evidence_refs` such as `artifacts.submitted_script` and `task_check.checks`. Use `finding` to record what the check showed. An omitted state or missing support leaves the condition unknown. Use `not_checked` or `unavailable` honestly when the run could not complete the condition; never mark it checked to close the review, and never run a large complete re-solve merely to make it show as checked — an affordable small-scale check that verifies the mechanism is allowed.
 
 During H+ building, close-out schedules one required review per bound executed positive prediction, including failed attempts and incomplete verification. Missing or invalid decisions schedule as 0 with their own diagnostics. Executed H+ = 0 attempts remain available as comparisons.
 
@@ -594,6 +611,11 @@ declaration leaves use unknown; pass `--used-entry-ids ''` to declare no
 adoption. The version is resolved from the frozen `used_entries` declaration,
 so you do not re-type it for every judgement.
 
+At `close-episode`, read `result.entry_usage`: `entries[]` lists the adopted
+`(entry, version)` with read-time utility totals and an `inspect_ref`, and
+`effect_review.pending` names adoptions with no current valid judgement. Record
+the judgement in the same close-out call (works for H+ = 0):
+
 Read the entry's UTILITY summary with `orx inspect --bank strategic --entry N`
 (`result.utility`, and the same block inside `rule_history.utility`):
 
@@ -616,9 +638,7 @@ belongs to `forward_calibration` — `n_predictions = 0` means "not estimated",
 not a measured zero effect. A failed task check is not `refuting`; a technical
 check failure is evidence, not a utility verdict.
 
-At `close-episode`, `result.entry_usage.effect_review.pending` lists this
-episode's adoptions that still lack a judgement. Record the review in the SAME
-close-out (works for H+ = 0):
+Record an effect judgement with the SAME close-out call (works for H+ = 0):
 
 ```bash
 orx close-episode --task T --episode E --terminal completed \
