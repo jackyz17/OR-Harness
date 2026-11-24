@@ -263,7 +263,7 @@ class TestSelfCheckGuidance(unittest.TestCase):
 
 
 class TestHplusPrompt(unittest.TestCase):
-    """The prediction prompt keeps the tightened increment rule."""
+    """H+ predicts a review-worthy opportunity without weakening publication."""
 
     @classmethod
     def setUpClass(cls):
@@ -272,25 +272,36 @@ class TestHplusPrompt(unittest.TestCase):
         )
         cls.prompt = _flat(STRATEGY_OUTCOME_SYSTEM_PROMPT)
 
-    def test_standard_translation_is_not_an_increment(self):
-        self.assertNotIn("Reusable modelling knowledge also includes "
-                         "translating", self.prompt)
-        self.assertIn("NOT AN INCREMENT", self.prompt)
-        for term in ("decision variables", "capacity", "integer",
-                     "time index", "LP/MILP"):
-            self.assertIn(term, self.prompt)
+    def test_plain_translation_without_a_specific_learning_mechanism_is_zero(self):
+        self.assertIn("Use 0 for mere task translation without a specific "
+                      "transferable mechanism", self.prompt)
+        self.assertIn("routine feasibility or objective recomputation without "
+                      "a transferable finding", self.prompt)
+        self.assertNotIn("STANDARD TASK TRANSLATION IS NOT AN INCREMENT", self.prompt)
 
     def test_hplus_is_not_a_difficulty_or_success_judgement(self):
-        for term in ("difficult", "succeed", "trick", "reusable-sounding"):
+        for term in ("task novelty or complexity alone", "a successful solver call alone",
+                     "no concrete reasonable learning hypothesis"):
             self.assertIn(term, self.prompt)
+
+    def test_classical_mechanisms_and_independent_validation_are_eligible(self):
+        self.assertIn("Distinguish domain familiarity", self.prompt)
+        self.assertIn("classical or mature method is not disqualified", self.prompt)
+        self.assertIn("meaningful independent validation of an existing weakly "
+                      "supported mechanism", self.prompt)
+
+    def test_covered_zero_requires_no_meaningful_new_evidence(self):
+        self.assertIn("fully covers the mechanism and this run offers no "
+                      "meaningful new evidence", self.prompt)
+        self.assertIn("not a guarantee of publishable knowledge", self.prompt)
 
     def test_cold_start_is_not_automatic(self):
         self.assertIn("COLD START", self.prompt)
         self.assertIn("NEVER sufficient", self.prompt)
 
     def test_verification_condition_allows_affordable_checks(self):
-        for term in ("MINIMUM SUFFICIENT evidence",
-                     "complete re-solve is NOT the default",
+        for term in ("minimum feasible check",
+                     "no default full re-solve",
                      "small-scale full enumeration",
                      "original-versus-reduced",
                      "targeted reproduction"):

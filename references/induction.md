@@ -27,9 +27,11 @@ Compare recorded executions to extract a method, test its scope, and submit the 
 
 H+ is not a judgement that the task is difficult, that the candidate will succeed, that a trick can be summarised, or that the task uses new variables or constraints. It asks one question:
 
-> After this candidate executes and is reviewed, is there a concrete, reasonable and checkable opportunity to obtain knowledge that the published strategy library does not already cover and that could change a FUTURE modelling or solving decision?
+> In the current Harness knowledge state, could executing this candidate and its reasonably foreseeable checking, diagnosis and verification provide a concrete, reasonable and testable opportunity to produce, supplement, correct or independently validate transferable strategy knowledge that could improve a future agent's modelling, solving, implementation or verification decisions?
 
-A positive hypothesis should be able to answer, compactly: which specific mechanism, method or method boundary could be learned; what it adds to the library; which fact this run can check; and which future decision or task class it could change. Keep those answers in `claim` and `verification_conditions`; do not turn them into extra fields.
+A positive signal predicts an opportunity worth review, not a guarantee of publishable knowledge. Keep `claim` to a concise learning hypothesis, ground it in the frozen input and current knowledge through `basis`, and use `verification_conditions` for a minimum feasible check. It need not prove the mechanism, cross-task transfer, multi-task validation or eventual publication in advance. Formal knowledge validation and publication standards remain the offline review's responsibility.
+
+Distinguish a method's familiarity in operations research, its coverage in the current strategy library, and its usefulness to a future agent. A classic, common or mature method is not disqualified because the domain already knows it. Specific applicability conditions, operating mechanisms, boundaries or implementation experience can still offer learning value.
 
 Turning the task statement into decision variables, an objective and constraints is NECESSARY SOLVING WORK, not a knowledge increment by itself. These do not justify H+=1 on their own:
 
@@ -40,15 +42,17 @@ Turning the task statement into decision variables, an objective and constraints
 - building an ordinary LP/MILP model and calling a solver successfully;
 - running a routine constraint or result check on the model just built.
 
-A positive signal is possible when the run can probe a concrete reusable mechanism or boundary, for example: a class of business statement whose constraint mechanism is easy to confuse, with a modelling rule that has clear applicability conditions; a published method that appears to fail under a structure this run can test; a structural reduction that preserves the feasible region or the optimum; a transferable solving-strategy combination; a reusable solver-API or implementation failure mechanism with a reliable repair; or a substantive condition or operating step that published rules do not cover. The test is whether the finding can change how a future agent models or executes a task, not whether this task is complex.
+A positive signal is possible for a transferable modelling mechanism or structural reduction, a classical method's structural applicability, a solving-strategy combination with a specific purpose, a reusable API or implementation mechanism, a transferable check or optimality-verification method, a rule's scope extension/correction/counterexample, or meaningful independent validation of an existing weakly supported mechanism. The test is whether evidence from this candidate's reasonable process could improve a future decision, not whether the method is new to the domain.
+
+Checks and diagnostics need not be the main solver step to offer learning value. For example, with few facilities and a transportation LP remaining after fixing openings, affordable opening-subset enumeration plus transportation LPs can independently check a facility-location MILP optimum and offer a reusable verification strategy. This is eligible only when reasonably foreseeable for the current candidate. Do not borrow another candidate's H+, automatically combine unselected candidates' learning value, or use later execution facts to revise the frozen forecast.
 
 For H+=1, `claim` states the hypothesis and `verification_conditions` names a fact THIS run can check. Match the check to the claimed mechanism with minimum sufficient evidence: a complete re-solve is not the default, and a later large experiment cannot substitute for evidence from this run; but an affordable small-scale full enumeration, an original-versus-reduced-method comparison, or a targeted reproduction can verify the mechanism. A 1 requests a review; it does not guarantee a rule or a publication.
 
-For H+=0, `basis` gives the candidate-specific reason and `claim` is omitted. Cite a published rule ID, version and applicable conditions only when the reason is that a rule already covers the proposed increment. When no concrete increment is identified, say so directly; do not cite a rule that is not there, and do not treat "no published rule covers it" as sufficient for 1.
+For H+=0, `basis` gives the candidate-specific reason and `claim` is omitted. A covered 0 requires a visible published rule that fully covers the mechanism and no meaningful new evidence from this run; cite its actual ID, version and applicable conditions. Existing coverage alone does not exclude a meaningful scope correction or independent validation. When no concrete learning hypothesis is identified, say so directly; do not invent a rule or treat missing coverage as sufficient for 1.
 
 ### Predict H+ at cold start
 
-An empty library or missing historical reviews does not prevent a hypothesis grounded in the task, candidate steps and evidence obtainable during this run; even a known method can add a reusable step or boundary. It also does not make every standard modelling step an increment: an ordinary, generally known step without a new mechanism, boundary or operational detail is still H+=0. "No published rule covers it" is necessary background, never sufficient by itself.
+An empty library or missing historical reviews neither supplies a positive hypothesis nor prevents one grounded in the task, candidate and reasonably obtainable evidence. Use H+=0 if no concrete reasonable hypothesis can be identified; a method's being generally known is not itself that reason. Look for current-library gaps, corrections or meaningful independent evidence rather than demanding domain novelty.
 
 Compare the proposed increment with published strategy rules that apply to the candidate in the frozen prediction input. Similar executions, matching structural cells and structural recommendations help find material and checks; they do not establish rule coverage by themselves. A structural recommendation requires confirmed or partial machine support; a rule whose predicates are empty or unmeasured is not offered there and remains discoverable through text retrieval. The **when** paragraph is the ONE semantic applicability statement: the framework checks only deterministic structural conditions (`predicates`, optional; empty means no machine-checkable condition, never unconditional applicability) and never decides whether `when` holds. A different `family` label alone is not a contradiction — a shared mathematical mechanism may transfer. When a recommendation contains a published rule, read its `when`/`do`/`expect` and decide applicability; a retrieval hit is not adoption. For an already-covered 0, cite its visible ID, version and applicable conditions in `basis`.
 
@@ -71,13 +75,13 @@ For a covered control, suppose the frozen input actually shows published rule `1
 ```json
 {
   "decision": 0,
-  "basis": ["Published rule 12@3 already covers finite integer X intervals at fixed Y, lower-endpoint selection for this increasing minimization objective and full-enumeration fallback when monotonicity fails; this candidate adds no step or boundary."]
+  "basis": ["Published rule 12@3 already covers finite integer X intervals at fixed Y, lower-endpoint selection for this increasing minimization objective and full-enumeration fallback when monotonicity fails; this run adds no scope finding or meaningful independent evidence."]
 }
 ```
 
 Use only rule IDs and versions actually present in the input; the control ID above is illustrative. If no concrete reusable increment with a check feasible during this run can be identified, return 0 with that specific reason and omit `claim`. Missing review history alone is not that reason. A 1 schedules a factual review; the review decides whether anything was learned and whether a rule can be published.
 
-For a standard modelling step, suppose the task states a capacity limit and the candidate simply writes a linear capacity constraint. That is necessary translating work; there is no new mechanism, boundary or operational detail to test. Return 0:
+For a bare modelling translation, suppose the task states a capacity limit and the candidate simply writes a linear capacity constraint. No specific transferable mechanism, boundary or operational finding beyond that translation has been identified. Return 0:
 
 ```json
 {
@@ -562,7 +566,7 @@ orx induce --induction-id J \
     "hypothesis_outcome":"refuted",
     "deviation_reason":"The capacity limit was stated directly; no boundary or mechanism was tested.",
     "basis":{"kind":"recorded_checks","refs":["EX","task_check.checks"],
-             "analysis":"The recorded check confirms ordinary constraint translation; no step differs from the standard model."}
+             "analysis":"The recorded check only confirms the stated capacity limit; it provides no specific reusable mechanism, scope correction or independent verification finding."}
   }'
 ```
 
@@ -690,5 +694,7 @@ Keep failed attempts as contrasts. Use `exclude-execution` and `restore-executio
 ## Learning feedback and experiment modes
 
 Later `plan-next` calls in the same memory home select applicable receipts recorded before the decision cutoff. Read [prediction input audit](world_model_contract.md#4-inspect-a-prediction-and-its-input) to see which feedback reached the provider.
+
+Use a supported covered/no-increment conclusion as negative feedback only for a specifically comparable mechanism and its premises. Insufficient evidence, unfinished or unobserved induction, and execution failures that prevent verification leave the hypothesis unknown. Empty feedback does not imply no learning opportunity; none of these unknowns justifies globally tightening H+.
 
 Ordinary prediction homes enable H+ by default. To set it explicitly, use global `--induction-mode hplus` or `OR_INDUCTION_MODE=hplus`. Settle required reviews before freezing the library. Use separate homes for [H+, NoH+ and random controls](../docs/validation/hplus_binary.md) and follow the [fixed-memory test procedure](snapshot_lifecycle.md#fixed-memory-testing-with-per-question-copies).
