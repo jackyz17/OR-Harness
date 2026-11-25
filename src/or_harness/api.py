@@ -3728,6 +3728,7 @@ class ORHarness:
                 item = existing[0]
                 return {"action_id": item.action_id, "status": item.status,
                         "selected": item.outcome.get("selected"), "rejected": False,
+                        "deviation": item.outcome.get("deviation"),
                         "hplus": item.outcome.get("hplus"), "post_snapshot_id": item.post_snapshot_id}
         outcome: Dict[str, Any] = {
             "kind": "plan_next_choice",

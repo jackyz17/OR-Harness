@@ -22,7 +22,7 @@ In formal experiments, cross-task memory comes only through the configured Harne
 2. Propose candidates and select by U (plan-next)
    |
    v
-3a. Implement/debug the selected method, then execute
+3a. Write the solve code for the selected method, then execute
    |
    v
 3b. Self-check the answer against the original task and record the attempt
@@ -64,21 +64,22 @@ orx --world-model URL::MODEL plan-next --task task.json --episode E --candidates
 ```
 
 Read `result.selected_prediction_id` (P) and `result.selected_score`, then write
-and debug the selected candidate's solve code. The framework establishes its
-implementation observation anchor when the decision completes and binds the
-execution to it. Follow `plan-next → implement/debug → execute → check/finish/closeout`.
+the solve code for the selected candidate. The framework establishes P's
+implementation observation anchor when the decision completes, so `execute`
+binds to the same anchor. Follow `plan-next → write code → execute → check →
+fix/retry → settlement → H+ induction`.
 
 Carry any `capability_gain.verification_conditions` from the selected row into
 the solve. If planning returns a refusal, resolve its cause and plan again. See
 [strategy_outcome.md](references/strategy_outcome.md) for scoring and settings.
 
-### 3a. Build and execute
+### 3a. Write the solve code and execute
 
-Implement the selected model and method in `ws/solve.py`. Write the observed solver status, objective, solution variables, and available bound and gap to `result.json`. Follow the [output format](references/commands.md#5-execute-and-check) to capture the method actually run. Include `--used-entry-ids ENTRY@VERSION` when adopting a rule.
+Write the selected model and method in `ws/solve.py`. Write the observed solver status, objective, solution variables, and available bound and gap to `result.json`. Follow the [output format](references/commands.md#5-execute-and-check) to capture the method actually run. Include `--used-entry-ids ENTRY@VERSION` when adopting a rule.
 
 Report evidenced defects, actually started correction rounds and honest coverage
-through existing action outcomes using `prediction_id: P`. The framework resolves
-the candidate's observation window. Preserve failure
+through existing action outcomes using `prediction_id: P`; the framework resolves
+the candidate's selection anchor. Preserve failure
 versions, repair diffs and checks by reference; see
 [build6.4 host reports](references/build64_implementation.md). Local correction
 reports do not consume or increase formal execution retry permission.
@@ -130,7 +131,7 @@ does a substantive doubt still block the conclusion? -- yes --> another
 locate the finding: task reading? model? implementation? recording? the check?
    |
    +-- check or evidence wrong/incomplete --> fix it and re-run on the SAME EX
-   +-- model/implementation wrong ----------> plan-next → implement → execute
+   +-- model/implementation wrong ----------> new `plan-next`, then execute
    |
    v
 self-check done --> final check-task + supported G attribution (or Unknown)
@@ -187,7 +188,7 @@ verification with `--verification`: it is captured as `agent_reported` evidence
 on the same execution, separate from the framework checks, and creates no
 solving attempt.
 
-Record verification artifacts and actual cost through the existing verify action or host usage report. A new solving method or substantially revised answer returns to plan-next, implementation and execute; verification cannot bypass binding/retry limits.
+Record verification artifacts and actual cost through the existing verify action or host usage report. A new solving method or substantially revised answer returns to plan-next and execute; verification cannot bypass binding/retry limits.
 
 `reflection_material` carries the task reference, method, artifacts, solution,
 check report and prior attempts. Reuse the returned evidence; batch necessary

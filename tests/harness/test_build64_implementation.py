@@ -219,6 +219,86 @@ class TestBuild64Implementation(GCase):
         self.assertEqual(repeated['result']['action_id'], chosen['result']['action_id'])
         self.assertEqual(len(self.provider.requests), 1)
 
+    def test_main_flow_without_choose_next_binds_one_anchor_and_observes_reports(self):
+        # The normal solving flow: plan-next -> write solve code -> execute ->
+        # check -> correct/retry -> settlement. No choose-next call anywhere.
+        p = self.predict_g()
+        decision = self.h.actions.get(p.trace.model_info['decision_action_id'])
+        anchor_id = decision.outcome['implementation_selection_action_id']
+        self.assertEqual(decision.outcome['implementation_anchor'], 'decision_completion')
+        anchor = self.h.actions.get(anchor_id)
+        self.assertEqual(anchor.outcome['kind'], 'plan_next_choice')
+        self.assertEqual(anchor.outcome['prediction_id'], p.prediction_id)
+        self.assertEqual(anchor.outcome['selection_source'], 'plan_next')
+        self.assertEqual(anchor.started_at, decision.ended_at)
+
+        # Facts name only the prediction; the framework resolves the anchor.
+        at = time.time()
+        self.h.report_action('model', self.task, 'ep1', outcome={'implementation_facts': [{
+            'prediction_id': p.prediction_id, 'event_id': 'main-flow-api-bug',
+            'occurred_at': at, 'phase': 'pre_execute',
+            'classification': 'implementation', 'confirmed': True,
+            'requires_correction': True, 'observer': 'main-flow-runner',
+            'summary': 'A targeted API test rejected native numeric scalars.',
+            'evidence_refs': ['artifact:failure.py'],
+            'correction': {'round_id': 'main-flow-repair', 'started_at': at,
+                'method': 'Normalize native scalar types before constructing expressions.',
+                'result': 'targeted test passed',
+                'evidence_refs': ['artifact:repair.diff'],
+                'verification_refs': ['host-log:main-flow-validation']}}]})
+
+        record = self.run_g(p)   # execute binds the anchor plan-next created
+        executed = self.h.actions.get(record.action_id)
+        self.assertEqual((executed.params or {}).get('decision_choice_action_id'), anchor_id)
+        windows = [a for a in self.h.actions.query(task_id=self.task['task_id'], episode_id='ep1')
+                   if a.parent_action_id == decision.action_id
+                   and (a.outcome or {}).get('kind') == 'plan_next_choice'
+                   and (a.outcome or {}).get('prediction_id') == p.prediction_id]
+        self.assertEqual([a.action_id for a in windows], [anchor_id])
+
+        # Coverage names only the prediction; `from` resolves to the anchor.
+        stop = time.time()
+        self.h.report_action('verify', self.task, 'ep1', ended_at=stop, outcome={
+            'implementation_coverage': {'prediction_id': p.prediction_id,
+                'through': stop, 'implemented': True, 'complete': True,
+                'candidate_complete': True, 'observer': 'main-flow-runner',
+                'evidence_refs': ['host-log:main-flow-implementation-span']}})
+        self.h.report_action('finish_task', self.task, 'ep1', ended_at=stop, outcome={
+            'finished': True,
+            'correction_coverage': {'from': decision.started_at, 'through': stop,
+                'complete': True, 'observer': 'main-flow-runner',
+                'evidence_refs': ['host-log:main-flow-corrective-span']}})
+
+        actions = self.h.actions.query(task_id=self.task['task_id'], episode_id='ep1')
+        window = implementation_window(p, actions)
+        self.assertTrue(window['implemented'])
+        self.assertEqual(window['label'], 1)
+        self.assertEqual(window['selection_action_id'], anchor_id)
+        self.assertEqual([f['event_id'] for f in window['facts']], ['main-flow-api-bug'])
+        self.assertTrue(window['complete'])
+
+        summary = self.summary(p)
+        self.assertEqual(summary.implementation_observation['label'], 1)
+        self.assertEqual(summary.cost['retries']['comparable']['value'], 1)
+        evaluation = evaluate_strategy_prediction(p, summary)
+        observed = evaluation.risk['r_events_observation']['events']['implementation_failure']
+        self.assertEqual(observed['scope'], 'selected_candidate_implementation_window')
+
+        # A later selected-but-never-implemented candidate has no R label and
+        # is excluded from the numeric technical-R population.
+        q = self.predict_g(method={'name': 'replacement method', 'steps': ['Reimplement the failed strategy.']})
+        q_window = implementation_window(q, self.h.actions.query(task_id=self.task['task_id'], episode_id='ep1'))
+        self.assertFalse(q_window['implemented'])
+        self.assertIsNone(q_window['label'])
+        from or_harness.world_model.r_signal import technical_r_statistics
+        stats = technical_r_statistics({('factory', 'ep1'): []}, [], harness=self.h)
+        self.assertEqual(stats['coverage']['n_selected_windows'], 1)
+        self.assertNotIn(q.prediction_id,
+                         [gap['prediction_id'] for gap in stats['selected_without_execution']])
+
+        closed = self.h.close_episode(self.task['task_id'], 'ep1')
+        self.assertEqual([e['prediction_id'] for e in closed['evaluations']], [p.prediction_id])
+
     def test_d_duplicate_logs_and_formal_host_identity(self):
         p, c = self.predict()
         fact = self.report(c)

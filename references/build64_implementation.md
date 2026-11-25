@@ -39,18 +39,24 @@ independent `or-retry-increment/1` formal-attempt diagnostic.
 
 ## Bindings and boundaries
 
-1. Call `plan_next` and take its scored selected prediction P. Before actual
-   implementation, call `choose_next(decision_action_id, prediction_id=P)`.
-   Its returned action ID S is the real selection anchor for implementation.
-   Repeating the same choice before execution reuses S. Execute can still
-   auto-select, but that later anchor cannot observe earlier unreported work.
-2. Implementation facts name S; P/task/episode are checked and filled from S.
-   S must belong to the real scored decision. No execution is fabricated or
+1. Call `plan_next` and take its scored selected prediction P. `plan_next`
+   establishes P's implementation selection action when the decision completes:
+   the decision action outcome carries `implementation_anchor:
+   "decision_completion"` and `implementation_selection_action_id`. This action
+   is the real selection anchor for implementation. No separate `choose_next`
+   call is required: implementation reports and execute resolve the same anchor
+   from P. `choose_next` remains an optional read/confirm path and reuses that
+   action.
+2. Implementation facts and coverage name P (`prediction_id`); the framework
+   resolves the selection action and fills `selection_action_id`, checking P,
+   task and episode against the real scored decision. The selection must belong
+   to the actual scored planning decision. No execution is fabricated or
    consumed by reporting a local implementation failure.
-3. The implementation window ends at candidate implementation/necessary technical
-   verification completion or the next `plan_next` action's start, whichever
-   comes first. Selection before/after a new decision creates different windows
-   even for the same method. Facts after the next decision are refused for S.
+3. The implementation window starts at that anchor and ends at candidate
+   implementation/necessary technical verification completion or the next
+   `plan_next` action's start, whichever comes first. A later decision creates a
+   different window even for the same method. Facts after the next decision are
+   refused for P.
 4. Each retries window starts at **that prediction's own plan decision action**,
    not the first execution or the selection of some other candidate. It ends
    at the confirmed `finish_task` boundary. It includes later candidates' started
@@ -75,53 +81,73 @@ t.json --episode ep1 --outcome report.json`. `--outcome` accepts JSON or a file;
 no new CLI command or output contract is introduced. Existing `host_usage` can
 accompany the report for the other cost dimensions.
 
+Reports name the selected prediction (`prediction_id`). The framework resolves
+its implementation selection action, so `selection_action_id` is filled in and
+need not be supplied. The optional explicit `selection_action_id` remains
+accepted for hosts that already carry it.
+
 ```python
 import time
 
-choice = h.choose_next(plan['decision_action_id'],
-                       prediction_id=plan['selected_prediction_id'])
-selection_id = choice['action_id']
-selected_at = h.actions.get(selection_id).started_at
-anchor = h.actions.get(plan['decision_action_id']).started_at
+plan = h.plan_next(task, 'ep1', candidates=[candidate])
+pid = plan['selected_prediction_id']
+decision = h.actions.get(plan['decision_action_id'])
+anchor = decision.started_at      # retries window starts at the decision itself
+# plan-next already established pid's implementation selection action; hosts
+# report against pid and never call choose_next on the normal path.
 
 # Supply actual recorded timestamps and stable IDs from the host, not guessed
 # commands/exception keywords. Capture the failing version before overwriting it.
 failed_at = time.time()
 # ...actual failing targeted test, then started substantive correction...
 repair_started = time.time()
-h.report_action('model', task, 'ep1', outcome={
-    'implementation_facts': [{
-        'selection_action_id': selection_id,
-        'event_id': 'host-defect-17',
-        'occurred_at': failed_at,
-        'phase': 'pre_execute',
-        'classification': 'implementation',
-        'confirmed': True,
-        'requires_correction': True,
-        'observer': 'runner-session-42',
-        'summary': 'A targeted API test rejected native numeric scalars.',
-        'evidence_refs': ['artifact:failure.py', 'host-log:session42/test17'],
-        'correction': {
-            'round_id': 'host-correction-8',
-            'started_at': repair_started,
-            'method': 'Normalize scalar types before constructing expressions.',
-            'evidence_refs': ['artifact:repair.diff', 'artifact:fixed.py'],
-            'result': 'targeted test passed',
-            'verification_refs': ['host-log:session42/test18'],
-        },
-    }],
-})
+fact = {
+    'prediction_id': pid,
+    'event_id': 'host-defect-17',
+    'occurred_at': failed_at,
+    'phase': 'pre_execute',
+    'classification': 'implementation',
+    'confirmed': True,
+    'requires_correction': True,
+    'observer': 'runner-session-42',
+    'summary': 'A targeted API test rejected native numeric scalars.',
+    'evidence_refs': ['artifact:failure.py', 'host-log:session42/test17'],
+    'correction': {
+        'round_id': 'host-correction-8',
+        'started_at': repair_started,
+        'method': 'Normalize scalar types before constructing expressions.',
+        'evidence_refs': ['artifact:repair.diff', 'artifact:fixed.py'],
+        'result': 'targeted test passed',
+        'verification_refs': ['host-log:session42/test18'],
+    },
+}
+h.report_action('model', task, 'ep1', outcome={'implementation_facts': [fact]})
 
-# After implementation/execution/necessary technical verification finishes:
+# Execute binds to the anchor plan-next already established for pid.
+execution = h.execute(task, 'S04', 'ws/solve.py', 'ws',
+                      prediction_id=pid, episode_id='ep1')
+
+# After implementation/execution/necessary technical verification finishes.
+# `from` defaults to the anchor, so the host only reports the real stop time.
 stop = time.time()
 h.report_action('verify', task, 'ep1', started_at=stop, ended_at=stop, outcome={
     'implementation_coverage': {
-        'selection_action_id': selection_id,
-        'from': selected_at, 'through': stop,
+        'prediction_id': pid,
+        'through': stop,
         'implemented': True, 'complete': True, 'candidate_complete': True,
         'observer': 'runner-session-42',
         'evidence_refs': ['host-log:session42/implementation-span'],
     },
+})
+
+# A later formal resubmission of the same failed attempt is not a new round.
+# After a fresh plan-next selects qid for the repaired code, re-report the SAME
+# fact with its original times and add that real execute action ID.
+retry = h.execute(task, 'S04', 'ws/solve.py', 'ws',
+                  prediction_id=qid, episode_id='ep1')
+h.report_action('model', task, 'ep1', outcome={
+    'implementation_facts': [{**fact, 'correction': {
+        **fact['correction'], 'retry_action_id': retry.action_id}}],
 })
 
 # Commit/finish under the existing workflow. Only claim complete when the host
@@ -148,7 +174,7 @@ accepts at most 32 small facts (6,000 characters each), using references for
 full scripts, tracebacks and diffs.
 
 For a defect inside a formal execution, also set `execution_id: EX`. The
-framework verifies EX belongs to S. The terminal formal implementation error
+framework verifies EX belongs to the resolved selection. The terminal formal implementation error
 uses `execution:EX:technical`, shared with Executor. A separate recovered internal
 defect keeps its stable host `event_id`; it must not be merged with another bug
 merely because both occurred in EX. On a successful formal result this is the
@@ -212,7 +238,8 @@ predicted/actual means, prediction variance, prediction distributions conditiona
 on retry/no-retry, positive-positive log-error coverage, and descriptive constant
 0/0.1 baseline MAEs. No epsilon relative error is manufactured for zeros.
 
-Runner must select before implementation, identify actual defects/started rounds,
+Runner must plan before implementation (`plan-next` establishes the anchor),
+identify actual defects/started rounds,
 keep stable IDs/timestamps, capture failing versions/diffs/checks, report genuine
 coverage, close the correct episode and complete required H+=1 reviews. It must
 retain formal retry limits and reference-answer separation. The framework does

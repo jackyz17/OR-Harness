@@ -1928,7 +1928,7 @@ def cmd_plan_next(args) -> int:
             parts.append(f"Selected {selected}; U={score.get('utility')}; common terms={score.get('scoring_basis',{}).get('terms')}; "
                          f"G={score.get('benefit_value')}, C={score.get('cost_normalized')}, R={score.get('risk_effective')}. "
                          "The framework established the implementation observation anchor at decision completion. "
-                         f"Implement/debug, then run `orx execute --task ... --prediction {selected} --code solve.py --workspace ws`. "
+                         f"Write the solve code, then run `orx execute --task ... --prediction {selected} --code solve.py --workspace ws`. "
                          "Report implementation facts and coverage with this prediction_id. "
                          "See selected_score.scoring_basis for omitted dimensions and reasons.")
         else:
@@ -1967,7 +1967,7 @@ def cmd_choose_next(args) -> int:
                           if (result.get('selected') or {}).get('strategy_id')
                           else "")
                        + f". Selection action {result['action_id']} confirms the existing observation window. "
-                         "Implement/debug this candidate, then execute the original unused U-permitted prediction.")
+                         "Write the solve code for this candidate, then execute the original unused U-permitted prediction.")
         if result.get("deviation"):
             summary += " (deviation from the suggestion recorded)"
         return _emit(result, summary)
@@ -2937,7 +2937,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="report what would be evicted without writing")
     p.set_defaults(func=cmd_enforce_window)
 
-    p = sub.add_parser("plan-next", help="select by U and establish the observation anchor; implement/debug, then execute")
+    p = sub.add_parser("plan-next", help="select by U and establish the observation anchor; write the solve code, then execute")
     p.add_argument("--task", required=True)
     p.add_argument("--episode", default=None)
     p.add_argument("--candidates", default=None,

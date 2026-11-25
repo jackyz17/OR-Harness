@@ -26,7 +26,7 @@ Use the same [task input](modeling.md#start-from-the-shared-original-input) for 
 |---|---|---|
 | Task / episode | One task ID per problem and one episode per solving effort | Reuse both for retries |
 | Decision action | `plan-next` → `result.decision_action_id` | Framework observation anchor; optional `choose-next --decision` |
-| Selected prediction P | `plan-next` → `result.selected_prediction_id` | Implement/debug, then `execute --prediction P`; `implementation_facts[].prediction_id` |
+| Selected prediction P | `plan-next` → `result.selected_prediction_id` | Write the solve code, then `execute --prediction P`; `implementation_facts[].prediction_id` |
 | Execution EX | `execute` → `result.execution_id` | `check-task`, `record --from-staged`, evidence corrections |
 | Execution action | `execute` → `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
 | Induction job J | `close-episode` → `result.induction_schedule.pending_ids[]` | `induction-material --induction-id`, `induce --induction-id` |
@@ -176,10 +176,11 @@ If the plan has no eligible U, read its reason and the saved prediction's `failu
 
 Predict G/C/R/H+ once per candidate under one shared context. Save the scores and select the eligible candidate with highest U. Read `result.decision_action_id` (D), `result.selected_prediction_id` (P), `result.selected_score` and `result.plan.candidates[]`.
 
-Solve flow: `plan-next → implement/debug → execute → check/finish/closeout`.
-The framework establishes the selected candidate's implementation anchor at decision
-completion. Report implementation facts and coverage with P; execution binds to
-the same anchor. For a new attempt, obtain a fresh decision in the same episode.
+Solve flow: `plan-next → write solve code → execute → check result → correct and retry when needed → task settlement → H+ induction`.
+The framework establishes the selected candidate's implementation anchor at
+decision completion. Report implementation facts and coverage with P; `execute`
+binds to the same anchor and no separate selection call is required. For a new
+attempt, obtain a fresh decision in the same episode.
 
 Use `--cost-scales '{"tool_calls":30}'` to declare resource scales. `--execution-context runner.json` sets the solver interface, taking precedence over `OR_EXECUTION_CONTEXT`; a legacy `phase` key is accepted but C no longer uses a modelling phase. See [score calculation](strategy_outcome.md#3-score-one-or-more-candidates).
 
@@ -187,7 +188,7 @@ Use `--cost-scales '{"tool_calls":30}'` to declare resource scales. `--execution
 
 Optionally confirm a saved decision's scored winner or record its rejection.
 Use `--rejected --note TEXT` to record why the plan was rejected. Normal solving
-continues directly from `plan-next` to implementation and `execute`.
+continues directly from `plan-next` to writing the solve code and `execute`.
 
 `result.action_id` identifies the framework's selection action. Repeated
 confirmation reuses that action and observation window. Existing
