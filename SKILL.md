@@ -11,6 +11,8 @@ description: >
 
 Use one memory directory (`--home` or `OR_HARNESS_HOME`) throughout the task stream. Configure `--world-model URL::MODEL` and `OR_WM_API_KEY` for planning.
 
+In formal experiments, cross-task memory comes only through the configured Harness banks. Per-task scratch files are allowed; do not persist extra solving notes for reuse across tasks.
+
 ## Workflow
 
 ```text
@@ -45,7 +47,7 @@ orx profile --task task.json
 orx recall --task task.json --top 5
 ```
 
-Read the task profile, applicable rules, and related executions. Check their premises before adopting a method.
+Read the returned profile, applicable rules and related executions once; reuse those fields and inspect only a missing detail needed for the next decision. Check rule premises before adoption.
 
 ### 2. Select a method
 
@@ -163,7 +165,8 @@ on the same execution, separate from the framework checks, and creates no
 solving attempt.
 
 `reflection_material` carries the task reference, method, artifacts, solution,
-check report and prior attempts; read it before deciding. Record every real
+check report and prior attempts. Reuse the returned evidence; batch necessary
+reads rather than issuing an inspect per field or rereading unchanged material. Record every real
 attempt with `record --usage-file`. Start at most three retries after the first
 execution; a re-check on the same execution is not a new attempt. See
 [self-check detail and examples](references/self_check.md) and

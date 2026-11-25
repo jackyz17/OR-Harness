@@ -22,7 +22,7 @@ These are check dimensions, not a fixed checklist. A genuinely continuous proble
 
 Options include a small enumeration, an independent verification script, a dual or bound argument, a second exact algorithm, a second solver, or another independent check suited to the structure. Add one only when there is a concrete reason, such as: optimality cannot be confirmed from the available evidence; the solution or objective looks anomalous; a constraint interpretation is genuinely ambiguous; the solver's return disagrees with an independent computation; the structure is complex enough that the base check cannot cover a key error; or a specific modelling assumption needs independent validation.
 
-Verification is sufficiency-driven, not count-limited: pick the cheapest check that resolves the open doubt, and when several independent doubts can change the conclusion, address them separately instead of repeating a part already established. Stop once the evidence supports the conclusion. A complete independent re-solve is not the default step for every task, but it is allowed when it is the appropriate way to resolve a specific doubt; when a second algorithm is genuinely how a complex problem gets a reliable answer, run it. The wrong pattern is the automatic "another full solve per task" habit, not a second check that answers a real question.
+Verification is sufficiency-driven, not count-limited: pick the cheapest check for a named unresolved doubt; address independent doubts separately and reuse established results. Stop when sufficient evidence supports the conclusion. A complete independent re-solve is not the default; use it only when it reasonably resolves a specific open doubt. Neither H+=1 nor a missing G label requires another solve. Prefer an already sufficient analytic, dual or other certificate over repeating a complete solve. Equal optimal objectives may have different optimal solution points; check feasibility and the claimed guarantee rather than forcing identical vectors.
 
 ## Verify the model, not only the solver
 
@@ -49,7 +49,9 @@ An agent-run verification attached with `--verification` is captured as immutabl
 
 ## Read the evidence
 
-`check.json` declares only the deterministic checks the framework can compute. It is not the whole self-check, and a basis that does not apply to the task must NOT be declared merely for form: a genuinely continuous problem needs no `integer` check, and the framework does not infer that a missing declaration is an uncovered requirement. EX is `result.execution_id` from `execute`.
+Use the task, captured method/code/result and returned reflection material together. Inspect only a missing detail that can change the conclusion, and batch related reads; do not reconstruct the same evidence through many field-by-field calls. Single-task scratch work is allowed, but formal experiments must not persist extra solving notes as cross-task memory outside the Harness banks.
+
+`check.json` declares computable bases and optional G/H+ evidence, not the whole self-check. A basis that does not apply must NOT be declared merely for form: a genuinely continuous task needs no `integer` check. Complete necessary validation, then submit the final check with supported G attribution or honest Unknown before record and closeout. Repeating a completed check on unchanged evidence creates a new revision without improving support. EX is `result.execution_id` from `execute`.
 
 `report.scope.note` states the checker's fixed scope; `report.checks` and `report.diffs` hold what actually ran and the numeric differences; `report.scope.unchecked` names only declared checks that could not run. `reflection_material` gives the task text/version reference, the candidate and performed method, the captured artifacts and solution (with references), the check report, any agent-run verification, and prior attempts as references.
 
