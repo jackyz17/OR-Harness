@@ -254,6 +254,8 @@ def _execution_entry(harness, item: Dict[str, Any], score: float,
         # text that no longer exists. Excluded from hits (reported as stale).
         return None
     record_cell = group_key(record.profile_snapshot)
+    from or_harness.world_model.implementation_facts import execution_implementation_evidence, compact_evidence
+    implementation = compact_evidence(execution_implementation_evidence(harness, record))
     if query_cell is None:
         structural = "unknown"
     else:
@@ -261,6 +263,7 @@ def _execution_entry(harness, item: Dict[str, Any], score: float,
                       else "different_cell")
     return {
         "execution_id": record.execution_id,
+        "implementation_evidence": implementation,
         "task_id": record.task_id,
         "strategy_id": record.strategy_id,
         "similarity": round(score, 6),

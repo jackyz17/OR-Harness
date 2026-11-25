@@ -4,6 +4,7 @@ from decision_fixtures import bind_legacy, execute_scored, planned_prediction
 
 import copy
 import json
+import time
 from pathlib import Path
 
 from or_harness.api import ORHarness
@@ -81,6 +82,17 @@ class RCase(GCase):
         r = execute_scored(self.h,self.task, "S04", str(root / "solve.py"), str(root), solver="highs", episode_id=episode,
                            prediction_id=prediction.prediction_id if prediction else None)
         self.h.record(r)
+        # New window negatives require an explicit complete implementation
+        # observation; a successful formal receipt alone is insufficient.
+        action = self.h.actions.get(r.action_id)
+        choice = self.h.actions.get(action.params['decision_choice_action_id'])
+        stop = time.time()
+        self.h.report_action('verify', self.task, episode, ended_at=stop, outcome={
+            'implementation_coverage': {'selection_action_id': choice.action_id,
+                'from': choice.started_at, 'through': stop,
+                'complete': r.execution_features['technical_outcome']['label'] is not None,
+                'implemented': True, 'candidate_complete': True, 'observer': 'fixture-auditor',
+                'evidence_refs': ['fixture:script-and-complete-execution-span']}})
         return r
 
     def fact(self, evaluation):
@@ -135,7 +147,7 @@ class TestTechnicalRLabels(RCase):
         e = self.close_g()["evaluations"][0]
         self.assertEqual(self.fact(e)["label"], 1)
         c = self.h.calibration_summary()["technical_r"]["coverage"]
-        self.assertEqual(c, {"n_actual_attempts": 1, "n_known_labels": 1,
+        self.assertEqual(c, {"n_selected_windows": 1, "n_actual_attempts": 1, "n_known_labels": 1,
                              "n_reported_probabilities": 1, "n_scorable": 1})
 
     def test_normal_timeout_is_unknown(self):
@@ -165,7 +177,7 @@ class TestTechnicalRLabels(RCase):
         by_id = {self.fact(e)["execution_id"]: self.fact(e)["label"] for e in result["evaluations"]}
         self.assertEqual(by_id, {first.execution_id: 1, second.execution_id: 0})
         coverage = self.h.calibration_summary()["technical_r"]["coverage"]
-        self.assertEqual(coverage, {"n_actual_attempts": 2, "n_known_labels": 2,
+        self.assertEqual(coverage, {"n_selected_windows": 2, "n_actual_attempts": 2, "n_known_labels": 2,
                                     "n_reported_probabilities": 2, "n_scorable": 2})
         self.close_g()
         self.assertEqual(self.h.calibration_summary()["technical_r"]["coverage"], coverage)
@@ -175,7 +187,8 @@ class TestTechnicalRLabels(RCase):
         r = self.run_g(p, split=True)
         self.check_g(r, fidelity="deviated", failure="implementation")
         e = self.close_g()["evaluations"][0]
-        self.assertEqual(self.fact(e)["label"], 0)
+        self.assertIsNone(self.fact(e)["label"])
+        self.assertEqual(self.fact(e)["formal_technical_outcome"]["label"], 0)
         self.assertNotEqual(e["benefit"].get("label_eligibility"), "attributable")
 
     def test_legacy_prediction_errors_keep_the_legacy_rule(self):
@@ -196,16 +209,18 @@ class TestRFeedback(RCase):
         a = self.predict_r(probability=.123456789)
         b = self.predict_r(probability=.2)
         r = self.body(a)
+        # Historical multi-binding is readable, but the unselected forecast
+        # has no implementation window and receives no counterfactual label.
         bind_legacy(self.h,b.prediction_id, r.action_id)
         result = self.close_g()
         e = next(e for e in result["evaluations"] if e["prediction_id"] == a.prediction_id)
         scored = next(s for s in e["risk"]["scored"] if s["event"] == "implementation_failure")
         self.assertEqual(scored["predicted_probability"], .123456789)
         stats = self.h.calibration_summary()["technical_r"]
-        self.assertEqual(stats["coverage"], {"n_actual_attempts": 1, "n_known_labels": 1,
-            "n_reported_probabilities": 2, "n_scorable": 2})
+        self.assertEqual(stats["coverage"], {"n_selected_windows": 1, "n_actual_attempts": 1, "n_known_labels": 1,
+            "n_reported_probabilities": 2, "n_scorable": 1})
         self.assertEqual(stats["groups"][0]["n_scored_distinct_episodes"], 1)
-        self.assertAlmostEqual(stats["groups"][0]["mean_brier"], (.123456789 ** 2 + .2 ** 2) / 2)
+        self.assertAlmostEqual(stats["groups"][0]["mean_brier"], .123456789 ** 2)
 
     def test_later_offline_execution_is_outside_the_published_episode(self):
         self.body(episode="past")
@@ -213,7 +228,7 @@ class TestRFeedback(RCase):
         self.body(episode="past", text="raise ValueError('later network flow failure')\n")
         stats = self.h.calibration_summary()["technical_r"]
         self.assertEqual(stats["coverage"]["n_actual_attempts"], 1)
-        self.assertEqual(stats["groups"][0]["technical_successes"], 1)
+        self.assertEqual(stats["groups"][0]["implementation_clear_windows"], 1)
 
     def test_frozen_context_keeps_only_history_visible_at_its_decision(self):
         past = self.body(episode="past")
@@ -235,7 +250,7 @@ class TestRFeedback(RCase):
         r = self.body(episode="unpredicted")
         self.close_g("unpredicted")
         stats = self.h.calibration_summary()["technical_r"]
-        self.assertEqual(stats["coverage"], {"n_actual_attempts": 1, "n_known_labels": 1,
+        self.assertEqual(stats["coverage"], {"n_selected_windows": 1, "n_actual_attempts": 1, "n_known_labels": 1,
             "n_reported_probabilities": 0, "n_scorable": 0})
         self.task = dict(self.task, task_id="new-task")
         self.predict_r(episode="first")
@@ -300,7 +315,7 @@ class TestRFeedback(RCase):
             self.close_g(episode)
         stats = self.h.calibration_summary()["technical_r"]
         self.assertEqual(len(stats["groups"]), 1)
-        self.assertEqual(stats["groups"][0]["technical_successes"], 2)
+        self.assertEqual(stats["groups"][0]["implementation_clear_windows"], 2)
         self.assertEqual(stats["groups"][0]["n_distinct_episodes"], 2)
 
 
@@ -419,7 +434,7 @@ class TestMultiEventRParsing(RCase):
         self.predict_r()
         convention = self.provider.requests[-1]["risk_convention"]
         self.assertEqual(convention["scoring_rule_version"],
-                         "wm-r-max-event/1")
+                         "wm-r-max-event/2")
         self.assertEqual(convention["observation_rule_version"],
                          R_OBSERVATION_VERSION)
         self.assertEqual(tuple(convention["events"]),

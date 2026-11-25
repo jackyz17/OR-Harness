@@ -12,7 +12,7 @@ import math
 from collections import defaultdict
 
 from or_harness.core.schema import COST_DIMENSIONS, PREDICTED_COST_DIMENSIONS
-from or_harness.world_model.contracts import RETRIES_FUTURE_VERSION, RETRIES_LEGACY_VERSION
+from or_harness.world_model.contracts import RETRIES_FUTURE_VERSION, RETRIES_FORMAL_VERSION, RETRIES_LEGACY_VERSION
 from or_harness.world_model.usage import with_output_token_dimension
 
 COST_OBSERVATION_VERSION = "wm-c-window/1"
@@ -80,11 +80,40 @@ def retries_convention(prediction):
 
 
 def observe_remaining_retries(summary, prediction, actions, records, *, bound_action, terminated_at):
+    """New corrective-round window; old forecasts keep their formal target."""
+    if retries_convention(prediction) != RETRIES_FUTURE_VERSION:
+        return _observe_formal_retries(summary, prediction, actions, records,
+                                      bound_action=bound_action, terminated_at=terminated_at)
+    from or_harness.world_model.implementation_facts import corrective_rounds
+    decision_id = (prediction.trace.model_info or {}).get("decision_action_id")
+    decision = next((a for a in actions if a.action_id == decision_id), None)
+    anchor = decision.started_at if decision else None
+    observed = corrective_rounds(actions, records, anchor=anchor, end=terminated_at)
+    complete = observed["complete"] and terminated_at is not None and anchor is not None
+    lower = float(len(observed["rounds"]))
+    reason = None if complete else "corrective-round coverage or decision/task-end boundary is incomplete"
+    summary.cost['retries'] = {
+        'total': lower if complete else None,
+        'lower_bound': lower,
+        'comparable': {'value': lower if complete else None, 'is_sum': False,
+                       'basis': reason or 'distinct started corrective rounds from decision to task end'},
+        'n_measured': int(complete), 'n_items': 1, 'complete': complete,
+        'observation_scope': 'remaining_to_task_end', 'observation_rule_version': RETRIES_FUTURE_VERSION,
+        'source_refs': sorted({ref for r in observed['rounds'] for ref in r['source_refs']}
+                              | set(observed['coverage_refs'])),
+        'observed_from': {'source': 'actions_and_formal_receipts', 'anchor_action_id': decision_id,
+                          'anchor': anchor, 'end': terminated_at, **observed},
+        'boundary_note': reason}
+    if reason:
+        summary.cost.setdefault('boundary_exclusions', []).append('retries: ' + reason)
+
+
+def _observe_formal_retries(summary, prediction, actions, records, *, bound_action, terminated_at):
     """Count additional attempts AFTER the bound attempt, not its own increment."""
     version=retries_convention(prediction)
     existing=summary.cost.setdefault('retries',{})
     existing['observation_rule_version']=version
-    if version!=RETRIES_FUTURE_VERSION or summary.cost.get('scope')!='remaining_to_task_end':
+    if version!=RETRIES_FORMAL_VERSION or summary.cost.get('scope')!='remaining_to_task_end':
         return
     reason=None
     base=number(getattr(bound_action,'started_at',None))
@@ -399,7 +428,7 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
 
 
 def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor_id,
-                        end, end_basis, cutoff, bound_action=None, terminated_at=None):
+                        end, end_basis, cutoff, bound_action=None, terminated_at=None, retry_records=None):
     """Add full-window host facts without charging them to attempt budgets."""
     scope = summary.cost.get("scope")
     summary.cost["observation_rule_version"] = COST_OBSERVATION_VERSION
@@ -449,7 +478,7 @@ def observe_cost_window(summary, prediction, actions, records, *, anchor, anchor
         facts["repair_actions"] = repairs
     summary.cost["work_facts"] = facts
     summary.cost["boundary_exclusions"] = rejected
-    observe_remaining_retries(summary,prediction,actions,records,
+    observe_remaining_retries(summary,prediction,actions,records if retry_records is None else retry_records,
         bound_action=bound_action,terminated_at=terminated_at)
 
 
@@ -478,6 +507,11 @@ def cost_observed_fact(summary, prediction):
                     for dim in COST_DIMENSIONS if (real := summary.cost.get(dim) or {})
                     and not real.get("complete") and not real.get("excluded")
                     and (real.get("comparable") or {}).get("value") is not None}
+    retry = summary.cost.get("retries") or {}
+    if not retry.get("complete") and retry.get("lower_bound") is not None:
+        lower_bounds["retries"] = {"value": retry["lower_bound"],
+            "scope": "remaining_to_task_end", "source_refs": retry.get("source_refs") or [],
+            "observation_rule_version": retry.get("observation_rule_version")}
     return {"values": values, "conditions": conditions,
             "boundary_exclusions": list(summary.cost.get("boundary_exclusions") or []),
             "lower_bounds": lower_bounds,
@@ -502,6 +536,33 @@ def _quantile(values, q):
     return round(values[lo] + (values[min(lo + 1, len(values) - 1)] - values[lo]) * (index - lo), 6)
 
 
+def retry_error_statistics(pairs):
+    """Descriptive current-contract counts; no fitted forecast/calibrator."""
+    pairs = [(float(p), float(a)) for p, a in pairs if number(p) is not None and number(a) is not None]
+    def mean(values):
+        return sum(values) / len(values) if values else None
+    predicted, actual = [p for p, _ in pairs], [a for _, a in pairs]
+    average = mean(predicted)
+    positive = [(p, a) for p, a in pairs if p > 0 and a > 0]
+    def distribution(values):
+        return {"n": len(values), "mean": mean(values),
+                "p50": _quantile(values, .5) if values else None,
+                "p90": _quantile(values, .9) if values else None,
+                "min": min(values) if values else None, "max": max(values) if values else None}
+    return {"observation_rule_version": RETRIES_FUTURE_VERSION,
+        "n": len(pairs), "mae": mean([abs(a-p) for p, a in pairs]),
+        "mean_signed_error": mean([a-p for p, a in pairs]),
+        "predicted_mean": average, "actual_mean": mean(actual),
+        "prediction_variance": mean([(p-average)**2 for p in predicted]) if predicted else None,
+        "prediction_by_actual": {"no_retry": distribution([p for p, a in pairs if a == 0]),
+                                 "with_retry": distribution([p for p, a in pairs if a > 0])},
+        "log_error": {"n": len(positive), "coverage": len(positive)/len(pairs) if pairs else None,
+                      "mae": mean([abs(math.log(a/p)) for p, a in positive])},
+        "constant_baselines": [{"constant": c, "mae": mean([abs(a-c) for a in actual])}
+                               for c in (0.0, 0.1)],
+        "baseline_note": "descriptive comparison on the same complete current-version samples; not a forecast-quality experiment"}
+
+
 def conditional_cost_statistics(samples, min_samples=5):
     """Truth population is independent of whether the model supplied C."""
     groups, cases, seen = {}, [], set()
@@ -516,9 +577,14 @@ def conditional_cost_statistics(samples, min_samples=5):
         predicted_dims = (set(predicted.expected.measured_dims())
                           & set(PREDICTED_COST_DIMENSIONS)
                           if predicted and predicted.expected else set())
+        if retries_convention(prediction) != RETRIES_FUTURE_VERSION:
+            predicted_dims.discard("retries")
         for dim in predicted_dims:
             coverage[dim]["n_predicted"] += 1
         for dim, error in (cost.get("per_dim") or {}).items():
+            if dim == "retries" and (retries_convention(prediction) != RETRIES_FUTURE_VERSION
+                    or error.get("observation_rule_version") != RETRIES_FUTURE_VERSION):
+                continue
             coverage[dim]["n_error"] += 1
             coverage[dim]["n_log_ratio"] += error.get("log_ratio") is not None
         fact = cost.get("observed_fact") or {}
@@ -557,7 +623,8 @@ def conditional_cost_statistics(samples, min_samples=5):
         for dim, value in values.items():
             group["observations"][dim].append(value)
             group["dimension_episodes"][dim].add((evaluation.task_id, evaluation.episode_id))
-            coverage[dim]["n_actual"] += 1
+            if dim != "retries" or conditions.get('retry_observation_rule_version') == RETRIES_FUTURE_VERSION:
+                coverage[dim]["n_actual"] += 1
         cases.append({"evaluation_id": evaluation.evaluation_id,
             "task_id": evaluation.task_id, "episode_id": evaluation.episode_id,
             **copy.deepcopy(fact)})
@@ -573,7 +640,15 @@ def conditional_cost_statistics(samples, min_samples=5):
                                   "n_distinct_episodes": len(group["dimension_episodes"][dim])}
                            for dim, v in sorted(group["observations"].items())},
             "source_refs": sorted(group["source_refs"])})
+    retry_pairs = []
+    for evaluation, prediction in samples:
+        entry = (evaluation.cost or {}).get("per_dim", {}).get("retries") or {}
+        if (retries_convention(prediction) == RETRIES_FUTURE_VERSION
+                and entry.get("observation_rule_version") == RETRIES_FUTURE_VERSION
+                and number(entry.get("predicted")) is not None and number(entry.get("actual")) is not None):
+            retry_pairs.append((entry["predicted"], entry["actual"]))
     return {"version": COST_OBSERVATION_VERSION,
+            "retries": retry_error_statistics(retry_pairs),
             "prediction_dimensions": list(PREDICTED_COST_DIMENSIONS),
             "observation_only_dimensions": [
                 dim for dim in COST_DIMENSIONS

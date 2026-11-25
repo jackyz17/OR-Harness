@@ -90,6 +90,7 @@ from or_harness.world_model.cost_eligibility import (
 from or_harness.world_model.contracts import (
     FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
     R_EVENTS, R_OBSERVATION_VERSION, R_SCORING_VERSION,
+    R_FORMAL_OBSERVATION_VERSION, R_FORMAL_SCORING_VERSION,
 )
 from or_harness.world_model.g_signal import (
     observe_faithful_g, conditional_g_statistics, same_task_comparisons,
@@ -1791,15 +1792,24 @@ def summarize_real_outcome(harness, prediction, *, closed_through=None) -> RealO
                                episode_id=candidate.episode_id,
                                closeout_created_at=closeout_created_at)
     from or_harness.world_model.cost_signal import observe_cost_window
+    from or_harness.world_model.cost_signal import retries_convention
+    from or_harness.world_model.contracts import RETRIES_FUTURE_VERSION
     anchor, _ = _decision_anchor(harness, prediction, action)
     end, end_basis = _task_end_boundary(harness, candidate.task_id,
         candidate.episode_id, anchor, closeout_created_at)
     cost_actions = [a for a in harness.actions.query(task_id=candidate.task_id)
                     if str(a.episode_id or "") == str(candidate.episode_id or "")]
+    retry_records = []
+    for execution_id in {a.linked_execution_id for a in cost_actions if a.linked_execution_id}:
+        record = harness.bank.get_pending(execution_id) or harness.bank.get(execution_id)
+        if record is not None:
+            retry_records.append(record)
     observe_cost_window(summary, prediction, cost_actions, cost_records,
         anchor=anchor, anchor_id=(prediction.trace.model_info or {}).get("decision_action_id"),
         end=end, end_basis=end_basis, cutoff=closeout_created_at,
-        bound_action=action, terminated_at=(end if end_basis=='finish_task' else closeout_created_at or closed_through))
+        bound_action=action, terminated_at=(end if end_basis=='finish_task' else
+            None if retries_convention(prediction) == RETRIES_FUTURE_VERSION else closeout_created_at or closed_through),
+        retry_records=retry_records)
     # Auxiliary overhead: the OTHER actions of the same episode (model /
     # verify / select_strategy / other executions) — real spend, reported,
     # never folded into the predicted scope's comparison.
@@ -1837,12 +1847,13 @@ def summarize_real_outcome(harness, prediction, *, closed_through=None) -> RealO
     if uses_technical_r(prediction):
         fact = bound_r_observation(harness, prediction, action)
         summary.implementation_observation = fact
-        execution_id = fact.get("execution_id")
+        execution_id = fact.get("selection_action_id") or fact.get("execution_id")
         label = "occurred" if fact["label"] == 1 else "not_occurred" if fact["label"] == 0 else None
         unit = {"label": label, "label_basis": fact["reason"], "detail": copy.deepcopy(fact)}
         observed["events"]["implementation_failure"] = {
-            "event": "implementation_failure", "unit": "execution", "range": "attempt",
-            "observation_rule_version": R_OBSERVATION_VERSION,
+            "event": "implementation_failure", "unit": ("selected_candidate" if fact.get("selection_action_id") else "execution"),
+            "range": fact.get("scope", "attempt"),
+            "observation_rule_version": fact["observation_rule_version"],
             "label": label, "label_basis": fact["reason"],
             "unit_ids": [execution_id] if execution_id else [],
             "units": {execution_id: unit} if execution_id else {}}
@@ -2366,8 +2377,8 @@ def _pair_predicted_events(prediction, observed: Dict[str, Any],
             "event": event.event,
             "canonical_event": canonical,
             "predicted": True,
-            "observation_unit": (definition or {}).get("unit"),
-            "observation_range": _event_range(canonical),
+            "observation_unit": (observation or definition or {}).get("unit"),
+            "observation_range": (observation or {}).get("range") or _event_range(canonical),
             "predicted_probability": event.probability,
             "label": label,
             "label_basis": basis,
@@ -3002,7 +3013,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 "observation_range": observed_event.get("observation_range"),
                 "predicted_probability": float(probability),
                 "observation_rule_version": observed_event.get("observation_rule_version"),
-                "role": "technical_r" if observed_event.get("observation_rule_version") == "wm-r-technical/1" else "diagnostic",
+                "role": "technical_r" if observed_event.get("observation_rule_version") in (R_OBSERVATION_VERSION, R_FORMAL_OBSERVATION_VERSION) else "diagnostic",
                 "label": label,
                 "label_basis": observed_event["label_basis"],
                 "brier": round((float(probability) - y) ** 2, 6),
@@ -3033,8 +3044,8 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "comparable": not bool(_blocked("risk")),
         }
         evaluation.risk["r_event"] = "implementation_failure"
-        evaluation.risk["r_observation_rule_version"] = "wm-r-technical/1"
-        if r_scoring_version(prediction) == R_SCORING_VERSION:
+        evaluation.risk["r_observation_rule_version"] = summary.implementation_observation["observation_rule_version"]
+        if r_scoring_version(prediction) in (R_SCORING_VERSION, R_FORMAL_SCORING_VERSION):
             # The multi-event convention: ONE label per R event, on the SAME
             # bound attempt the prediction was bound to. Later retries never
             # enter this block, and the maximum U charges is NOT an event, so
@@ -3050,8 +3061,9 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 event_rows[name] = {
                     "label": label,
                     "label_basis": detail.get("basis") or "",
+                    "scope": detail.get("scope") or fact.get("scope", "attempt"),
                     "observation_rule_version": (
-                        R_OBSERVATION_VERSION
+                        fact["observation_rule_version"]
                         if name == "implementation_failure"
                         else EVENT_VOCABULARY_VERSION),
                     "predicted_probability": probability,
@@ -3069,11 +3081,12 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 }
             evaluation.risk["r_events_observation"] = {
                 "execution_id": fact.get("execution_id"),
-                "observation_unit": "execution",
-                "scope": "attempt",
+                "selection_action_id": fact.get("selection_action_id"),
+                "observation_unit": "per_event" if r_scoring_version(prediction) == R_SCORING_VERSION else "execution",
+                "scope": "per_event" if r_scoring_version(prediction) == R_SCORING_VERSION else "attempt",
                 "events": event_rows,
-                "note": ("each R event is labeled on ONE bound attempt; "
-                         "later retries do not enter this observation, and "
+                "note": ("implementation_failure uses the selected candidate implementation window; "
+                         "timeout/environment_failure retain the bound formal attempt; "
                          "the maximum used by U is not a joint event"),
             }
     # -- interval ------------------------------------------------------------
@@ -4130,6 +4143,13 @@ def build_calibration_summary(harness, *,
                        getattr(evaluation, "observation_rule_version", "") or "(unknown)")
         group_key = (f"strategy_outcome|{model_identity}|{metric}|{unit}"
                      f"|{scope}|{obs_rule}")
+        # Both changed targets are versioned. Never pool their numeric
+        # errors just because G/model/scope happen to be identical.
+        if prediction is not None:
+            from or_harness.world_model.cost_signal import retries_convention
+            from or_harness.world_model.r_signal import r_scoring_version
+            group_key += "|R:" + str((prediction.trace.model_info.get("risk_convention") or {}).get("observation_rule_version"))
+            group_key += ":" + str(r_scoring_version(prediction)) + "|retries:" + retries_convention(prediction)
         group = groups.setdefault(
             group_key, {
                 "n": 0, "all_episodes": set(),
@@ -4460,7 +4480,7 @@ def build_calibration_summary(harness, *,
         "groups": out_groups,
         "conditional_g": conditional_g_statistics(g_samples, min_samples),
         "conditional_cost": conditional_cost_statistics(g_samples, min_samples),
-        "technical_r": technical_r_statistics(live["_records"], g_samples, min_samples=min_samples),
+        "technical_r": technical_r_statistics(live["_records"], g_samples, min_samples=min_samples, harness=harness),
         "occurrence": occurrence,
         # DETERMINISTIC rule reminders: the measured statistics turned into
         # short "what to watch next time" notes. No model call, no fitted
@@ -4745,6 +4765,8 @@ def _evaluation_execution_ids(evaluation) -> List[str]:
     for observation in (evaluation.risk or {}).get("observed_units", {}
                                                    ).values():
         if not isinstance(observation, dict):
+            continue
+        if observation.get("unit") != "execution":
             continue
         for unit_id in observation.get("unit_ids") or []:
             unit_id = str(unit_id)

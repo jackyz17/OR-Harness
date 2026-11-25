@@ -75,10 +75,13 @@ from or_harness.core.schema import (
     normalize_method,
 )
 
-R_OBSERVATION_VERSION = "wm-r-technical/1"
+R_FORMAL_OBSERVATION_VERSION = "wm-r-technical/1"
+R_FORMAL_SCORING_VERSION = "wm-r-max-event/1"
+R_OBSERVATION_VERSION = "wm-r-implementation-window/1"
 
-#: The RISK EVENTS that may supply the U risk term. Each is a ONE-ATTEMPT
-#: technical hazard: business risks (task-check failure, reported
+#: The RISK EVENTS that may supply the U risk term. Implementation uses the
+#: selected candidate window; timeout/environment use the bound formal attempt.
+#: Business risks (task-check failure, reported
 #: infeasibility, budget exhaustion) stay diagnostics and NEVER enter U.
 R_EVENTS: Tuple[str, ...] = ("implementation_failure", "timeout",
                              "environment_failure")
@@ -87,8 +90,8 @@ R_EVENTS: Tuple[str, ...] = ("implementation_failure", "timeout",
 #: and the observers, so the words the model is given and the label the
 #: framework records cannot drift apart.
 #:
-#: - ``implementation_failure``: the harness's OWN code/API path fails or the
-#:   result cannot be delivered; a legal infeasible result is NOT a failure.
+#: - ``implementation_failure``: a confirmed substantive defect within the
+#:   selected candidate's implementation window, including repaired defects.
 #: - ``timeout``: the attempt was INTERRUPTED by the harness's wall-clock
 #:   limit before a usable result. A solver that stops at ITS OWN time limit
 #:   and still returns a readable result is not this event.
@@ -98,9 +101,10 @@ R_EVENTS: Tuple[str, ...] = ("implementation_failure", "timeout",
 #:   failure, not an environment failure.
 R_EVENT_DEFINITIONS: Dict[str, str] = {
     "implementation_failure": (
-        "the harness's own script/stack fails technically: code or API "
-        "exceptions, abnormal solver/script exits, or a result-delivery "
-        "protocol failure; a legal infeasible result is NOT a failure"),
+        "the selected candidate encounters an evidenced substantive code/API, "
+        "model-implementation or result-delivery defect within its implementation, "
+        "execution and necessary technical verification window, even if repaired; "
+        "not mathematical strategy inadequacy or a confirmed environment/framework fault"),
     "timeout": (
         "the attempt is INTERRUPTED by the harness's wall-clock limit before "
         "it delivers a usable result; a solver that stops at its own time "
@@ -119,7 +123,7 @@ R_EVENT_DEFINITIONS: Dict[str, str] = {
 #: supplied validly. It is a maximum single-item RISK SCORE, NOT a joint
 #: failure probability: no joint, summed or maxed event is ever scored as a
 #: probability of its own.
-R_SCORING_VERSION = "wm-r-max-event/1"
+R_SCORING_VERSION = "wm-r-max-event/2"
 
 #: The LEGACY scoring convention: only ``implementation_failure`` supplied
 #: R. A prediction archived under it keeps that ORIGINAL single-event
@@ -129,6 +133,7 @@ R_LEGACY_SCORING_VERSION = "wm-r-technical/1"
 #: Which events may supply R under a declared scoring convention.
 R_EVENTS_BY_SCORING_VERSION: Dict[str, Tuple[str, ...]] = {
     R_LEGACY_SCORING_VERSION: ("implementation_failure",),
+    R_FORMAL_SCORING_VERSION: R_EVENTS,
     R_SCORING_VERSION: R_EVENTS,
 }
 
@@ -137,11 +142,23 @@ R_EVENTS_BY_SCORING_VERSION: Dict[str, Tuple[str, ...]] = {
 #: human-readable event definitions travel in the request block only.
 R_CONVENTION = {
     "events": list(R_EVENTS),
-    "unit": "execution",
-    "scope": "attempt",
+    "unit": "selected_candidate",
+    "scope": "per_event",
+    "event_scopes": {"implementation_failure": "selected_candidate_implementation_window",
+                     "timeout": "bound_formal_execution",
+                     "environment_failure": "bound_formal_execution"},
     "aggregation": "max_common_event",
     "observation_rule_version": R_OBSERVATION_VERSION,
     "scoring_rule_version": R_SCORING_VERSION,
+}
+
+# Formal executor receipts retain their original diagnostic meaning. In
+# particular a successful receipt is never a new implementation-window zero.
+R_FORMAL_CONVENTION = {
+    "events": list(R_EVENTS), "unit": "execution", "scope": "attempt",
+    "aggregation": "max_common_event",
+    "observation_rule_version": R_FORMAL_OBSERVATION_VERSION,
+    "scoring_rule_version": R_FORMAL_SCORING_VERSION,
 }
 
 #: The one-line meaning of the aggregation, shared by request, planner and
@@ -299,7 +316,8 @@ COST_SCOPE_KINDS = ("remaining_to_task_end", "attempt", "strategy_window")
 COST_PREDICTION_CONTRACT_VERSION = "wm-c-predict/4"
 # Raw attempt increments and remaining predicted counts are different facts.
 RETRIES_INCREMENT_VERSION = "or-retry-increment/1"
-RETRIES_FUTURE_VERSION = "wm-retry-additional-attempts/1"
+RETRIES_FORMAL_VERSION = "wm-retry-additional-attempts/1"
+RETRIES_FUTURE_VERSION = "wm-retry-corrective-rounds/1"
 RETRIES_LEGACY_VERSION = "wm-retry-window-increments/legacy"
 
 #: Legacy ``measurement_scope`` values with NO contract equivalent. Reading

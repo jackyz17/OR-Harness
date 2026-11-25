@@ -51,7 +51,8 @@ class TestGDecoupling(GCase):
             self.assertEqual(benefit['attribution_ref'],checked['g_assessment_ref'])
             evaluation=self.h.get_strategy_evaluation(closed['evaluations'][0]['evaluation_id'])
             self.assertEqual(evaluation['benefit']['attribution']['method_fidelity'],fidelity)
-            self.assertEqual(evaluation['risk']['implementation_observation']['label'],0)
+            self.assertIsNone(evaluation['risk']['implementation_observation']['label'])
+            self.assertEqual(evaluation['risk']['implementation_observation']['formal_technical_outcome']['label'],0)
             saved=self.h.store.loads(self.h.store.conn.execute(
                 'SELECT value FROM meta WHERE key=?',
                 ('strategy_evaluation|'+evaluation['evaluation_id'],)).fetchone()[0])
@@ -145,14 +146,15 @@ class TestGDecoupling(GCase):
         with self.h.store.transaction() as conn:
             conn.execute('DELETE FROM condition_values WHERE value_id=?',(checked['g_assessment_ref'],))
         evaluation=self.h.get_strategy_evaluation(closed['evaluations'][0]['evaluation_id'])
-        self.assertEqual(evaluation['risk']['implementation_observation']['label'],0)
+        self.assertIsNone(evaluation['risk']['implementation_observation']['label'])
+        self.assertEqual(evaluation['risk']['implementation_observation']['formal_technical_outcome']['label'],0)
         self.assertTrue(evaluation['benefit']['attribution']['issues'])
         ordinary=self.check_g(r,evidence=False)
         self.assertIn('calibration_republished',ordinary)
         from or_harness.world_model.episode_closeout import build_paired_feedback
         current=next(row for row in build_paired_feedback(self.h)['pairs'] if row['prediction_id']==p.prediction_id)
         self.assertNotIn('observed',current['benefit'])
-        self.assertEqual(current['implementation_observation']['label'],0)
+        self.assertIsNone(current['implementation_observation'].get('label'))
 
     def test_historical_inline_read_and_normal_rewrite_preserve_g_once(self):
         p=self.predict_g()

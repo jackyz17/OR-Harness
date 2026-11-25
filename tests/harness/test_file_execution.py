@@ -383,7 +383,8 @@ class TestCompositeFileStrategy(FileCase):
         closed=self.h.close_episode(self.task['task_id'],'ep')
         evaluation=closed['evaluations'][0]
         self.assertEqual(evaluation['benefit']['observed'],1)
-        self.assertEqual(evaluation['risk']['implementation_observation']['label'],0)
+        self.assertIsNone(evaluation['risk']['implementation_observation']['label'])
+        self.assertEqual(evaluation['risk']['implementation_observation']['formal_technical_outcome']['label'],0)
         self.assertEqual(len(closed['induction_schedule']['pending_ids']),1)
         material=self.h.induction_material(induction_id=closed['induction_schedule']['pending_ids'][0])
         self.assertIn(r.execution_id,json.dumps(material))

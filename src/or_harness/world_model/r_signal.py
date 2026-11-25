@@ -1,4 +1,4 @@
-"""One-attempt technical R: sourced labels and small applicable facts.
+"""Versioned implementation-window R and separate formal diagnostics.
 
 R is the MAXIMUM single-event probability over the R events every ranked
 candidate supplied (implementation_failure / timeout / environment_failure).
@@ -19,11 +19,12 @@ from or_harness.world_model.contracts import (
     R_CONVENTION, R_EVENT_DEFINITIONS, R_EVENTS,
     R_EVENTS_BY_SCORING_VERSION, R_LEGACY_SCORING_VERSION,
     R_OBSERVATION_VERSION, R_SCORING_VERSION,
+    R_FORMAL_OBSERVATION_VERSION, R_FORMAL_SCORING_VERSION, R_FORMAL_CONVENTION,
     is_risk_event_probability,
 )
 
 _EXCEPTION = re.compile(r"^(?:[\w.]+\.)?([A-Z]\w*(?:Error|Exception)):", re.MULTILINE)
-_EXTERNAL = {"ModuleNotFoundError", "ImportError", "PermissionError", "ConnectionError",
+_EXTERNAL = {"ModuleNotFoundError", "ImportError", "PermissionError", "SandboxDependencyError", "ConnectionError",
              "ConnectionRefusedError", "ConnectionResetError", "TimeoutError", "OSError"}
 
 
@@ -101,7 +102,7 @@ def implementation_probability(prediction):
 
 def uses_technical_r(prediction):
     return (prediction.trace.model_info or {}).get("risk_convention", {}).get(
-        "observation_rule_version") == R_OBSERVATION_VERSION
+        "observation_rule_version") in (R_OBSERVATION_VERSION, R_FORMAL_OBSERVATION_VERSION)
 
 
 def _failure_classes(record):
@@ -184,7 +185,7 @@ def _exception_type(text):
 
 def execution_receipt(outcome, checks):
     """Evidence the executor can establish before any business checker."""
-    fact = {**R_CONVENTION, "label": None, "source": "SafePythonExecutor",
+    fact = {**R_FORMAL_CONVENTION, "label": None, "source": "SafePythonExecutor",
             "executed": bool(outcome.executed), "exit_code": outcome.exit_code,
             "process_started": bool(outcome.process_started),
             "failure_stage": outcome.failure_stage,
@@ -241,10 +242,10 @@ def technical_attempt_fact(record):
     """Derive facts without rewriting old receipts or old probability errors."""
     features = record.execution_features or {}
     saved = features.get("technical_outcome") or {}
-    if saved.get("observation_rule_version") == R_OBSERVATION_VERSION and saved.get("source") == "SafePythonExecutor":
+    if saved.get("observation_rule_version") == R_FORMAL_OBSERVATION_VERSION and saved.get("source") == "SafePythonExecutor":
         fact = copy.deepcopy(saved)
     else:
-        fact = {**R_CONVENTION, "label": None, "source": "legacy execution evidence",
+        fact = {**R_FORMAL_CONVENTION, "label": None, "source": "legacy execution evidence",
                 "reason": "insufficient execution/protocol evidence", "evidence_refs": []}
         status = (record.quality or {}).get("status")
         artifacts = features.get("artifacts") or {}
@@ -309,12 +310,27 @@ def bound_r_observation(harness, prediction, action):
     execution_id = getattr(action, "linked_execution_id", None)
     record = (harness.bank.get_pending(execution_id) or harness.bank.get(execution_id)) if execution_id else None
     if record is None:
-        return {**R_CONVENTION, "label": None, "execution_id": execution_id,
+        fact = {**R_FORMAL_CONVENTION, "label": None, "execution_id": execution_id,
                 "reason": "no attributable bound execution", "evidence_refs": [],
                 "r_events": {name: {"label": None,
                                     "basis": "no attributable bound execution"}
                              for name in R_EVENTS}}
-    return technical_attempt_fact(record)
+    else:
+        fact = technical_attempt_fact(record)
+    convention = (prediction.trace.model_info or {}).get("risk_convention") or {}
+    if convention.get("observation_rule_version") == R_OBSERVATION_VERSION:
+        from or_harness.world_model.implementation_facts import implementation_window, episode_actions
+        actions = episode_actions(harness, prediction.candidate.task_id, prediction.candidate.episode_id)
+        window = implementation_window(prediction, actions, [record] if record else [])
+        fact["formal_technical_outcome"] = {k: copy.deepcopy(fact.get(k)) for k in
+                                             ("label", "reason", "observation_rule_version", "scoring_rule_version", "unit", "scope")}
+        fact.update(copy.deepcopy(R_CONVENTION))
+        fact.update(window)
+        fact["r_events"]["implementation_failure"] = {"label": window["label"],
+            "basis": window["reason"], "scope": window["scope"]}
+        for name in ("timeout", "environment_failure"):
+            fact["r_events"][name]["scope"] = "bound_formal_execution"
+    return fact
 
 
 def _event_label_counts(facts):
@@ -369,7 +385,7 @@ def _event_performance(name, scores, facts):
     }
 
 
-def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
+def _formal_technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
     """All actual attempts, labeled per event on the ONE bound attempt.
 
     Two scoring layers are reported and NEVER mixed:
@@ -483,7 +499,7 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
                                   else "insufficient_evidence"),
                 **_event_performance(name, name_scores, facts),
             }
-        output.append({"observation_rule_version": R_OBSERVATION_VERSION,
+        output.append({"observation_rule_version": R_FORMAL_OBSERVATION_VERSION,
             "conditions": group["conditions"], "n_attempts": len(units),
             "technical_failures": counts[1], "technical_successes": counts[0], "unknown": counts[None],
             "n_known_labels": n_known, "n_scorable": len(scores),
@@ -529,7 +545,7 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
             "n_scorable": len(event_scored[name]),
         }
         for name in R_EVENTS}
-    return {"observation_rule_version": R_OBSERVATION_VERSION, "groups": output,
+    return {"observation_rule_version": R_FORMAL_OBSERVATION_VERSION, "groups": output,
         "runtime_coverage": {"script_started": sum(f.get("runtime_eligible") is True for f in facts.values()),
             "script_not_started": sum(f.get("runtime_eligible") is False for f in facts.values()),
             "unknown": sum(f.get("runtime_eligible") is None for f in facts.values()),
@@ -539,7 +555,7 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
         "coverage_by_event": coverage_by_event,
         "events": window_events,
         "aggregation": {
-            "scoring_rule_version": R_SCORING_VERSION,
+            "scoring_rule_version": R_FORMAL_SCORING_VERSION,
             "aggregation": "max_common_event",
             "note": ("R is the maximum over the common valid event "
                      "probabilities; per-event Brier only — the max is not a "
@@ -548,6 +564,107 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
                  "original probabilities and same-rule known labels; each of "
                  "the three R events is scored against the ONE bound attempt, "
                  "never against a later retry")}
+
+
+def technical_r_statistics(facts_by_episode, samples, *, min_samples=5, harness=None):
+    """Current window labels and historical formal diagnostics never pool."""
+    current, legacy = [], []
+    for evaluation, prediction in samples:
+        convention = (prediction.trace.model_info or {}).get("risk_convention") or {}
+        (current if convention.get("observation_rule_version") == R_OBSERVATION_VERSION
+         else legacy).append((evaluation, prediction))
+    formal = _formal_technical_r_statistics(facts_by_episode, legacy, min_samples=min_samples)
+    facts, coverage_gaps = {}, []
+    if harness is not None:
+        from or_harness.world_model.implementation_facts import choices, implementation_window, episode_actions
+        for (task_id, episode_id), records in facts_by_episode.items():
+            actions = episode_actions(harness, task_id, episode_id)
+            from or_harness.world_model.episode_closeout import _closeout_created_at
+            closed_at = _closeout_created_at(harness, task_id, episode_id)
+            for choice in choices(actions):
+                if closed_at is not None and choice.started_at > closed_at:
+                    continue
+                prediction = harness.strategy_predictions.get(choice.outcome["prediction_id"])
+                if not prediction or (prediction.trace.model_info.get("risk_convention") or {}).get("observation_rule_version") != R_OBSERVATION_VERSION:
+                    continue
+                action_id = prediction.trace.model_info.get("bound_action_id")
+                action = harness.actions.get(action_id) if action_id else None
+                if action:
+                    fact = bound_r_observation(harness, prediction, action)
+                else:
+                    fact = implementation_window(prediction, actions, records)
+                    fact["r_events"] = {name: {"label": fact["label"] if name == "implementation_failure" else None}
+                                        for name in R_EVENTS}
+                    coverage_gaps.append({"prediction_id": prediction.prediction_id,
+                        "selection_action_id": choice.action_id, "label": fact["label"],
+                        "reason": "selected implementation has no formal execution; facts retained, no formal Evaluation fabricated"})
+                facts[(str(task_id), str(episode_id or ""), choice.action_id)] = fact
+    for evaluation, prediction in current:
+        fact = (evaluation.risk or {}).get("implementation_observation") or {}
+        key = (str(evaluation.task_id), str(evaluation.episode_id or ""), fact.get("selection_action_id"))
+        if key not in facts and fact.get("selection_action_id"):
+            facts[key] = fact
+    scores = {name: [] for name in R_EVENTS}
+    asked = {name: 0 for name in R_EVENTS}
+    reported = {name: 0 for name in R_EVENTS}
+    for evaluation, prediction in current:
+        valid, _, _ = r_event_probabilities(prediction)
+        for name in R_EVENTS:
+            asked[name] += 1
+            reported[name] += name in valid
+        observation = (evaluation.risk or {}).get("implementation_observation") or {}
+        identity = (str(evaluation.task_id), str(evaluation.episode_id or ""), observation.get("selection_action_id"))
+        if identity not in facts or r_scoring_version(prediction) != R_SCORING_VERSION:
+            continue
+        for name, probability in valid.items():
+            detail = ((evaluation.risk or {}).get("r_events_observation") or {}).get("events", {}).get(name) or {}
+            label = detail.get("label")
+            if label in (0, 1) and detail.get("comparable") and (
+                    name != "implementation_failure" or detail.get("observation_rule_version") == R_OBSERVATION_VERSION):
+                scores[name].append({"identity": identity, "probability": probability,
+                                     "brier": (probability - label) ** 2})
+    counts = _event_label_counts(list(facts.values()))
+    n_formal = sum(bool(f.get("execution_id")) for f in facts.values())
+    events, coverage = {}, {}
+    for name in R_EVENTS:
+        rows = scores[name]
+        episodes = {s["identity"][:2] for s in rows}
+        events[name] = {**counts[name], "n_asked": asked[name],
+            "n_reported_probabilities": reported[name], "n_scorable": len(rows),
+            "n_scored_distinct_episodes": len(episodes),
+            "mean_brier": sum(s["brier"] for s in rows) / len(rows) if rows else None,
+            "brier_support": "measured" if len(episodes) >= min_samples else "insufficient_evidence",
+            **_event_performance(name, rows, facts)}
+        coverage[name] = {"n_asked": asked[name], "n_actual_attempts": n_formal, "n_reported_probabilities": reported[name],
+                          "n_scorable": len(rows), "n_known_labels": counts[name]["n_known_labels"]}
+    groups = {}
+    for identity, fact in facts.items():
+        conditions = {k: fact.get(k) for k in ("solver_interface", "structure")}
+        key = json.dumps(conditions, sort_keys=True)
+        groups.setdefault(key, {"conditions": conditions, "identities": []})["identities"].append(identity)
+    group_rows = []
+    for group in groups.values():
+        identities = set(group.pop("identities"))
+        rows = [s for s in scores["implementation_failure"] if s["identity"] in identities]
+        group_rows.append({**group, "observation_rule_version": R_OBSERVATION_VERSION,
+            "implementation_clear_windows": sum(facts[i]["label"] == 0 for i in identities),
+            "implementation_defect_windows": sum(facts[i]["label"] == 1 for i in identities),
+            "unknown_windows": sum(facts[i]["label"] is None for i in identities),
+            "n_distinct_episodes": len({i[:2] for i in identities}),
+            "n_scored_distinct_episodes": len({s["identity"][:2] for s in rows}),
+            "mean_brier": sum(s["brier"] for s in rows) / len(rows) if rows else None})
+    return {"observation_rule_version": R_OBSERVATION_VERSION,
+        "scoring_rule_version": R_SCORING_VERSION, "events": events, "groups": group_rows,
+        "coverage": {"n_selected_windows": len(facts), "n_actual_attempts": n_formal,
+                     "n_known_labels": counts["implementation_failure"]["n_known_labels"],
+                     "n_reported_probabilities": reported["implementation_failure"],
+                     "n_scorable": len(scores["implementation_failure"])},
+        "coverage_by_event": coverage, "selected_without_execution": coverage_gaps,
+        "historical_formal": formal,
+        "runtime_coverage": copy.deepcopy(formal.get("runtime_coverage") or {}),
+        "aggregation": {"scoring_rule_version": R_SCORING_VERSION, "aggregation": "max_common_event",
+                        "note": "maximum single-event score, not a joint event"},
+        "note": "implementation uses selected windows; timeout/environment use formal attempts; historical formal statistics are separate"}
 
 
 def _empty_event_base_rate():
@@ -567,6 +684,8 @@ def global_event_base_rates(technical_r):
     a joint/max probability.
     """
     technical_r = technical_r if isinstance(technical_r, dict) else {}
+    if technical_r.get("observation_rule_version") != R_OBSERVATION_VERSION:
+        return {}
     source_events = technical_r.get("events")
     if not isinstance(source_events, dict) or not source_events:
         # Older published summaries may predate the window-level ``events``
@@ -612,15 +731,16 @@ def global_event_base_rates(technical_r):
         "version": "wm-r-global-base-rates/1",
         "observation_rule_version": technical_r.get(
             "observation_rule_version") or R_OBSERVATION_VERSION,
-        "scope": ("all executed attempts in the closed calibration window; "
+        "scope": ("selected implementation windows and their bound formal attempts in the closed calibration window; "
                   "broad background, NOT a candidate-specific condition"),
         "n_attempts": int((technical_r.get("coverage") or {}).get(
             "n_actual_attempts") or 0),
+        "n_selected_windows": int((technical_r.get("coverage") or {}).get("n_selected_windows") or 0),
         "events": events,
         "rate_basis": ("occurred / (occurred + not_occurred); unknown labels "
                        "are excluded, never counted as non-occurrence"),
-        "source": ("technical_r_statistics event labels on actual executed "
-                   "attempts; unresolved or unexecuted candidates are absent"),
+        "source": ("technical_r_statistics labels on actual selected implementation windows; "
+                   "timeout/environment still require a formal execution; unselected candidates are absent"),
         "support": ("measured_global_base_rate" if any_known
                     else "insufficient_evidence"),
         "note": ("local technical cases describe the candidate's own "

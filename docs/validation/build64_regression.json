@@ -1,0 +1,343 @@
+{
+  "date": "2026-11-26",
+  "timezone": "Asia/Shanghai",
+  "baseline_commit": "50caffbdb7ea53c66182af2482994f7cf318abf2",
+  "fixed_source": {
+    "sha256": "b9e55e5e0d380aabff5ce746c4dc09f9cb4ccbad675d4674501f671f7a0d15d6",
+    "python_source_files": 161,
+    "definition": "SHA256 over sorted relative Python source paths plus NUL-separated file bytes in src/ and tests/harness/"
+  },
+  "contracts": {
+    "r_current": {
+      "observation": "wm-r-implementation-window/1",
+      "scoring": "wm-r-max-event/2"
+    },
+    "r_formal_diagnostic": {
+      "observation": "wm-r-technical/1",
+      "scoring": "wm-r-max-event/1"
+    },
+    "retries_current": "wm-retry-corrective-rounds/1",
+    "retries_archived_formal": "wm-retry-additional-attempts/1"
+  },
+  "prompt": {
+    "baseline_commit": "50caffbdb7ea53c66182af2482994f7cf318abf2",
+    "joint_prompt": {
+      "before": {
+        "characters": 29224,
+        "whitespace_words": 4190,
+        "utf8_bytes": 29278
+      },
+      "after": {
+        "characters": 29275,
+        "whitespace_words": 4117,
+        "utf8_bytes": 29329
+      }
+    },
+    "hplus_paragraph": {
+      "before": {
+        "characters": 5522,
+        "whitespace_words": 740,
+        "utf8_bytes": 5522
+      },
+      "after": {
+        "characters": 5970,
+        "whitespace_words": 789,
+        "utf8_bytes": 5970
+      }
+    },
+    "prompt_version": "wm-so/1:ff2923021e31152e69a6702aa376029eef423b09d97d1a3e7cdf7de6c6b4c990",
+    "text_sha256": "d8830040877e0f689d222f392287dc9d8b972e1c98d9d6a237c80aa7f6980510"
+  },
+  "new_mechanism_test_methods": [
+    "test_a_initial_success_complete_coverage",
+    "test_b_repaired_local_defect_survives_formal_success",
+    "test_c_local_rounds_and_formal_resubmission_count_once",
+    "test_d_duplicate_logs_and_formal_host_identity",
+    "test_e_probes_planned_steps_and_no_started_correction",
+    "test_f_environment_rework_is_cost_not_implementation",
+    "test_g_selection_windows_and_remaining_anchors",
+    "test_h_success_without_host_coverage_stays_unknown",
+    "test_i_abandoned_before_execute_is_visible_without_fake_execution",
+    "test_j_material_and_real_next_provider_request_keep_repairs",
+    "test_j_zero_gate_keeps_facts_without_induction",
+    "test_k_versions_are_separate_and_old_records_not_rewritten",
+    "test_l_descriptive_retry_statistics_include_zeros_without_epsilon",
+    "test_recovered_internal_defect_is_not_hidden_by_success",
+    "test_distinct_internal_defects_keep_distinct_identities",
+    "test_unconfirmed_defect_and_incomplete_retries_do_not_become_zeros",
+    "test_new_prediction_after_formal_failure_counts_its_started_retry",
+    "test_acceptance_failure_counts_only_when_known_before_retry",
+    "test_late_acceptance_failure_does_not_retroactively_invent_retry",
+    "test_out_of_window_and_unselected_reports_are_refused",
+    "test_end_action_implementation_report_replays_idempotently",
+    "test_no_correction_started_does_not_count_a_retry",
+    "test_abandoned_implementation_is_context_for_later_real_evidence",
+    "test_late_complete_corrective_report_refreshes_without_rewriting",
+    "test_legacy_numeric_feedback_is_not_current_calibration",
+    "test_actual_retry_distribution_does_not_require_a_retry_forecast",
+    "test_timezone_runtime_data_and_environment_classification"
+  ],
+  "passing_suites": {
+    "compatibility": {
+      "tests_run": 266,
+      "elapsed_s": 70.662,
+      "passed": true,
+      "result_log": "build64-compatibility-final.log"
+    },
+    "mechanism_r_history_hplus": {
+      "tests_run": 163,
+      "elapsed_s": 30.567,
+      "passed": true,
+      "result_log": "build64-final-mechanism.log"
+    },
+    "numeric_runtime": {
+      "tests_run": 46,
+      "elapsed_s": 13.958,
+      "passed": true,
+      "result_log": "build64-numerical-release.log"
+    },
+    "c_weights": {
+      "tests_run": 29,
+      "elapsed_s": 1.867,
+      "passed": true,
+      "result_log": "build64-c-weights-verified.log"
+    },
+    "source_and_weights_followup": {
+      "tests_run": 42,
+      "elapsed_s": 2.314,
+      "passed": true,
+      "result_log": "build64-followup-verified.log"
+    },
+    "event_identity_release": {
+      "tests_run": 88,
+      "elapsed_s": 26.486,
+      "passed": true,
+      "result_log": "build64-event-identity-final.log"
+    }
+  },
+  "test_count_note": "Suites overlap; do not add their counts as distinct tests.",
+  "initial_larger_sweep": {
+    "tests_run": 511,
+    "elapsed_s": 145.385,
+    "passed": false,
+    "result_log": "build64-targeted-final.log"
+  },
+  "initial_larger_sweep_resolution": "The one synthetic retry p90 fixture lacked the new observation version; its 29-test module passed after adding the explicit version.",
+  "baseline_failed_subset": {
+    "tests_run": 68,
+    "elapsed_s": 63.24451918248087,
+    "failures_count": 28,
+    "errors_count": 6,
+    "skipped_count": 0,
+    "failures_ids": [
+      "test_admission.TestPublishingGate.test_offline_view_can_still_return_candidates",
+      "test_command_surface.TestSameConventionCompletionCompares.test_agreed_completion_convention_is_compared",
+      "test_command_surface.TestSameConventionCompletionCompares.test_an_unrecognised_declaration_ranks_nothing",
+      "test_evidence_window.TestKnowledgeSurvives.test_verified_knowledge_is_recalled_and_revisable_after_eviction",
+      "test_experiments.TestRunner.test_memory_learns_cheap_tied_strategy",
+      "test_memory_storage.TestCompactRules.test_only_cited_evidence_is_in_rule_metadata_and_body_is_not_repeated",
+      "test_r10_fixes.TestPaginationContiguity.test_full_budget_returns_everything_with_no_cursor",
+      "test_r12_world_model.TestMethodStepCompression.test_oversized_method_is_elided_in_the_middle_not_the_tail",
+      "test_relations.TestClaimGeneration.test_statistical_induction_is_untouched",
+      "test_review_eight.TestAgentPublicationAndVersions.test_A_B_derivation_and_constructed_boundary_publish_before_real_C",
+      "test_rule_versions.TestEntryUtilitySummary.test_pause_then_promote_keeps_recall_and_index_consistent",
+      "test_rule_versions.TestRuleLifecycle.test_normal_closed_task_short_submission_then_transfer_and_boundary",
+      "test_selector.TestEntryFlags.test_cross_family_labelled_not_discounted",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=1)",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=10)",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=100)",
+      "test_snapshot_lifecycle.LifecycleCase.test_capacity_cannot_discard_an_inflight_provider_input",
+      "test_snapshot_lifecycle.LifecycleCase.test_plan_choose_execute_across_cli_processes",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_classical_mechanisms_and_independent_validation_are_eligible",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_contract_terms_and_review_semantics_are_kept",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_hplus_is_not_a_difficulty_or_success_judgement",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_plain_translation_without_a_specific_learning_mechanism_is_zero",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_verification_condition_allows_affordable_checks",
+      "test_stage_f_selfcheck_induction.TestInterfaceInvariance.test_hplus_stays_outside_the_solving_utility",
+      "test_verification_honesty.TestKnowledgeThroughTheContext.test_entry_cost_prediction_and_two_recall_channels",
+      "test_world_model_m3.TestPlanning.test_suggestion_and_cost_attribution",
+      "test_world_model_m3.TestReviewFixes.test_planning_basis_persisted_and_recoverable_after_reopen",
+      "test_world_model_m3.TestReviewFixes.test_unknown_risk_and_cost_are_common_omissions"
+    ],
+    "errors_ids": [
+      "test_command_surface.TestQuerySurfaceIsComplete.test_every_removed_query_is_reachable_through_inspect",
+      "test_documented_result_keys.TestDocumentedResultKeys.test_inspect_capability",
+      "test_snapshot_lifecycle.LifecycleCase.test_availability_as_of_execution_distinct_from_adoption",
+      "test_snapshot_lifecycle.LifecycleCase.test_cleanup_preview_backup_compaction_and_idempotence",
+      "test_world_model_m3.TestReviewFixes.test_common_cost_uses_only_candidates_in_this_comparison",
+      "test_world_model_m3.TestReviewFixes.test_cost_weights_inherited_from_harness"
+    ],
+    "skipped_ids": []
+  },
+  "current_same_failed_subset": {
+    "tests_run": 68,
+    "elapsed_s": 63.91138096805662,
+    "failures_count": 28,
+    "errors_count": 6,
+    "skipped_count": 0,
+    "failures_ids": [
+      "test_admission.TestPublishingGate.test_offline_view_can_still_return_candidates",
+      "test_command_surface.TestSameConventionCompletionCompares.test_agreed_completion_convention_is_compared",
+      "test_command_surface.TestSameConventionCompletionCompares.test_an_unrecognised_declaration_ranks_nothing",
+      "test_evidence_window.TestKnowledgeSurvives.test_verified_knowledge_is_recalled_and_revisable_after_eviction",
+      "test_experiments.TestRunner.test_memory_learns_cheap_tied_strategy",
+      "test_memory_storage.TestCompactRules.test_only_cited_evidence_is_in_rule_metadata_and_body_is_not_repeated",
+      "test_r10_fixes.TestPaginationContiguity.test_full_budget_returns_everything_with_no_cursor",
+      "test_r12_world_model.TestMethodStepCompression.test_oversized_method_is_elided_in_the_middle_not_the_tail",
+      "test_relations.TestClaimGeneration.test_statistical_induction_is_untouched",
+      "test_review_eight.TestAgentPublicationAndVersions.test_A_B_derivation_and_constructed_boundary_publish_before_real_C",
+      "test_rule_versions.TestEntryUtilitySummary.test_pause_then_promote_keeps_recall_and_index_consistent",
+      "test_rule_versions.TestRuleLifecycle.test_normal_closed_task_short_submission_then_transfer_and_boundary",
+      "test_selector.TestEntryFlags.test_cross_family_labelled_not_discounted",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=1)",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=10)",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=100)",
+      "test_snapshot_lifecycle.LifecycleCase.test_capacity_cannot_discard_an_inflight_provider_input",
+      "test_snapshot_lifecycle.LifecycleCase.test_plan_choose_execute_across_cli_processes",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_classical_mechanisms_and_independent_validation_are_eligible",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_contract_terms_and_review_semantics_are_kept",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_hplus_is_not_a_difficulty_or_success_judgement",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_plain_translation_without_a_specific_learning_mechanism_is_zero",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_verification_condition_allows_affordable_checks",
+      "test_stage_f_selfcheck_induction.TestInterfaceInvariance.test_hplus_stays_outside_the_solving_utility",
+      "test_verification_honesty.TestKnowledgeThroughTheContext.test_entry_cost_prediction_and_two_recall_channels",
+      "test_world_model_m3.TestPlanning.test_suggestion_and_cost_attribution",
+      "test_world_model_m3.TestReviewFixes.test_planning_basis_persisted_and_recoverable_after_reopen",
+      "test_world_model_m3.TestReviewFixes.test_unknown_risk_and_cost_are_common_omissions"
+    ],
+    "errors_ids": [
+      "test_command_surface.TestQuerySurfaceIsComplete.test_every_removed_query_is_reachable_through_inspect",
+      "test_documented_result_keys.TestDocumentedResultKeys.test_inspect_capability",
+      "test_snapshot_lifecycle.LifecycleCase.test_availability_as_of_execution_distinct_from_adoption",
+      "test_snapshot_lifecycle.LifecycleCase.test_cleanup_preview_backup_compaction_and_idempotence",
+      "test_world_model_m3.TestReviewFixes.test_common_cost_uses_only_candidates_in_this_comparison",
+      "test_world_model_m3.TestReviewFixes.test_cost_weights_inherited_from_harness"
+    ],
+    "skipped_ids": []
+  },
+  "new_failed_ids_in_subset": [],
+  "resolved_failed_ids_in_subset": [],
+  "full_fixed_suite": {
+    "tests_run": 2159,
+    "elapsed_s": 486.8654237734154,
+    "failures_count": 28,
+    "errors_count": 6,
+    "skipped_count": 2,
+    "failures_ids": [
+      "test_admission.TestPublishingGate.test_offline_view_can_still_return_candidates",
+      "test_command_surface.TestSameConventionCompletionCompares.test_agreed_completion_convention_is_compared",
+      "test_command_surface.TestSameConventionCompletionCompares.test_an_unrecognised_declaration_ranks_nothing",
+      "test_evidence_window.TestKnowledgeSurvives.test_verified_knowledge_is_recalled_and_revisable_after_eviction",
+      "test_experiments.TestRunner.test_memory_learns_cheap_tied_strategy",
+      "test_memory_storage.TestCompactRules.test_only_cited_evidence_is_in_rule_metadata_and_body_is_not_repeated",
+      "test_r10_fixes.TestPaginationContiguity.test_full_budget_returns_everything_with_no_cursor",
+      "test_r12_world_model.TestMethodStepCompression.test_oversized_method_is_elided_in_the_middle_not_the_tail",
+      "test_relations.TestClaimGeneration.test_statistical_induction_is_untouched",
+      "test_review_eight.TestAgentPublicationAndVersions.test_A_B_derivation_and_constructed_boundary_publish_before_real_C",
+      "test_rule_versions.TestEntryUtilitySummary.test_pause_then_promote_keeps_recall_and_index_consistent",
+      "test_rule_versions.TestRuleLifecycle.test_normal_closed_task_short_submission_then_transfer_and_boundary",
+      "test_selector.TestEntryFlags.test_cross_family_labelled_not_discounted",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=1)",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=10)",
+      "test_snapshot_equivalence.TestStorageEquivalence.test_fixed_memory_hits_statistics_targets_and_provider_input (strategies=100)",
+      "test_snapshot_lifecycle.LifecycleCase.test_capacity_cannot_discard_an_inflight_provider_input",
+      "test_snapshot_lifecycle.LifecycleCase.test_plan_choose_execute_across_cli_processes",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_classical_mechanisms_and_independent_validation_are_eligible",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_contract_terms_and_review_semantics_are_kept",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_hplus_is_not_a_difficulty_or_success_judgement",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_plain_translation_without_a_specific_learning_mechanism_is_zero",
+      "test_stage_f_selfcheck_induction.TestHplusPrompt.test_verification_condition_allows_affordable_checks",
+      "test_stage_f_selfcheck_induction.TestInterfaceInvariance.test_hplus_stays_outside_the_solving_utility",
+      "test_verification_honesty.TestKnowledgeThroughTheContext.test_entry_cost_prediction_and_two_recall_channels",
+      "test_world_model_m3.TestPlanning.test_suggestion_and_cost_attribution",
+      "test_world_model_m3.TestReviewFixes.test_planning_basis_persisted_and_recoverable_after_reopen",
+      "test_world_model_m3.TestReviewFixes.test_unknown_risk_and_cost_are_common_omissions"
+    ],
+    "errors_ids": [
+      "test_command_surface.TestQuerySurfaceIsComplete.test_every_removed_query_is_reachable_through_inspect",
+      "test_documented_result_keys.TestDocumentedResultKeys.test_inspect_capability",
+      "test_snapshot_lifecycle.LifecycleCase.test_availability_as_of_execution_distinct_from_adoption",
+      "test_snapshot_lifecycle.LifecycleCase.test_cleanup_preview_backup_compaction_and_idempotence",
+      "test_world_model_m3.TestReviewFixes.test_common_cost_uses_only_candidates_in_this_comparison",
+      "test_world_model_m3.TestReviewFixes.test_cost_weights_inherited_from_harness"
+    ],
+    "skipped_ids": [
+      "test_file_execution.TestCompositeFileStrategy.test_lp_reduction_milp_and_full_observation_loop",
+      "test_file_execution.TestFileSecurity.test_numpy_and_pandas_readers_share_boundary"
+    ],
+    "state": "complete",
+    "source_sha256": "b9e55e5e0d380aabff5ce746c4dc09f9cb4ccbad675d4674501f671f7a0d15d6",
+    "new_failed_ids": [],
+    "resolved_baseline_failed_ids": [],
+    "passed": false,
+    "failure_ids_match_baseline": true
+  },
+  "environment": {
+    "default_python": "3.12.9",
+    "numerical_python": "3.11.5",
+    "numpy": "2.0.1",
+    "pandas": "2.3.0",
+    "scipy": "1.16.0",
+    "test_method": "unittest; scripted world-model providers and real confined Python executions; localhost fixtures allowed"
+  },
+  "static_checks": {
+    "compileall": true,
+    "git_diff_check": true
+  },
+  "modified_files": [
+    "SKILL.md",
+    "docs/validation/build64_implementation.md",
+    "docs/validation/build64_prompt.diff",
+    "docs/validation/build64_prompt_lengths.json",
+    "docs/validation/build64_regression.json",
+    "references/build64_implementation.md",
+    "references/commands.md",
+    "references/episode_closeout.md",
+    "references/induction.md",
+    "references/strategy_outcome.md",
+    "references/world_model_contract.md",
+    "src/or_harness/api.py",
+    "src/or_harness/execution/sandbox.py",
+    "src/or_harness/strategy/evidence_views.py",
+    "src/or_harness/strategy/vector_recall.py",
+    "src/or_harness/world_model/conditions.py",
+    "src/or_harness/world_model/context.py",
+    "src/or_harness/world_model/contracts.py",
+    "src/or_harness/world_model/cost_signal.py",
+    "src/or_harness/world_model/episode_closeout.py",
+    "src/or_harness/world_model/history_retrieval.py",
+    "src/or_harness/world_model/implementation_facts.py",
+    "src/or_harness/world_model/induction_material.py",
+    "src/or_harness/world_model/r_signal.py",
+    "src/or_harness/world_model/strategy_prediction.py",
+    "tests/harness/test_build64_implementation.py",
+    "tests/harness/test_c_aggregation_weights.py",
+    "tests/harness/test_calibration_v2.py",
+    "tests/harness/test_episode_closeout.py",
+    "tests/harness/test_file_execution.py",
+    "tests/harness/test_g_decoupling.py",
+    "tests/harness/test_r13_remaining_cost.py",
+    "tests/harness/test_r_technical.py",
+    "tests/harness/test_stage_e_history_retrieval.py"
+  ],
+  "unchanged_user_files": [
+    "agg_exp_qwen_hp_50.txt",
+    "forensic_exec_size_20261119.tar.gz"
+  ],
+  "limits": {
+    "original_27_tasks_34_executions_replayed": false,
+    "original_A143_replayed": false,
+    "real_forecast_quality_measured": false,
+    "external_runner_integration_verified": false,
+    "bank_readiness": "A run claiming complete new R negatives/corrective counts needs host coverage reporting and a real end-to-end pilot first; otherwise preserve Unknown/lower bounds."
+  },
+  "final_source": {
+    "sha256": "cd9a2a32c2171c27725b103f0081590835e70d8362ea98f33a6d7ae2dc01eb62",
+    "python_source_files": 161
+  },
+  "post_full_changes": [
+    "Keep separate recovered/internal defects distinct within one execution, while terminal formal error reports share the Executor identity.",
+    "Optional formal_error disambiguates a recovered defect from the terminal formal error; existing model output fields are unchanged.",
+    "The added mixed environment/implementation defect regression and all feature/R/H+ tests passed after this narrow fix."
+  ]
+}

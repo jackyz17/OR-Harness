@@ -104,7 +104,7 @@ def _history(pool, *, candidate=None, config=None, g=None, c=None, r=None,
                        "below_threshold": 0,
                        "index_items": len(pool),
                        "scanned": len(pool)},
-        "global": {"g": g or {}, "c": c or {}, "r": r or {}},
+        "global": {"g": g or {}, "c": c or {}, "r": {"observation_rule_version": R_OBSERVATION_VERSION, **(r or {})}},
         "degraded": degraded or [],
         "missing": missing or [],
         "notes": [],
@@ -183,6 +183,7 @@ def _c_evaluation(evaluation_id="ev-c1", *, values=None, scope=None,
             "values": dict(values or {}),
             "scope": scope or "remaining_to_task_end",
             "window_coverage": window,
+            "retry_observation_rule_version": retry_rule,
             "family": family,
             "structure": structure if structure is not None
             else {"problem_class": "milp"},
@@ -203,7 +204,7 @@ def _r_evaluation(evaluation_id="ev-r1", *, events=None, predicted=None):
                          "predicted": (predicted or {}).get(name),
                          "brier": ((predicted or {}).get(name, 0.5) - label) ** 2
                          if label in (0, 1) else None,
-                         "label_basis": "fixture"}
+                         "label_basis": "fixture", "observation_rule_version": R_OBSERVATION_VERSION}
                         for name, label in (events or {}).items()],
     }
 
@@ -620,6 +621,21 @@ class TestCHistoryEvidence(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestRHistoryEvidence(unittest.TestCase):
+    def test_archived_frozen_r_context_does_not_supply_current_numeric_feedback(self):
+        from or_harness.world_model.contracts import R_FORMAL_OBSERVATION_VERSION
+        candidate = _candidate()
+        row = _pool_row('old-ex', evaluation=_r_evaluation(events={'implementation_failure': 0},
+                                                          predicted={'implementation_failure': .2}))
+        row['evaluation']['risk_actual'][0]['observation_rule_version'] = R_FORMAL_OBSERVATION_VERSION
+        history = _history([row], candidate=candidate, r={
+            'observation_rule_version': R_FORMAL_OBSERVATION_VERSION,
+            'events': {'implementation_failure': {'occurred': 0, 'not_occurred': 2}}})
+        block = select_r_history_evidence(history, context=_context(), candidate=candidate)
+        event = block['cases'][0]['events']['implementation_failure']
+        self.assertIsNone(event['label'])
+        self.assertNotIn('predicted', event)
+        self.assertFalse(block['global_event_base_rates'])
+
     def test_local_technical_case_carries_three_events_and_labels(self):
         candidate = _candidate()
         row = _pool_row(
@@ -1047,7 +1063,7 @@ class TestEvidenceAttribution(unittest.TestCase):
                 "source_refs": ["ex1", "ex2"],
             },
             "risk_actual": [{"event": "implementation_failure", "label": 1,
-                             "brier": 0.09, "label_basis": "fixture"}],
+                             "brier": 0.09, "label_basis": "fixture", "observation_rule_version": R_OBSERVATION_VERSION}],
         }
 
     def _history_with_pair(self):

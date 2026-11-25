@@ -679,6 +679,8 @@ def _evaluation_fact(pair: Dict[str, Any]) -> Dict[str, Any]:
                             "config": comparison.get("config") or {}}]
         fact["cost"] = {
             "values": _cost_values_from_pair(pair),
+            "retry_observation_rule_version": conditions.get("retry_observation_rule_version") or
+                (cost.get("dimension_observation_rule_versions") or {}).get("retries"),
             "scope": conditions.get("scope"),
             "window_coverage": conditions.get("window_coverage"),
             "family": conditions.get("family"),
@@ -707,7 +709,10 @@ def _evaluation_fact(pair: Dict[str, Any]) -> Dict[str, Any]:
              "label": entry.get("label"),
              "predicted": predicted.get(str(entry.get("event"))),
              "brier": entry.get("brier"),
-             "label_basis": entry.get("label_basis")}
+             "label_basis": entry.get("label_basis"),
+             "observation_rule_version": entry.get("observation_rule_version") or pair.get("risk_observation_rule_version") or
+                ((pair.get("implementation_observation") or {}).get("observation_rule_version")
+                 if entry.get("event") == "implementation_failure" else None)}
             for entry in risk_actual if isinstance(entry, dict)][:6]
     if pair.get("failure_classes"):
         fact["failure_classes"] = list(pair["failure_classes"])[:4]
@@ -936,6 +941,8 @@ def global_c_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             measured = (pair.get("cost_measured") or {}).get(dim) or {}
             predicted = _number(measured.get("predicted"))
             actual = _number(measured.get("actual"))
+            if dim == "retries" and dim not in values:
+                continue
             if predicted is not None and actual is not None:
                 predicted_pairs[dim].append((predicted, actual))
     dimensions: Dict[str, Any] = {}
@@ -971,6 +978,10 @@ def global_c_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
             "source_refs": sorted(dimension_refs[dim])[:6],
         }
         compact = _compact_global(entry)
+        if dim == "retries":
+            from or_harness.world_model.cost_signal import retry_error_statistics
+            compact["observation_rule_version"] = RETRIES_FUTURE_VERSION
+            compact["corrective_round_error"] = retry_error_statistics(predicted_pairs[dim])
         if compact.get("n") or compact.get("n_incomplete"):
             dimensions[dim] = compact
     return _compact_global({
@@ -1004,6 +1015,11 @@ def global_r_statistics(strategy_calibration: Optional[Dict[str, Any]]
     """
     from or_harness.world_model.r_signal import global_event_base_rates
     technical = (strategy_calibration or {}).get("technical_r") or {}
+    from or_harness.world_model.contracts import R_OBSERVATION_VERSION
+    if technical.get("observation_rule_version") != R_OBSERVATION_VERSION:
+        return {"observation_rule_version": R_OBSERVATION_VERSION,
+                "support": "insufficient_evidence", "events": {},
+                "note": "historical formal R statistics are not current implementation-window calibration; unavailable labels are not zero risk"}
     base = global_event_base_rates(technical)
     source_events = technical.get("events") or {}
     events: Dict[str, Any] = {}
@@ -1132,6 +1148,13 @@ def _pool_row(harness, recalled: Dict[str, Any], *,
             return None, "stale_index"
     from or_harness.world_model.r_signal import technical_attempt_fact
     technical = technical_attempt_fact(record)
+    from or_harness.world_model.implementation_facts import execution_implementation_evidence, compact_evidence
+    from or_harness.world_model.contracts import R_OBSERVATION_VERSION
+    implementation = execution_implementation_evidence(harness, record, cutoff=cutoff)
+    technical["r_events"]["implementation_failure"] = {
+        "label": implementation.get("label"),
+        "basis": implementation.get("reason") or "historical formal receipt only; current implementation coverage unknown",
+        "observation_rule_version": implementation.get("observation_rule_version")}
     record_cell = recalled.get("profile_cell")
     structural = ("same_cell" if query_cell and record_cell == query_cell
                   else "different_cell" if record_cell else "unknown")
@@ -1143,6 +1166,9 @@ def _pool_row(harness, recalled: Dict[str, Any], *,
     row = {
         "execution_id": execution_id,
         "task_id": recalled.get("task_id"),
+        "implementation_evidence": compact_evidence(implementation),
+        "formal_technical_outcome": {"label": technical.get("label"),
+            "observation_rule_version": technical.get("observation_rule_version")},
         "strategy_id": recalled.get("strategy_id"),
         "task_excerpt": recalled.get("task_text_excerpt"),
         "similarity": {
@@ -1743,6 +1769,9 @@ def select_g_history_evidence(
 def _provider_global_cost(global_cost: Dict[str, Any]) -> Dict[str, Any]:
     """The provider copy of the global cost block (no long source lists)."""
     block = copy.deepcopy(global_cost or {})
+    dimensions = block.get("dimensions") or {}
+    if (dimensions.get("retries") or {}).get("observation_rule_version") != RETRIES_FUTURE_VERSION:
+        dimensions.pop("retries", None)
     for entry in (block.get("dimensions") or {}).values():
         if isinstance(entry, dict):
             entry.pop("source_refs", None)
@@ -1757,9 +1786,13 @@ def _c_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
     cost = evaluation.get("cost") or {}
     values = {dim: cost.get("values", {}).get(dim)
               for dim in PREDICTED_COST_DIMENSIONS}
+    if cost.get("retry_observation_rule_version") != RETRIES_FUTURE_VERSION:
+        values["retries"] = None
     missing = [dim for dim, value in values.items() if value is None]
     predicted = {}
     for dim, entry in (evaluation.get("cost_predicted_actual") or {}).items():
+        if dim == "retries" and cost.get("retry_observation_rule_version") != RETRIES_FUTURE_VERSION:
+            continue
         if entry.get("predicted") is not None:
             predicted[dim] = entry["predicted"]
     case: Dict[str, Any] = {
@@ -1848,6 +1881,8 @@ def select_c_history_evidence(
         values = {dim: value for dim, value in (cost.get("values") or {}).items()
                   if dim in PREDICTED_COST_DIMENSIONS
                   and _number(value) is not None}
+        if cost.get("retry_observation_rule_version") != RETRIES_FUTURE_VERSION:
+            values.pop("retries", None)
         if not values:
             counts["without_observed_values"] += 1
             continue
@@ -2006,6 +2041,12 @@ def _r_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
     for name in _R_EVENTS:
         local = row.get("r_events", {}).get(name) or {}
         paired = observed.get(name) or {}
+        if name == "implementation_failure":
+            from or_harness.world_model.contracts import R_OBSERVATION_VERSION
+            if paired.get("observation_rule_version") != R_OBSERVATION_VERSION:
+                paired = {}
+            if local.get("observation_rule_version") != R_OBSERVATION_VERSION:
+                local = {"label": None, "basis": "historical formal diagnostic; implementation-window coverage unknown"}
         label = paired.get("label", local.get("label"))
         item: Dict[str, Any] = {
             "label": label,
@@ -2034,6 +2075,10 @@ def _r_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
     }
     if row.get("failure_classes"):
         case["failure_classes"] = list(row["failure_classes"])[:3]
+    if row.get("implementation_evidence"):
+        case["implementation_evidence"] = copy.deepcopy(row["implementation_evidence"])
+    if row.get("formal_technical_outcome"):
+        case["formal_technical_outcome"] = copy.deepcopy(row["formal_technical_outcome"])
     if row.get("has_reusable_script"):
         case["reusable_script"] = True
     if evaluation.get("evaluation_id"):
@@ -2105,13 +2150,16 @@ def select_r_history_evidence(
     ranked.sort(key=lambda item: item[0], reverse=True)
     cases = [case for _key, case in ranked[:cap]]
     global_rates = (history.get("global", {}).get("r") or {})
+    from or_harness.world_model.contracts import R_OBSERVATION_VERSION
+    if global_rates.get("observation_rule_version") != R_OBSERVATION_VERSION:
+        global_rates = {}
     block = {
         "version": "wm-r-history/1",
         "solver_interface": interface,
         "event_definitions": {
             "implementation_failure": (
-                "the attempt's own code/API failed (recorded technical "
-                "receipt); not a modelling verdict"),
+                "evidenced substantive defect in the selected candidate implementation window; "
+                "zero requires complete implementation coverage; historical formal receipts are qualitative only"),
             "timeout": (
                 "the harness wall-clock limit INTERRUPTED the attempt "
                 "before a usable result"),
@@ -2186,6 +2234,8 @@ def decision_cost_scales(context: Any, candidates: Sequence[Any],
                 "as_of": created_at}
             continue
         entry = dimensions.get(dimension) or {}
+        if dimension == "retries" and entry.get("observation_rule_version") != RETRIES_FUTURE_VERSION:
+            continue
         peak = _number(entry.get("p90"))
         if peak is not None and peak > 0:
             result[dimension] = {

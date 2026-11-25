@@ -44,6 +44,9 @@ from or_harness.strategy.embedding_index import (
 )
 from or_harness.world_model.provider import WorldModelProvider
 
+from or_harness.world_model.contracts import R_OBSERVATION_VERSION, R_SCORING_VERSION, RETRIES_FUTURE_VERSION
+TARGET_VERSION_SUFFIX = "|R:" + R_OBSERVATION_VERSION + ":" + R_SCORING_VERSION + "|retries:" + RETRIES_FUTURE_VERSION
+
 EMBEDDING_ENV_KEYS = ("OR_EMBEDDING_BACKEND", "OR_EMBEDDING_BASE_URL",
                       "OR_EMBEDDING_MODEL", "OR_EMBEDDING_API_KEY")
 
@@ -60,7 +63,7 @@ PAYLOAD = {
 }
 
 GROUP = ("strategy_outcome|(unknown)|normalized_objective_gap|1-gap"
-         "|attempt|wm-obs/4")
+         "|attempt|wm-obs/4" + TARGET_VERSION_SUFFIX)
 
 
 def _task(task_id="t1", **coupling):
@@ -267,8 +270,10 @@ class TestEventSemantics(CalibrationV2Case):
         # The framework observed the REAL failure, by its own name.
         observed = evaluation["risk"]["observed_units"]
         self.assertIn("implementation_failure", observed)
-        self.assertEqual(observed["implementation_failure"]["label"],
-                         "occurred")
+        # This archived multi-binding fixture did not select this forecast.
+        # Retain the real formal diagnostic, without a counterfactual window label.
+        self.assertIsNone(observed["implementation_failure"]["label"])
+        self.assertEqual(evaluation['risk']['implementation_observation']['formal_technical_outcome']['label'], 1)
         self.assertNotIn("model_invalid", observed)
 
     def test_environment_failure_is_distinguished(self):
@@ -941,7 +946,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary()
         self.assertIn("strategy_outcome|model-a@v1|normalized_objective_gap"
-                      "|1-gap|attempt|wm-obs/4", summary["groups"])
+                      "|1-gap|attempt|wm-obs/4" + TARGET_VERSION_SUFFIX, summary["groups"])
         evaluation = h.strategy_prediction_evaluations(task_id="t1")[0]
         self.assertEqual(evaluation["model_identity"], "model-a@v1")
 
@@ -1029,7 +1034,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
                  self.h.store.dumps(stored)))
         rebuilt = self.h.calibration_summary(rebuild=True)
         self.assertIn("strategy_outcome|(unknown)|normalized_objective_gap"
-                      "|1-gap|attempt|wm-obs/4", rebuilt["groups"])
+                      "|1-gap|attempt|wm-obs/4" + TARGET_VERSION_SUFFIX, rebuilt["groups"])
 
     def test_no_published_summary_reports_missing(self):
         context = self.h.build_prediction_context(_task("t1"), "ep1")
@@ -1495,7 +1500,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         calibration = context.strategy_calibration
         self.assertIn(
             "strategy_outcome|model-a@v1|normalized_objective_gap|1-gap"
-            "|attempt|wm-obs/4", calibration["groups"])
+            "|attempt|wm-obs/4" + TARGET_VERSION_SUFFIX, calibration["groups"])
         self.assertTrue(calibration.get("filtered"))
         self.assertFalse(calibration.get("withheld_groups"))
 
@@ -1508,9 +1513,9 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         own = ("strategy_outcome|model-a@v1|normalized_objective_gap"
-               "|1-gap|attempt|wm-obs/4")
+               "|1-gap|attempt|wm-obs/4" + TARGET_VERSION_SUFFIX)
         legacy = ("strategy_outcome|(unknown)|normalized_objective_gap"
-                  "|1-gap|attempt|wm-obs/4")
+                  "|1-gap|attempt|wm-obs/4" + TARGET_VERSION_SUFFIX)
         publish_calibration_summary(
             h, {"groups": {own: {"n_samples": 3},
                            legacy: {"n_samples": 2}},
@@ -1528,7 +1533,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         publish_calibration_summary(
-            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt|wm-obs/4":
+            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt|wm-obs/4" + TARGET_VERSION_SUFFIX:
                            {"n_samples": 1}},
                 "occurrence": {}, "exclusions": {}}, [])
         block = calibration_summary_for_context(h, model_identity=None)

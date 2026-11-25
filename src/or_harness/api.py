@@ -2501,6 +2501,12 @@ class ORHarness:
         if prior is None:
             raise StorageError(f"unknown action_id {action_id!r}")
         replayed = prior.status != "running"
+        if isinstance(outcome, dict) and any(key in outcome for key in (
+                "implementation_facts", "implementation_coverage", "correction_coverage")):
+            from or_harness.world_model.implementation_facts import normalize_report
+            outcome = normalize_report(self, outcome, task_id=prior.task_id,
+                                       episode_id=prior.episode_id,
+                                       ended_at=prior.ended_at if replayed else time.time())
         # (2) Persist result + cost (idempotent replay returns the stored
         # record unchanged; conflicts raise StorageError).
         record = self.actions.end_action(
@@ -2520,6 +2526,8 @@ class ORHarness:
             post = self.snapshot(task, episode_id, task_progress=progress, include_memory=False,
                                  hypothetical=record.source == "hypothetical")
             self.actions._bind_post_snapshot(action_id, post.snapshot_id)
+        if any(key in (outcome or {}) for key in ("implementation_facts", "implementation_coverage", "correction_coverage")):
+            self._republish_calibration_if_in_window(prior.task_id, prior.episode_id)
         return {"action_id": record.action_id, "status": record.status,
                 "post_snapshot_id": (post.snapshot_id if post is not None
                                     else record.post_snapshot_id)}
@@ -2585,6 +2593,11 @@ class ORHarness:
         require_g_attribution_location(
             {"params": params, "outcome": outcome}, path="action", allow_root=False)
         outcome = copy.deepcopy(outcome or {})
+        if any(key in outcome for key in ("implementation_facts", "implementation_coverage", "correction_coverage")):
+            from or_harness.world_model.implementation_facts import normalize_report
+            ended_at = ended_at if ended_at is not None else time.time()
+            outcome = normalize_report(self, outcome, task_id=str(task["task_id"]),
+                                       episode_id=episode_id, ended_at=ended_at)
         reported_usage = host_usage if host_usage is not None else outcome.get("host_usage")
         if reported_usage is not None:
             from or_harness.world_model.usage import host_report_dimensions
@@ -2601,7 +2614,8 @@ class ORHarness:
                                                outcome or {})
         post = self.snapshot(task, episode_id, task_progress=progress, include_memory=False)
         self.actions._bind_post_snapshot(record.action_id, post.snapshot_id)
-        if reported_usage is not None:
+        if reported_usage is not None or any(key in outcome for key in (
+                "implementation_facts", "implementation_coverage", "correction_coverage")):
             self._republish_calibration_if_in_window(str(task.get("task_id", "")), episode_id)
         return {"action_id": record.action_id, "status": record.status,
                 "source": record.source,
@@ -3692,6 +3706,18 @@ class ORHarness:
                 if len(matches)!=1:raise ValueError('manual chosen candidate must identify one scored plan-next candidate')
                 prediction_id=matches[0]['prediction_id']
             self._scored_decision(self.strategy_predictions.get(prediction_id))
+            # Re-reading/reaffirming the same choice must not start a second
+            # implementation window. It still does not consume an execution.
+            existing = [a for a in self.actions.query(task_id=decision.task_id, episode_id=decision.episode_id)
+                        if a.parent_action_id == decision_action_id
+                        and (a.outcome or {}).get("kind") == "plan_next_choice"
+                        and (a.outcome or {}).get("prediction_id") == prediction_id
+                        and not (a.outcome or {}).get("rejected")]
+            if existing:
+                item = existing[0]
+                return {"action_id": item.action_id, "status": item.status,
+                        "selected": item.outcome.get("selected"), "rejected": False,
+                        "hplus": item.outcome.get("hplus"), "post_snapshot_id": item.post_snapshot_id}
         outcome: Dict[str, Any] = {
             "kind": "plan_next_choice",
             "decision_action_id": decision_action_id,
@@ -7730,8 +7756,11 @@ class ORHarness:
         prediction_id = (getattr(prediction, "prediction_id", None)
                          if prediction is not None else None)
         prediction_id = prediction_id or record.execution_features.get("prediction_id")
+        from or_harness.world_model.implementation_facts import execution_implementation_evidence, compact_evidence
+        implementation = compact_evidence(execution_implementation_evidence(self, record))
         return {
             "task_id": record.task_id,
+            "implementation_evidence": implementation,
             "episode_id": episode_id,
             "task_text": text,
             "task_text_digest": record.task_text_digest,

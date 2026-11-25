@@ -44,6 +44,9 @@ from or_harness.strategy.embedding_index import (  # noqa: E402
 from or_harness.world_model.prediction import ActionSpec  # noqa: E402
 from or_harness.world_model.provider import WorldModelProvider  # noqa: E402
 
+from or_harness.world_model.contracts import R_OBSERVATION_VERSION, R_SCORING_VERSION, RETRIES_FUTURE_VERSION
+TARGET_VERSION_SUFFIX = "|R:" + R_OBSERVATION_VERSION + ":" + R_SCORING_VERSION + "|retries:" + RETRIES_FUTURE_VERSION
+
 EMBEDDING_ENV_KEYS = ("OR_EMBEDDING_BACKEND", "OR_EMBEDDING_BASE_URL",
                       "OR_EMBEDDING_MODEL", "OR_EMBEDDING_API_KEY")
 
@@ -78,7 +81,7 @@ GOOD_PAYLOAD = {
 #: provider name standing in for a version. The trailing observation-rules
 #: version is part of the key (samples under different rules never pool).
 GROUP_PREFIX = "strategy_outcome|(unknown)|"
-OBS_RULE = "|wm-obs/4"
+OBS_RULE = "|wm-obs/4" + TARGET_VERSION_SUFFIX
 
 
 class StubProvider(WorldModelProvider):

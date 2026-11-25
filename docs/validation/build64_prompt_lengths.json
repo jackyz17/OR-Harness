@@ -1,0 +1,29 @@
+{
+  "baseline_commit": "50caffbdb7ea53c66182af2482994f7cf318abf2",
+  "joint_prompt": {
+    "before": {
+      "characters": 29224,
+      "whitespace_words": 4190,
+      "utf8_bytes": 29278
+    },
+    "after": {
+      "characters": 29275,
+      "whitespace_words": 4117,
+      "utf8_bytes": 29329
+    }
+  },
+  "hplus_paragraph": {
+    "before": {
+      "characters": 5522,
+      "whitespace_words": 740,
+      "utf8_bytes": 5522
+    },
+    "after": {
+      "characters": 5970,
+      "whitespace_words": 789,
+      "utf8_bytes": 5970
+    }
+  },
+  "prompt_version": "wm-so/1:ff2923021e31152e69a6702aa376029eef423b09d97d1a3e7cdf7de6c6b4c990",
+  "text_sha256": "d8830040877e0f689d222f392287dc9d8b972e1c98d9d6a237c80aa7f6980510"
+}

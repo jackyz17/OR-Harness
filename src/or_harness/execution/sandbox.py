@@ -26,6 +26,18 @@ class SandboxAccessError(PermissionError):
     """A script attempted an operation outside its documented file contract."""
 
 
+class SandboxDependencyError(PermissionError):
+    """A recognized runtime data dependency is unavailable in the sandbox."""
+
+
+def runtime_data_paths():
+    # Explicit runtime data directories only. Do not trust PYTHONTZPATH to
+    # mount arbitrary host directories or expose the whole environment share/.
+    return ["/usr/share/zoneinfo", "/usr/share/lib/zoneinfo", "/etc/zoneinfo",
+            str(Path(sys.base_prefix) / "share" / "zoneinfo"),
+            str(Path(sys.base_prefix) / "share" / "tzinfo")]
+
+
 def _audit_paths(runtime):
     def audit(event, args):
         if event != "open" or isinstance(args[0], int):
@@ -43,6 +55,8 @@ def _audit_paths(runtime):
             if target != "/dev/null":
                 raise SandboxAccessError("writes require the isolated output workspace: " + path)
         elif not write and not (in_work or in_runtime):
+            if any(target == p or target.startswith(p + "/") for p in runtime_data_paths()):
+                raise SandboxDependencyError("timezone runtime data unavailable: " + path)
             raise SandboxAccessError("read requires a declared task input or runtime file: " + path)
     sys.addaudithook(audit)
 
@@ -52,6 +66,7 @@ def runtime_paths():
     # Conda extensions need sibling shared libraries; do not expose the rest
     # of the environment prefix (which can contain user work and credentials).
     candidates += [str(Path(sys.base_prefix) / "lib"), "/usr/lib", "/lib", "/lib64"]
+    candidates += runtime_data_paths()
     paths = []
     for value in sorted(set(candidates), key=len):
         path = Path(value)

@@ -356,7 +356,8 @@ class TestSyntheticCAggregation(unittest.TestCase):
     def test_scale_source_uses_only_frozen_synthetic_p90_or_explicit_override(self):
         context = SimpleNamespace(created_at=123.0, history_retrieval={
             "global": {"c": {"dimensions": {
-                d: {"p90": peak, "n": 7, "source_refs": ["synthetic:closed-window"]}
+                d: {"p90": peak, "n": 7, "source_refs": ["synthetic:closed-window"],
+                    **({"observation_rule_version": RETRIES_FUTURE_VERSION} if d == "retries" else {})}
                 for d, peak in PEAKS.items()}}}})
         candidates = [synthetic_prediction().candidate]
         scales = decision_cost_scales(context, candidates)

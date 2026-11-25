@@ -293,7 +293,24 @@ def filter_prediction_reminders(reminders):
 def calibration_projection(summary):
     """Keep audit details at their source; send counts/reasons to the model."""
     out = copy.deepcopy(summary or {})
-    if "technical_r" in out:
+    from or_harness.world_model.contracts import RETRIES_FUTURE_VERSION
+    for name, group in (out.get("groups") or {}).items():
+        if "|retries:" + RETRIES_FUTURE_VERSION not in name:
+            for key in ("mean_cost_abs_error", "mean_cost_signed_error", "mean_cost_log_error",
+                        "mean_cost_log_ratio", "cost_evidence", "cost_absolute_evidence"):
+                if isinstance(group.get(key), dict):
+                    group[key].pop("retries", None)
+    conditional = out.get("conditional_cost") or {}
+    if (conditional.get("retries") or {}).get("observation_rule_version") != RETRIES_FUTURE_VERSION:
+        (conditional.get("coverage") or {}).pop("retries", None)
+    for group in conditional.get("groups") or []:
+        if (group.get("conditions") or {}).get("retry_observation_rule_version") != RETRIES_FUTURE_VERSION:
+            (group.get("dimensions") or {}).pop("retries", None)
+    for case in conditional.get("cases") or []:
+        if (case.get("conditions") or {}).get("retry_observation_rule_version") != RETRIES_FUTURE_VERSION:
+            for key in ("values", "lower_bounds"):
+                (case.get(key) or {}).pop("retries", None)
+    if out:
         # The legacy classifier's occurrence rate is not the new R prior.
         (out.get("occurrence") or {}).pop("implementation_failure", None)
         for group in (out.get("groups") or {}).values():

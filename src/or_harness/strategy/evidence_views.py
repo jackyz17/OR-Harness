@@ -146,6 +146,8 @@ def compact_execution(harness, record, *, field_limit=2400):
     # misleading prefix: the reading copy keeps a pointer to the exact field
     # instead of clipping the steps the method needs to be understood.
     method = method_view(record)
+    from or_harness.world_model.implementation_facts import execution_implementation_evidence, compact_evidence
+    implementation = compact_evidence(execution_implementation_evidence(harness, record))
     for document in ("actual", "planned"):
         value = method.get(document)
         if isinstance(value, dict) and chars(value) > field_limit:
@@ -159,6 +161,7 @@ def compact_execution(harness, record, *, field_limit=2400):
                     "cir": atomic(record.cir_snapshot, ref + " #cir_snapshot", field_limit)},
         "task_text": atomic(task_text, ref + " #task_text", field_limit) if task_text else {"unknown": "task text not retained"},
         "method": method,
+        "implementation_evidence": implementation,
         "method_source": (actual or {}).get("source") if actual else "unknown",
         "outcome": {k: (record.quality or {}).get(k) for k in ("status", "feasible", "objective", "gap")},
         "status": (record.quality or {}).get("status"),
@@ -295,14 +298,14 @@ def _compact_pair_implementation(row):
     kept = {key: copy.deepcopy(observation[key]) for key in
             ("event", "comparable", "executed", "exit_code", "label",
              "observation_rule_version", "reason", "result_received", "scope",
-             "task_id", "solver_interface",
+             "task_id", "solver_interface", "selection_action_id", "complete",
              "semantic_attribution")
             if observation.get(key) not in (None, {}, [], "")}
     if observation.get("reusable_script") is not None and ref:
         kept["reusable_script_ref"] = ref + ".reusable_script"
     if observation.get("predicted_probability") is not None:
         kept["predicted_probability_ref"] = (
-            f"risk_predicted[{observation.get('event')}].probability")
+            f"risk_predicted[{observation.get('event') or 'implementation_failure'}].probability")
     row["implementation_observation"] = kept
 
 
@@ -843,7 +846,7 @@ def _provider_execution(row, ref):
                     "label", "observation_rule_version",
                     "result_received", "scope", "task_id",
                     "solver_interface", "reusable_script_ref",
-                    "predicted_probability_ref"):
+                    "predicted_probability_ref", "selection_action_id", "complete"):
             if observation.get(key) not in (None, "", [], {}):
                 kept[key] = copy.deepcopy(observation[key])
         if observation.get("reason") is not None:
@@ -890,6 +893,32 @@ def provider_feedback_pair(row):
     if not isinstance(row, dict):
         return {}
     row = compact_feedback_pair(row)
+    # Read old pairs as historical material, not numeric feedback for a
+    # differently defined current target. The stored pair is untouched.
+    from or_harness.world_model.contracts import R_OBSERVATION_VERSION, RETRIES_FUTURE_VERSION
+    impl = row.get("implementation_observation") or {}
+    impl_rule = impl.get("observation_rule_version") or next((e.get("observation_rule_version")
+        for e in row.get("risk_actual") or [] if e.get("event") == "implementation_failure"), None)
+    if impl_rule != R_OBSERVATION_VERSION:
+        impl.pop("predicted_probability_ref", None)
+        impl.pop("predicted_probability", None)
+        impl["comparable"] = False
+        row["risk_predicted"] = [e for e in row.get("risk_predicted") or []
+                                 if e.get("event") != "implementation_failure"]
+        for event in row.get("risk_actual") or []:
+            if event.get("event") == "implementation_failure":
+                for key in ("brier", "predicted", "predicted_probability", "probability_ref"):
+                    event.pop(key, None)
+                event["label_basis"] = "historical_formal"
+    fact = row.get("cost_observed_fact") or {}
+    rule = (fact.get("dimension_observation_rule_versions") or {}).get("retries") or (fact.get("conditions") or {}).get("retry_observation_rule_version")
+    if rule != RETRIES_FUTURE_VERSION:
+        for key in ("cost_measured", "cost_predicted", "cost_actual", "cost_log_ratio", "cost_observed_unpredicted"):
+            if isinstance(row.get(key), dict):
+                row[key].pop("retries", None)
+        for key in ("values", "values_not_scored", "lower_bounds"):
+            if isinstance(fact.get(key), dict):
+                fact[key].pop("retries", None)
     ref = _evaluation_ref(row)
     out = {}
     for key in ("evaluation_id", "prediction_id", "episode_id", "task_id",
@@ -1059,6 +1088,8 @@ def provider_paired_feedback(block, *, budget_chars=None):
     exactly what was dropped with a reference that restores it.
     """
     block = block or {}
+    risk_legends = {**(block.get("risk_reason_legend") or {}),
+                    "historical_formal": "historical formal-attempt diagnostic; not a current implementation-window label"}
     budget = (budget_chars if budget_chars is not None
               else history_feedback_budget_chars())
     before_chars = chars(block)
@@ -1082,7 +1113,7 @@ def provider_paired_feedback(block, *, budget_chars=None):
     base["provider_view_version"] = PROVIDER_FEEDBACK_VERSION
     base["provider_budget_chars"] = budget
     legend = {code: text for code, text in
-              (block.get("risk_reason_legend") or {}).items()
+              risk_legends.items()
               if code in used_risk_codes}
     if legend:
         base["risk_reason_legend"] = legend
@@ -1110,7 +1141,7 @@ def provider_paired_feedback(block, *, budget_chars=None):
         used_selection = {code for row in displayed
                           for code in row.get("selected_reason_codes") or []}
         risk_legend = {code: text for code, text in
-                       (block.get("risk_reason_legend") or {}).items()
+                       risk_legends.items()
                        if code in used_risk}
         if risk_legend:
             out["risk_reason_legend"] = risk_legend

@@ -173,6 +173,14 @@ verification with `--verification`: it is captured as `agent_reported` evidence
 on the same execution, separate from the framework checks, and creates no
 solving attempt.
 
+Before implementation, record the scored choice with `choose-next` so local
+implementation facts have a real selection anchor. Report evidenced defects,
+actually started correction rounds and honest coverage through existing action
+outcomes; preserve failure versions, repair diffs and final checks by reference.
+Success of the final execute alone does not prove a clean implementation window.
+See [build6.4 host reports](references/build64_implementation.md). These local
+reports do not consume or increase formal execution retry permission.
+
 Record verification artifacts and actual cost through the existing verify action or host usage report. A new solving method or substantially revised answer returns to plan-next and execute; verification cannot bypass binding/retry limits.
 
 `reflection_material` carries the task reference, method, artifacts, solution,

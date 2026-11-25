@@ -28,7 +28,7 @@ A new decision can draw on published calibration and completed reviews available
 |---|---|
 | `strategy_outcome_calibration.conditional_g` | Attributable passes, failures and unknowns on comparable tasks. Match the observation rule, metric, scope and known structure and execution settings |
 | `cost_evidence` | LOCAL similar executions with comparable remaining-task cost (four dimensions, missing dimensions named) plus the GLOBAL four-dimensional pre-decision distribution and prediction-vs-actual error |
-| `implementation_r_evidence` | LOCAL technical cases selected by embedding similarity and reranked by solver interface/method similarity, each with the observed labels of implementation_failure / timeout / environment_failure on one bound attempt, plus the separate GLOBAL event base rates and this model's per-event Brier performance |
+| `implementation_r_evidence` | LOCAL technical cases selected by embedding similarity and reranked by solver interface/method similarity, each with versioned selected-window implementation facts and bound-formal-attempt timeout/environment facts, plus the separate GLOBAL event base rates and this model's per-event Brier performance |
 | `prediction_execution_pairs` | Prior predictions paired with performed methods, checks, measured results, failures and comparability notes |
 | `history_retrieval` | The frozen retrieval record: embedding backend, per-view similarity floors, the query views, admission/pool counts and degradation (when local history is unavailable) |
 | `prediction_reminders` | Applicable risk and interval observations. Global G and C residuals remain available in calibration diagnostics |
@@ -99,7 +99,20 @@ decision starts its own window. Raw usage, budgets and historical `llm_tokens`
 still mean input plus output. They cannot substitute for output-token evidence
 or its normalization scale. See [generated-token observations](strategy_outcome.md#4-budgets-stops-and-archiving-an-interrupted-run).
 
-R uses the one-attempt technical-failure convention `wm-r-max-event/1` (observations under `wm-r-technical/1`). R is the MAXIMUM single-event probability over the events every ranked candidate supplies validly: `implementation_failure` (the harness's code/API path fails or the result cannot be delivered), `timeout` (the harness wall-clock limit interrupts the attempt before a usable result; a solver returning a usable result at its own time limit is NOT this event) and `environment_failure` (dependencies, licences, permissions, sandbox policy or an unavailable external service block the attempt; ordinary code errors are not this event). Each probability must be a finite JSON number in `[0,1]`; an explicit zero is a supplied value. The set E is COMMON: an event a participant left unknown or gave an unusable probability is omitted for everyone, and when E is empty R is omitted for all participants. A duplicate event or an illegal probability makes that event unknown, never a coerced or averaged number. R is a maximum single-item risk score, NOT a joint failure probability; no joint or maxed Brier is computed from it. Other event predictions remain diagnostics. Predictions archived before the multi-event convention keep their original single-event `wm-r-technical/1` meaning. See [technical R observations](episode_closeout.md#technical-r-observations) and [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
+R uses `wm-r-max-event/2` with implementation observations under
+`wm-r-implementation-window/1`. Implementation_failure means an evidenced
+substantive defect during the selected candidate's implementation/execution/
+necessary technical verification, including repaired local and recovered internal
+defects. Its window starts at the actual choice action and ends at completion or
+the next formal decision. Zero requires actual implementation and complete
+coverage; final execute success alone is insufficient. Timeout and
+`environment_failure` retain their bound formal execution scopes. R still takes
+the maximum valid per-event probability common to every ranked candidate,
+never a joint probability or a sum. Probabilities remain finite JSON numbers in
+[0,1]; missing, duplicate or invalid values stay Unknown. Original
+`wm-r-technical/1` receipts and `wm-r-max-event/1` predictions keep their archived
+formal definitions. No old/new labels or numeric feedback are pooled. See the
+[build6.4 contracts, bindings and host interface](build64_implementation.md).
 
 The candidate can cover an `attempt` or a `strategy_window` spanning the declared modelling, execution, repair and verification activities. Window scoring requires a matching task, episode and strategy, ended linked attempts, and `trace.comparable=True`. Read coverage and auxiliary cost when inspecting a window total.
 
@@ -119,14 +132,16 @@ Formal R.timeout still asks whether the bound attempt was interrupted;
 `runtime_eligible=false` on a pre-runtime rejection prevents using its zero label
 as evidence that an algorithm ran without timing out. See [diagnostics](commands.md#submission-and-runtime-diagnostics).
 
-For C, `cost.retries` under `remaining_to_task_end` predicts the expected
-additional solve attempts AFTER this prediction's bound execution. It may be
-a non-negative fraction or zero. The frozen convention is
-`cost_scope.retries_convention.observation_rule_version` =
-`wm-retry-additional-attempts/1`. Execution records separately store 0/1
-increments within the same task/episode: A/B/C gives 0/1/1, an episode total
-of 2, and per-decision future actuals of 2/1/0. See [retry observations](episode_closeout.md#4-the-per-field-evaluation)
-for unknown evidence and historical conventions.
+For C, `cost.retries` under `remaining_to_task_end` predicts additional
+corrective/retry rounds actually started from this prediction's decision anchor
+through task termination, including later strategy rework. Initial coding,
+probes and multiple edits within one round do not add rounds. Continuous formal
+failure → local repair → resubmission counts once. The convention is
+`wm-retry-corrective-rounds/1`; complete host coverage is required for a numeric
+actual, otherwise a lower bound/Unknown is retained. Expected fractions and zero
+are valid; there is no 0.1 default or floor. Formal execution increments and
+retry permissions remain separate under `or-retry-increment/1`. Archived
+`wm-retry-additional-attempts/1` predictions retain their original target.
 
 ### H+ and induction
 

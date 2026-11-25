@@ -701,7 +701,13 @@ class TestFutureRetryObservation(CCase):
     def plan_attempt(self, name, *, predicted=0, solver='python', episode='ep1'):
         self.seed_host(episode)
         self.provider.payload['cost']={'retries':predicted}
-        return planned_prediction(self.h,self.task,{'strategy_id':name,'solver':solver,'method':REUSE},episode)
+        # Archived formal-attempt contract regression. Current corrective
+        # rounds (including host coverage) are tested in test_build64_implementation.
+        from or_harness.world_model.contracts import RETRIES_FORMAL_VERSION
+        prediction = planned_prediction(self.h,self.task,{'strategy_id':name,'solver':solver,'method':REUSE},episode)
+        prediction.trace.model_info['cost_observation_rule_versions']['retries'] = RETRIES_FORMAL_VERSION
+        self.h.strategy_predictions._save(prediction)
+        return prediction
 
     def execute_attempt(self,prediction,*,crash=False,record=True):
         import json
@@ -721,7 +727,7 @@ class TestFutureRetryObservation(CCase):
         return execution
 
     def test_three_decisions_measure_increments_and_future_attempts_independently(self):
-        from or_harness.world_model.contracts import RETRIES_FUTURE_VERSION,RETRIES_INCREMENT_VERSION
+        from or_harness.world_model.contracts import RETRIES_FORMAL_VERSION as RETRIES_FUTURE_VERSION,RETRIES_INCREMENT_VERSION
         predictions=[];records=[]
         for index,solver in enumerate(('python','highs','python')):
             p=self.plan_attempt('ABC'[index],predicted=2.5 if index==0 else 0,solver=solver)
@@ -747,7 +753,7 @@ class TestFutureRetryObservation(CCase):
         self.assertEqual([facts[p.prediction_id]['baseline_execution_id'] for p in predictions],[r.execution_id for r in records])
         self.assertEqual([len(facts[p.prediction_id]['additional_execution_ids']) for p in predictions],[2,1,0])
         before=self.h.calibration_summary()['conditional_cost']['coverage']['retries']
-        self.assertEqual((before['n_actual'],before['n_predicted'],before['n_error']),(3,3,3))
+        self.assertEqual((before['n_actual'],before['n_predicted'],before['n_error']),(0,0,0))
         from or_harness.core.storage import StorageError
         for r in records:
             with self.assertRaises(StorageError):self.h.record(r)
@@ -815,7 +821,7 @@ class TestFutureRetryObservation(CCase):
         self.assertEqual(observed[predictions[1].prediction_id]['observation_rule_version'],RETRIES_LEGACY_VERSION)
         self.plan_attempt('next-task',episode='next')
         evidence=self.provider.requests[-1]['prediction_context']['cost_evidence']
-        self.assertTrue(evidence['cases'])
+        self.assertFalse(any('retries' in c.get('cost', {}) for c in evidence['cases']))
         # Only the current retry rule may supply the retries target. A legacy
         # retry count is not re-read as the new remaining-task forecast.
         for case in evidence['cases']:

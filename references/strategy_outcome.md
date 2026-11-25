@@ -285,25 +285,22 @@ chain. Failed and interrupted attempts count; replanning and rechecking an
 existing execution do not. Recording the same execution again does not add
 another attempt.
 
-In a world-model `remaining_to_task_end` forecast, `cost.retries` is instead
-the expected number of solve attempts needed AFTER the bound attempt. That
-attempt is the baseline. Non-negative fractions and explicit zero are valid.
+In a current `remaining_to_task_end` forecast, `cost.retries` predicts the
+expected number of additional corrective/retry rounds started from that
+prediction's decision through task termination, including later strategy rework.
+Initial implementation is excluded; a failure, local repair and resubmission
+in one continuous round count once. Use nonnegative fractions, explicit zero or
+Unknown, without a 0.1 default/floor. The request freezes
+`wm-retry-corrective-rounds/1` under `cost_scope.retries_convention`; the trace
+keeps `cost_observation_rule_versions.retries`. Complete host coverage is needed
+for a comparable actual; partial observations retain a lower bound.
 
-| Actual attempt, with a decision before each | Execution retry increment | That decision's future additional attempts |
-|---|---|---|
-| A | 0 | 2 |
-| B | 1 | 1 |
-| C | 1 | 0 |
-
-The episode budget totals 2 retries. Close-out counts subsequent distinct
-execution identities rather than summing the baseline's and later attempts'
-increments. The request freezes `wm-retry-additional-attempts/1` under
-`cost_scope.retries_convention`; prediction traces retain it in
-`cost_observation_rule_versions.retries`. Historical predictions without this
-version retain their original increment-sum meaning. Missing execution-chain
-or termination evidence leaves the new observation unknown with a reason.
-Zero predictions and actuals still support absolute and signed error;
-log-ratios require both values to be positive.
+Formal execution increments/quotas still use their original 0/1 accounting and
+do not count local repair events. Archived `wm-retry-additional-attempts/1`
+forecasts keep their original formal-attempt definition without mixing with new
+corrective counts. Other C dimensions/normalization/weights stay unchanged.
+See [build6.4 host reports and examples](build64_implementation.md). Absolute and
+signed errors accept zeros; log errors require positive values on both sides.
 
 **Four honest states** (`orx budget` prints `result.status`):
 

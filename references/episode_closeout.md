@@ -36,8 +36,8 @@ An external Runner must let the solving agent finish the final attributed check 
 The action log and execution records supply the observed results for each bound prediction.
 
 - **Benefit** uses the prediction's declared metric, unit, and scope. A strategy window uses the last qualified in-scope attempt for its solution observation. The original-task check is reported under `evaluations[].benefit.task_check` alongside solver quality.
-- **Cost** uses `ExpectedCost.scope`. Add cumulative resource measurements once per attempt, including failed attempts. New remaining-scope `retries` counts additional attempts after the bound baseline, rather than summing execution increments. Read `n_measured` and `complete` before comparing a value.
-- **Risk** uses the observation unit for each [risk event](#the-risk-event-vocabulary-wm-events4). Technical R reads the specific bound attempt.
+- **Cost** uses `ExpectedCost.scope`. Add cumulative resource measurements once per attempt, including failed attempts. Current remaining-scope `retries` counts started corrective rounds from the decision anchor with complete host coverage, rather than summing execution increments. Read `n_measured` and `complete` before comparing a value.
+- **Risk** uses the observation unit for each [risk event](#the-risk-event-vocabulary-wm-events4). Implementation R reads the selected candidate window; timeout/environment R read the bound formal attempt.
 
 | Cost scope | Measurements |
 |---|---|
@@ -49,18 +49,17 @@ For `remaining_latency_s`, use a matching explicit span when available, or deriv
 
 ## 4. The per-field evaluation
 
-For new `retries` forecasts (`wm-retry-additional-attempts/1`), three executions
-record increments 0/1/1, but predictions before A, B and C observe future
-additional attempts 2/1/0. The episode retry budget totals 2. The real bound
-execution establishes each baseline, even when strategies or solvers change.
-A confirmed episode close-out or task termination seals the discrete attempt
-chain; it does not establish an end-to-end wall-clock duration. Missing
-receipts, unresolved chronology or an unconfirmed ending leave this count
-unknown. Failures and staged interrupted attempts remain in the chain;
-duplicate records and checks do not add attempts. Legacy forecasts keep their
-original convention and are excluded from the new retry reference ranges.
-`predicted=0, actual=1` has absolute and signed error 1; `0` versus `0` has
-error 0. Both are evaluable, with no manufactured log-ratio.
+Current `retries` forecasts use `wm-retry-corrective-rounds/1`: count distinct
+extra correction/retry rounds started from this decision through confirmed task
+termination, including later strategy rework. Initial implementation and planned
+substeps are excluded. A formal failure, local repair and resubmission in one
+continuous round count once. Complete host corrective coverage is required;
+otherwise report a lower bound/Unknown without scoring it as a complete actual.
+Archived `wm-retry-additional-attempts/1` forecasts keep their original additional
+formal-attempt target; execution budget increments remain separate. See
+[host fields, deduplication and compatibility](build64_implementation.md).
+Absolute/signed errors include zero values; log errors require positive values
+on both sides and report their coverage.
 
 | Field | Evidence for comparison |
 |---|---|
@@ -94,7 +93,7 @@ Calibration uses the newest closed task-episodes (default 50, `OR_CALIBRATION_WI
 
 ### Observation rules
 
-The current summary uses `wm-obs/4` and the event vocabulary `wm-events/4`. Each evaluation retains its own rule, including `wm-g-faithful/1`, `wm-r-technical/1` (the single-event legacy R rule) or `wm-r-max-event/1` (the multi-event R scoring convention), and timeout samples carry `timeout@wm-events/4`. Read historical groups by the version they report. An absent rule version is grouped under `(unknown)`. For solver quality under `wm-obs/2` and later, `normalized_objective_gap` uses `1.0` for `optimal` or `1 - gap` when observed. Check verdicts travel separately.
+The current summary uses `wm-obs/4` and the event vocabulary `wm-events/4`. Each evaluation retains its own rule, including `wm-g-faithful/1`, historical formal `wm-r-technical/1` / `wm-r-max-event/1`, and current implementation `wm-r-implementation-window/1` / `wm-r-max-event/2`, and timeout samples carry `timeout@wm-events/4`. Read historical groups by the version they report. An absent rule version is grouped under `(unknown)`. For solver quality under `wm-obs/2` and later, `normalized_objective_gap` uses `1.0` for `optimal` or `1 - gap` when observed. Check verdicts travel separately.
 
 ### Technical R observations
 
@@ -108,23 +107,39 @@ timeout. `technical_r.runtime_coverage` exposes started/not-started/unknown
 attempts separately; the formal timeout event, aggregation and historical
 metrics are unchanged. See [executor diagnostics](commands.md#submission-and-runtime-diagnostics).
 
-R before execution is a maximum single-item technical-risk score for one attempt. Three R events can supply it: `implementation_failure` (the harness's own code/API path fails or the result cannot be delivered), `timeout` (the harness wall-clock limit interrupts the attempt before a usable result; a solver that stops at its own time limit and still returns a usable result is NOT this event) and `environment_failure` (dependencies, licences, permissions, sandbox policy or an unavailable external service block the attempt; ordinary code errors are not this event). Each probability must be a finite JSON number in `[0,1]`; zero is valid. For the ranked candidates the framework takes the COMMON event set: R = `max(p(event))` over the events every participant supplied validly. A missing/unknown event is dropped for everyone, never imputed as 0; when the set is empty, or the predictions were archived under different R conventions, R is omitted for all participants. R is a maximum single-item risk score, NOT a joint failure probability, and no joint/max Brier is computed from it. Other event probabilities remain diagnostics. See [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
+R is the maximum valid single-event probability common to every ranked
+candidate, never a joint probability. Current scoring is `wm-r-max-event/2`.
+Probabilities remain finite JSON numbers in [0,1]; missing/invalid/duplicate
+events stay Unknown. The event set and U coefficients do not change.
 
-For each recorded attempt, `execution_features.technical_outcome` holds the executor's receipt for the `implementation_failure` label under `wm-r-technical/1`. Close-out reads the ONE bound execution, including when G covers a strategy window, and labels all three R events on that same attempt: read `evaluations[].risk.implementation_observation` for the implementation label and `evaluations[].risk.r_events_observation.events` for the per-event labels, bases and predicted probabilities of the multi-event convention. Later retries never enter these observations; an attempt and its repair get separate labels.
+`evaluations[].risk.implementation_observation` uses
+`wm-r-implementation-window/1`: actual selection through implementation,
+execution and necessary technical verification, ending at completion or the
+next formal strategy decision. One confirmed substantive defect supplies 1,
+even when repaired locally or recovered internally. Zero needs actual
+implementation and complete coverage; final execute success alone is insufficient.
+Expected handling, probes and confirmed environment/framework faults do not label
+implementation risk. Timeout/environment labels in `r_events_observation.events`
+retain their bound formal execution scopes.
 
-| Label | Executor evidence |
-|---|---|
-| `1` | Confirmed code construction failure, such as a syntax error before launch. A failed attempt with a code/API exception, a result-protocol failure, or an abnormal script/solver exit without evidence of external blockage also supplies 1. For example, `optimal` with a required objective missing is a protocol failure. |
-| `0` | The process exits with code 0 and delivers a readable, protocol-valid result with a status other than `error` or `timeout`. A valid `infeasible` result qualifies, as does a valid result delivered after a caught or logged exception. |
-| Unknown | No attributable execution, external blockage such as a missing dependency, an ordinary time limit, or insufficient evidence of the cause. |
+`execution_features.technical_outcome` is still the separate formal submission
+diagnostic under `wm-r-technical/1`. It can report formal success 0 after a valid
+result, independently of a new implementation-window positive or Unknown.
+Existing sourced `technical_failure_evidence` and archived prediction conventions
+remain readable without rewriting history.
 
-For an attempt that ran and did not time out, the executor checks for successful delivery before classifying a logged exception. On the failure path, a specific code exception such as `ValueError: invalid network flow indices` supplies code evidence. Timeout, reported infeasibility, and original-task check failure have their own event records.
+`technical_r` reports current selected-window coverage, known labels, per-event
+Brier/performance and `selected_without_execution` gaps. Selected implementations
+abandoned before execute retain facts without a fabricated formal Evaluation.
+`historical_formal` keeps old formal statistics separate. Calibration groups
+include observation/scoring versions; old negatives do not become new negatives.
 
-For a timed-out execution, a sourced cause assessment in `technical_failure_evidence` can supply label 1. Use `kind="code_caused_timeout"`, nonempty `source` and `assessment`, and `evidence_refs` to this execution's `artifacts.submitted_script` plus `artifacts.stderr_clip` or `artifacts.workspace_result`. Each cited artifact must have a saved hash. The assessment supplies the causal judgment and the framework checks its fields and references.
-
-For earlier execution records, the framework can derive technical facts from captured error, result, or protocol evidence. Historical predictions without the technical R convention still use the `error_class == 'model'` event rule for their own comparisons; predictions archived under the multi-event convention are never retro-fitted with the new events. Current implementation Brier is grouped under `implementation_failure@wm-r-technical/1`; the multi-event Brier samples are reported PER EVENT against the bound attempt and are never pooled into a joint or maximum score.
-
-`technical_r` reports `n_actual_attempts`, `n_known_labels`, `n_reported_probabilities`, and `n_scorable`. Attempt counts cover recorded executions in the closed window, including attempts whose R was omitted or never predicted. Each execution is counted once per task-episode. Brier uses the original probability of each comparable prediction with a known same-rule label. `coverage_by_event` and `events` report, for EACH of `implementation_failure`, `timeout` and `environment_failure`, the attempts with a known label, the reported probabilities, the scorable pairs and the distinct-episode support; the per-event samples come from the same bound attempt and later retries are not mixed in. The `aggregation` block states that R is a maximum over the common valid events and that no joint/max Brier exists. Groups use solver interface, family, and problem class, and each group carries the three events' occurred/not_occurred/unknown counts so the historical material includes timeout and environment facts. Later predictions receive `implementation_r_evidence` as LOCAL technical cases: the shared embedding retrieval recalls similar executions and the R rerank prefers the same solver interface, then similar candidate method, then general similarity (up to 10 cases). Each case carries the three events' observed labels on ONE bound attempt, the predicted probability and Brier when a closed pair recorded them, the recorded failure classes and `reusable_script` when a tested script exists; `evidence_status` says `closed_pair` or `execution_only` (the latter is a visible execution fact that is NOT a calibration sample). A separate `global_event_base_rates` block is the broad background over all executed attempts in the CLOSED window: per event it keeps occurred/not_occurred/unknown, `n_known_labels`, and `occurrence_rate` (denominator = known labels only; unknown is not a non-occurrence, and a missing label leaves the rate `None`). `global_prediction_performance` reports the model's per-event scorable count, mean Brier and distinct-episode support. Neither global block is the candidate's conditional probability, neither is called a joint probability, and an executed-but-unclosed attempt or a prediction-stage request timeout never enters the calibration denominator. When no local case exists, `support: global_base_rates_only` still gives that weak background.
+The shared evidence pool still supplies candidate-aware local cases through the
+existing retrieval algorithm. `implementation_evidence` adds concise referenced
+failure/repair/check facts to Execution Evidence, actual provider requests,
+reflection and H+=1 induction material. Only matching-version labels/probabilities
+provide current numeric feedback; historical formal diagnostics remain qualitative.
+See [build6.4 contracts and Runner duties](build64_implementation.md).
 
 ### C observations
 

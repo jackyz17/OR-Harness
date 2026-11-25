@@ -2075,6 +2075,19 @@ class PredictionContext:
         # Older frozen contexts may still carry execution-agent metadata.
         # Keep their stored source intact; it is no longer prediction input.
         view["solving_context"].pop("execution_host", None)
+        # Keep current-task host facts concise too. The frozen context and
+        # source actions retain full artifact references; no transcript is
+        # expanded into the actual provider request.
+        from or_harness.world_model.implementation_facts import compact_evidence
+        for progress in (view["solving_context"].get("task_progress") or {}).values():
+            value = progress.get("value") if isinstance(progress, dict) else None
+            if not isinstance(value, dict) or not isinstance(value.get("implementation_facts"), list):
+                continue
+            facts = copy.deepcopy(value.pop("implementation_facts"))
+            for fact in facts:
+                fact["source_action_ids"] = [progress["evidence_ref"]] if progress.get("evidence_ref") else []
+                fact["corrections"] = [fact["correction"]] if fact.get("correction") else []
+            value["implementation_evidence"] = compact_evidence({"facts": facts})
         if "execution_context" in view["solving_context"]:
             from or_harness.world_model.cost_signal import normalize_execution_context
             view["solving_context"]["execution_context"] = normalize_execution_context(

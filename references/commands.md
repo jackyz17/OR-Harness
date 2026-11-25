@@ -448,8 +448,11 @@ Read episode usage or save limits with `--declare`. Tokens, tool calls, solver r
 `execute` automatically observes each real attempt's retry increment within
 the task/episode, including failures and changes of strategy or solver.
 Three attempts record 0/1/1 and consume 2 retries. The corresponding
-world-model remaining-cost predictions are for future additional attempts,
-with actuals 2/1/0; see [retry cost semantics](strategy_outcome.md#4-budgets-stops-and-archiving-an-interrupted-run).
+current world-model `retries` predicts started corrective/retry rounds from
+its own decision through task termination (`wm-retry-corrective-rounds/1`).
+It needs separate coverage and must not be backfilled as a formal increment.
+Use [action outcome reports](build64_implementation.md#minimal-host-reports) for
+local defects, corrections and coverage; formal execution limits are unchanged.
 
 ## 7. Close out and inspect calibration
 

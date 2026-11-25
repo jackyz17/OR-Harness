@@ -168,7 +168,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
             row["discovery"] = {"similarity": score, "meaning": "candidate_for_comparison"}
         row_limit = min(6000,max(500,payload_limit//3))
         if chars(row)>row_limit:
-            row = {k:row[k] for k in ('execution_id','task_id','identity','method','method_source','outcome','task_check_state','cost','cost_measured','measurement_scope','inspect_hint','cursor','attempts_of_task','independent_task','changes')}
+            row = {k:row[k] for k in ('execution_id','task_id','identity','method','method_source','outcome','task_check_state','cost','cost_measured','measurement_scope','inspect_hint','cursor','attempts_of_task','independent_task','changes','implementation_evidence')}
             row['method'] = atomic(row['method'],row['inspect_hint']+' #method',max(100,row_limit//3))
             row['identity'] = {k:row['identity'].get(k) for k in ('base_id','basis')}
         relation = "current_task" if target is out["material"] else (
