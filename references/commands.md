@@ -219,6 +219,8 @@ Use `--adapted-from` and `--adaptation` to cite past cases. Use `--used-entry-id
 
 Check original task requirements against a staged or recorded execution. `check-task` writes a `verify` action and `execution_features.task_check`. It never runs the solver again, so a corrected check or a late check on the same execution does not create a solving attempt or consume a retry.
 
+Normal order is execute → necessary self-check/verification → final `check-task` with supported `g_attribution` (or honest Unknown) → `record` → `close-episode`. Each call makes a new check revision. A later check without attribution does not inherit the old assessment, even if its verdict is the same. Avoid rechecking unchanged evidence; a necessary changed check must carry its own current attribution or remain Unknown.
+
 **Before answering** The self-check is the agent's, not the tool's: check the model against the original task, then check the result against both. A solver's `optimal` proves only that the written model was solved. Use the base check on every task; add targeted enhanced checks only for concrete reasons, continue while an unresolved doubt can still change the conclusion, and stop when the evidence is sufficient. Do not default to a complete independent re-solve, and check the model-to-statement correspondence before trusting a second algorithm or solver. See [self-check detail](self_check.md) for the two layers, failure handling and examples. `--check` takes a JSON object or JSON file containing the computable bases and optional G/H+ evidence annotations; it is not the whole self-check.
 
 | Check key | Use |

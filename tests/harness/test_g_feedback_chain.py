@@ -301,3 +301,57 @@ class TestGFeedbackChain(GCase):
         self.assertEqual(global_['n_observed'], 0)
         self.assertEqual(global_['n_scored'], 0)
         self.assertEqual(global_['unknown']['n'], 1)
+
+    def test_final_check_precedes_record_and_closeout_and_original_g_needs_no_recovery(self):
+        for episode, fidelity, label in (('normal-known', 'faithful', 1),
+                                         ('normal-unknown', 'unknown', None)):
+            with self.subTest(episode=episode):
+                p = self.predict_g(episode=episode)
+                original_at_live_read = []
+
+                def inspect_original(harness, stored):
+                    if stored.prediction_id == p.prediction_id:
+                        original_at_live_read.append(stored.benefit.get('observed'))
+                    return _live_evaluation(harness, stored)
+
+                with patch.object(self.h, 'check_task_result', wraps=self.h.check_task_result) as check, \
+                        patch.object(self.h, 'close_episode', wraps=self.h.close_episode) as close:
+                    record = self.run_g(p, record=False)
+                    self.assertEqual((check.call_count, close.call_count), (0, 0))
+                    checked = self.submit(record, self.declaration(record, method_fidelity=fidelity))
+                    self.h.record(record)
+                    self.assertEqual((check.call_count, close.call_count), (1, 0))
+                    with patch('or_harness.world_model.episode_closeout._live_evaluation',
+                               side_effect=inspect_original):
+                        closed = self.close_g(episode)
+                    self.assertEqual((check.call_count, close.call_count), (1, 1))
+                self.assertTrue(closed['closeout'])
+                self.assertTrue(original_at_live_read)
+                self.assertEqual(set(original_at_live_read), {label})
+                saved = get_evaluation(self.h.store, closed['evaluations'][0]['evaluation_id'])
+                self.assertEqual(saved.benefit.get('observed'), label)
+                self.assertEqual(saved.benefit['attribution_ref'], checked['g_assessment_ref'])
+                self.close_g(episode)
+                self.assert_feedback(self.next_view('next-' + episode), p.prediction_id,
+                                     record.execution_id, label)
+        groups = self.h.calibration_summary()['conditional_g']
+        self.assertEqual(sum(g['n_execution_units'] for g in groups), 2)
+        self.assertEqual(sum(g['passed'] for g in groups), 1)
+        self.assertEqual(sum(g['unknown'] for g in groups), 1)
+
+    def test_plain_recheck_creates_a_new_revision_without_inheriting_old_attribution(self):
+        p = self.predict_g()
+        record = self.run_g(p, record=False)
+        first = self.submit(record)
+        last = self.h.check_task_result(record.execution_id, {'semantic_probe': {
+            'path': 'execution_features.solution_variables.CFC', 'equals': 1}})
+        self.assertNotEqual(first['action_id'], last['action_id'])
+        self.assertNotIn('g_assessment_ref', last)
+        self.assertEqual(get_value(self.h.store, first['g_assessment_ref'])['check_action_id'],
+                         first['action_id'])
+        self.h.record(record)
+        closed = self.close_g()
+        benefit = closed['evaluations'][0]['benefit']
+        self.assertNotIn('observed', benefit)
+        self.assertEqual(benefit['task_check']['action_id'], last['action_id'])
+        self.assertIn('missing or invalid sourced G attribution', benefit['reason'])

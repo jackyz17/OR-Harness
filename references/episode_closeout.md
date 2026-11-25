@@ -17,11 +17,19 @@ orx close-episode --task t1 --episode ep1 [--terminal completed|failed|aborted|b
     [--finish-action ACTION_ID] [--min-samples N]
 ```
 
-Finish the [pre-submission self-check](../SKILL.md#3b-self-check-the-answer-then-decide-to-repair-re-solve-or-commit), record each attempt, and commit the answer. A framework `passed` verdict covers only the declared checks; a failed check or a broken verification script is analysed and corrected on the same execution before the episode is closed, and it is never silently treated as a pass. Pass the actual terminal state. Use `--finish-action` to link the recorded `finish_task` event and its end time. In benchmarks, the evaluator scores the committed answer against the reference.
+Use the normal order: execute → necessary self-check/verification → final `check-task` with supported G attribution (or honest Unknown) → record → commit the answer → close episode. This lets the first Evaluation use the final check's facts, without post-closeout recovery. A framework `passed` verdict covers only the declared checks. Analyse a failure or broken verifier and record unresolved findings honestly; do not silently call it a pass or delay a failed/aborted closeout merely to force a numeric G label. Pass the actual terminal state. Use `--finish-action` to link the recorded `finish_task` event and its end time. In benchmarks, the evaluator scores the committed answer against the reference.
 
 Close-out evaluates bound predictions, publishes calibration, and records rule use. It also returns `entry_usage`: the entries this episode actually adopted (version resolved from their frozen `used_entries`), their read-time utility totals, and `effect_review.pending` — this episode's adoptions with no current valid effect judgement. Record those judgements with `--attribute-effect` on the same close call (valid for H+ = 0 too); a `refuting` judgement keeps the existing default pause, and `keep`/`demote`/`promote` is an explicit management decision. `retire` remains explicit. Read `task_checks` for counts by verdict and for unchecked attempts. If the result is `state="pending"` with `closeout: null` (exit 2), finish the listed `unfinished_actions` and retry. Repeated close calls return the saved record.
 
 During library building, take the review IDs from `result.induction_schedule.pending_ids` and follow the [induction handoff](induction.md#take-a-required-review).
+
+### Final check revisions and external runners
+
+Each `check-task` call creates a new revision. G assessment is bound to that revision's action and signature; it is not automatically inherited. If facts, acceptance basis or evidence really change, submit the matching assessment with the new check or leave G Unknown. Do not add a plain recheck after a valid attributed check on unchanged evidence.
+
+The framework's `execute` and `record` do not call `check_task_result` or `close_episode` for the agent. The repository's `experiments.hplus.run_comparison` is a synthetic callback runner: its `attempt` callback must finish checks and any sourced G attribution before returning; the runner then records and closes. It is not the external build6 Stage 2/3 Runner.
+
+An external Runner must let the solving agent finish the final attributed check before automatic record/closeout, avoid a cleanup recheck that replaces that revision, and retain the returned execution/check action IDs and `g_assessment_ref` for audit. Inspect the first stored Evaluation before any rebuild when auditing normal G generation. Unknown may close normally. Keep live rederivation for genuinely late evidence, reference-conflict resolutions and historical corrections, not as the standard submission order. No extra model call, automatic attribution inheritance or closeout gate is needed.
 
 ## 3. The real outcome summary
 

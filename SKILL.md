@@ -108,7 +108,10 @@ locate the finding: task reading? model? implementation? recording? the check?
    +-- model/implementation wrong ----------> new `plan-next`, then execute
    |
    v
-self-check done --> commit (record the attempt, close the episode)
+self-check done --> final check-task + supported G attribution (or Unknown)
+   |
+   v
+record the attempt --> commit the answer --> close the episode
 ```
 
 A second solver on the same wrong model still returns the wrong answer: check
@@ -134,7 +137,9 @@ orx check-task EX --check check.json [--verification verify.json]
 orx record --from-staged EX
 ```
 
-`result.g_assessment_ref` acknowledges the saved attribution. Invalid or
+Submit this final check before `record` and `close-episode`; do not repeat a
+completed check on unchanged evidence. `result.g_assessment_ref` acknowledges
+the saved attribution for that check revision. Invalid or
 misplaced attribution is rejected before the check is written. `check-task` is
 the sole G submission interface; `action --report verify` only reports an
 external action. The framework derives G from the saved facts at close-out.
@@ -166,7 +171,7 @@ execution; a re-check on the same execution is not a new attempt. See
 
 ### 4. Commit the answer and close the episode
 
-Commit the final result and state what the self-check covered: the check verdict, any verification you attached, and anything you could not check. Close with the actual terminal state (`completed`, `failed`, `aborted`, or `budget_exhausted`). T is the task ID.
+After the final check (including supported G attribution or honest Unknown) and record, commit the result and state the self-check's coverage. Then close with the actual terminal state (`completed`, `failed`, `aborted`, or `budget_exhausted`). T is the task ID. Do not make closeout the normal point for collecting G attribution; do not run another plain `check-task` after the final attributed check unless facts or the acceptance basis changed.
 
 ```bash
 orx close-episode --task T --episode E --terminal STATE

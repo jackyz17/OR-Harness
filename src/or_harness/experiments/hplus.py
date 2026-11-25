@@ -34,7 +34,10 @@ def run_comparison(*, initial_home, training_tasks, test_tasks, output,
     """Callbacks are shared across arms; the framework alone changes scheduling.
 
     propose(h, task) returns the usual candidate. attempt(h, task, prediction)
-    uses execute/check-task and returns its actual ExecutionRecord. review
+    completes execute/self-check/final check-task (with sourced G attribution
+    or honest Unknown) and returns its actual ExecutionRecord. It must finish
+    that final check before returning: this runner records and closes next.
+    Do not close inside attempt or repeat its check during cleanup. review
     (h, material, job) returns normal induce arguments. It can arrange sourced
     historical regression checks, never invent future labels. Each question
     has one predicted attempt in this minimal runner. General runners can
