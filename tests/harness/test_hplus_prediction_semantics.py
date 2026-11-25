@@ -29,7 +29,8 @@ CASES = (
     ("plain_translation", 0,
      "Write variables, the stated capacity constraint and profit objective.",
      "No specific reusable mechanism beyond literal task translation.",
-     "mere task translation without a specific transferable mechanism"),
+     "Use 0 for mere task translation, ordinary solver use or routine checking when no specific "
+     "transferable mechanism or finding is identified"),
     ("classical_structural_applicability", 1,
      "Use min-cost flow for a network with integral capacities and conserved flow.",
      "Integral network structure may avoid integer branching in future matching tasks.",
@@ -177,6 +178,9 @@ class TestHplusPredictionSemantics(unittest.TestCase):
                     'Future premises must be recognizable before solving',
                     'prospective generalization, not completed induction',
                     'Do not require advance proof of the mechanism or transferability, multiple independent executions',
+                    'claim states one concise potential reusable mechanism and the future decision it could change',
+                    'when relevant history contributes, the shared mathematical or operational relationship',
+                    'minimum feasible check that could support, refine or challenge that mechanism in this run',
                 ):
                     self.assertIn(policy, flat(prompt))
                 self.assertNotIn('SIRL', prompt)
