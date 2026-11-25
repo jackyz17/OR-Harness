@@ -136,9 +136,11 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         "budget": {"chars_limit": budget_limit, "chars_used": 0, "truncated_by_budget": False,
             "truncated_by_limit": limit is not None and len(eligible) < len(scoped),
             "omitted_execution_ids": [], "omitted_knowledge_count": 0, "next_cursor": None},
-        "guidance": {"structural_contrast":"Compare necessary constraint relations, actual methods and checked outcomes; similarity/family only find candidates.",
-                     "key_step_explanation":"Write when/do/expect; choose the existing ID for a revision. Shown cases are derivation material.",
-                     "boundary_check":"Choose derivation, executable checks, boundary tests or later transfer to support the claimed scope; the agent decides publication."},
+        "guidance": {
+            "structural_contrast": "First assess the frozen H+ claim against actual evidence; record hypothesis_outcome and deviation_reason separately from any different supported finding. Only visible published rules establish coverage through When/Do/Expect. Execution Evidence is induction material, not completed induction; repeated successes without a rule can support review.",
+            "key_step_explanation": "Extract a decision-changing mechanism, not a replay recipe: search-space reductions, feasible-set/optimum preservation, dominance, monotonicity, valid bounds, analytic certificates, applicability/failure boundaries or implementation repairs. Keep supported scope, evidence and future action explicit; prefer a revision when appropriate. No rule is required.",
+            "boundary_check": "Use proportionate evidence for the claim; a sufficient cheap certificate needs no full re-solve. Finite enumeration does not prove speed over MILP; tied optima need not share solution points. Continuous vertices and integer enumeration need different arguments. Preserve publication standards; do not claim unmeasured performance gains.",
+        },
     }
     out['selection']={'requested_execution_ids':execution_ids or [],
         'unavailable_execution_ids':[eid for eid in requested if eid not in available],

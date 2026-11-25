@@ -31,7 +31,7 @@ H+ is not a judgement that the task is difficult, that the candidate will succee
 
 A positive signal predicts an opportunity worth review, not a guarantee of publishable knowledge. Keep `claim` to a concise learning hypothesis, ground it in the frozen input and current knowledge through `basis`, and use `verification_conditions` for a minimum feasible check. It need not prove the mechanism, cross-task transfer, multi-task validation or eventual publication in advance. Formal knowledge validation and publication standards remain the offline review's responsibility.
 
-Distinguish a method's familiarity in operations research, its coverage in the current strategy library, and its usefulness to a future agent. A classic, common or mature method is not disqualified because the domain already knows it. Specific applicability conditions, operating mechanisms, boundaries or implementation experience can still offer learning value.
+Distinguish a method's familiarity in operations research, its coverage in the current strategy library, and its usefulness to a future agent. Textbook practice, a standard OR technique, a generally known algorithm or a conventional solver/verification method is background, not a reason by itself for H+=0. Specific applicability conditions, operating mechanisms, boundaries or implementation experience can still offer learning value.
 
 Turning the task statement into decision variables, an objective and constraints is NECESSARY SOLVING WORK, not a knowledge increment by itself. These do not justify H+=1 on their own:
 
@@ -48,7 +48,11 @@ Checks and diagnostics need not be the main solver step to offer learning value.
 
 For H+=1, `claim` states the hypothesis and `verification_conditions` names a fact THIS run can check. Match the check to the claimed mechanism with minimum sufficient evidence: a complete re-solve is not the default, and a later large experiment cannot substitute for evidence from this run; but an affordable small-scale full enumeration, an original-versus-reduced-method comparison, or a targeted reproduction can verify the mechanism. A 1 requests a review; it does not guarantee a rule or a publication.
 
-For H+=0, `basis` gives the candidate-specific reason and `claim` is omitted. A covered 0 requires a visible published rule that fully covers the mechanism and no meaningful new evidence from this run; cite its actual ID, version and applicable conditions. Existing coverage alone does not exclude a meaningful scope correction or independent validation. When no concrete learning hypothesis is identified, say so directly; do not invent a rule or treat missing coverage as sufficient for 1.
+For H+=0, `basis` gives the candidate-specific reason and `claim` is omitted. A covered 0 requires the actual visible published rule's **When** (conditions, mathematical structure and prerequisites), **Do** (core mathematical or operational mechanism) and **Expect** (effect, guarantee or verification purpose) to cover the hypothesis's substantive content, with no meaningful new evidence from this run. Cite the rule ID/version and compare these three aspects. Partial coverage may leave new conditions, reductions, guarantees, implementation details or failure boundaries to learn; missing coverage alone is still insufficient for H+=1.
+
+Execution Evidence is induction material, not completed induction; Strategic Knowledge records the transferable mechanism actually abstracted and saved. Only currently visible **published strategy rules** can establish existing-knowledge coverage. Repeated successes, familiar solvers, similar objectives/terms, structural cells and embedding hits cannot substitute for one. When several executions support a concrete transferable mechanism but no corresponding rule exists, they support the opportunity for review instead of negating it. Do not justify H+=0 solely with "existing execution evidence already covers the method", "historical successful executions" or "existing solver capability". Keep these execution cases visible; if no learning mechanism exists, explain that lack of value rather than claiming instance records are strategy knowledge.
+
+A bounded integer-enumeration rule does not automatically cover continuous-LP vertex optimality, an LP-relaxation integrality certificate or monotonicity-based variable reduction: their premises and mathematical arguments differ, even when they all involve optimisation or checking.
 
 ### Predict H+ at cold start
 
@@ -64,8 +68,8 @@ For example, take a small finite task whose full enumeration fits this run's bud
   "claim": "For fixed Y and a minimization objective increasing in X, selecting the lower feasible integer endpoint can replace full X enumeration.",
   "basis": ["The original task has finite integer bounds; the candidate uses lower-endpoint enumeration and the strategy-rule view is empty."],
   "verification_conditions": [{
-    "condition": "Compare endpoint enumeration with full enumeration on this task's finite domain using the same constraints and objective.",
-    "check_basis": "The original task inputs, candidate implementation and a captured full-enumeration check from this run."
+    "condition": "Check monotonicity and that the chosen feasible endpoints preserve the fixed-Y optimum; reuse an existing comparison if available.",
+    "check_basis": "The original constraints and objective, the endpoint derivation and the captured implementation; an affordable finite comparison may supplement these."
   }]
 }
 ```
@@ -107,7 +111,7 @@ H+=1 schedules the review; it does not prove that knowledge was gained. The revi
 
 ### Review decisions
 
-Compare, in this order:
+Extract a mechanism that changes a future decision, rather than repackaging the execution history as a generic workflow. Compare, in this order:
 
 1. the frozen `claim` and each `verification_condition`;
 2. what the actual execution and checks established — the captured script, result, check report, attached verification and the material cases;
@@ -119,7 +123,7 @@ Then choose the learning result from the evidence, not from the trigger:
 - `new_rule`: a genuinely new reusable method or boundary with enough evidence.
 - `revision`: an existing rule's scope or body is wrong or incomplete and the corrected version is supported.
 - `evidence_added`: an existing unchanged rule gains real support; no new body.
-- `already_covered`: published rules already cover the executed method; cite the actual rule version and applicable conditions.
+- `already_covered`: the actual published When/Do/Expect fully cover the proposed mechanism, with no supported increment or meaningful new evidence; cite the rule version and applicable conditions.
 - `no_new_knowledge`: the execution was a normal modelling/solving run without a reusable increment, or the hypothesis dissolved on inspection.
 - `insufficient_evidence`: the material cannot support either a rule or a supported no-increment conclusion.
 
@@ -144,6 +148,8 @@ A published strategy rule is used BEFORE solving a future task. It must be decid
 - **do**: concrete modelling or implementation steps that can be executed;
 - **expect**: the guarantee or measured effect the evidence supports.
 
+Prefer the supported mechanism that removes work or prevents mistakes: a search-space reduction, feasible-set/optimum-preserving variable reduction, dominance, monotonicity, valid bound, analytic certificate, applicability/failure boundary, or reusable implementation repair. Keep its premises, core operation, future decision and evidence explicit. If the frozen claim concerned a reduction, assess that reduction first; do not silently replace it with "enumerate everything and independently enumerate again". Another finding may be published only with its own support and an honest original-hypothesis outcome in the existing receipt.
+
 Strategic knowledge may store reusable modelling methods, solving strategies with applicability conditions, structural reductions and speed-ups, transferable code/API experience, and evidenced method-failure boundaries. It must NOT store benchmark scores, a specific test set's reference answers, a particular task's difference from a hidden reference, strategies that only work once the evaluation result is known, patches made only to pass a particular test, or rules of the form "if the benchmark reference uses domain X, use domain X". Reference answers, checkers and experiment results may be cited as POST-HOC VERIFICATION EVIDENCE, but they cannot be a premise of the strategy itself unless that condition is a real task input the future agent can see.
 
 Do not add knowledge types such as `benchmark_specific` or `modelling_translation`, and do not create a separate classification or storage for them.
@@ -157,7 +163,7 @@ Keep the existing verified / insufficient / refuted semantics and publication fl
 - a technical fact observed in a single run: keep it as a scoped technical fact;
 - an unverified generalisation: keep it as a hypothesis, not a verified rule.
 
-A single observation may be retained as evidence but must not be advertised as a proven cross-task advantage. Do not demand a second complete solve for every entry; the verification method must fit the claimed property.
+A single observation may be retained as evidence but must not be advertised as a proven cross-task advantage. Finite integer enumeration establishes a finite search, not a measured speed advantage over MILP. Independent optima may have different solution points: check feasibility and the same optimal objective, not equality of the entire solution vector. Continuous-LP vertex arguments and integer enumeration require different premises and proofs. When a cheap certificate already suffices, do not demand a second complete solve; use further checks only for an unresolved claim. Keep the existing multi-task evidence, verification and publication standards.
 
 ## Minimal submissions
 

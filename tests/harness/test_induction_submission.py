@@ -57,6 +57,21 @@ class CompactCase(BinaryCase):
 
 
 class TestCompactSubmission(CompactCase):
+    def test_delivered_material_guidance_preserves_the_hypothesis_and_mechanism(self):
+        _, record, closed = self.closed('synthetic-build62-mechanism')
+        job_id = closed['induction_schedule']['pending_ids'][0]
+        material = self.material(job_id)
+        guidance = ' '.join(material['guidance'].values())
+        for policy in ('frozen H+ claim', 'hypothesis_outcome', 'deviation_reason',
+                       'When/Do/Expect', 'not a replay recipe', 'monotonicity',
+                       'feasible-set/optimum preservation', 'analytic certificates',
+                       'No rule is required', 'needs no full re-solve',
+                       'does not prove speed over MILP', 'need not share solution points',
+                       'Continuous vertices and integer enumeration', 'Preserve publication standards'):
+            self.assertIn(policy, guidance)
+        self.assertIn(record.execution_id, [item['execution_id'] for item in material['material']])
+        self.assertIn('frozen binary', material['joint_hplus']['role'])
+
     def test_new_rule_success_uses_when_do_expect_and_candidate_by_default(self):
         p, record, closed = self.closed('compact-new')
         job_id = closed['induction_schedule']['pending_ids'][0]

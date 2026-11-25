@@ -1,4 +1,4 @@
-"""build6.1 H+ prompt and wire contracts, using synthetic fixtures only.
+"""build6.2 H+ prompt and wire contracts, using synthetic fixtures only.
 
 Responses below are SCRIPTED, not model judgements or build6 replay results.
 They check that the actual HTTP system prompt states each policy boundary,
@@ -12,6 +12,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
+from g_fixtures import GCase
 from or_harness.world_model.contracts import CapabilityGain
 from or_harness.world_model.hplus import signal_from_payload
 from or_harness.world_model.provider import HttpChatProvider
@@ -152,6 +153,121 @@ class TestHplusPredictionSemantics(unittest.TestCase):
             self.assertIn(policy, prompt)
         self.assertNotIn("STANDARD TASK TRANSLATION IS NOT AN INCREMENT", prompt)
         self.assertNotIn("ordinary, generally known step", prompt)
+
+    def test_scripted_coverage_boundaries_preserve_rule_and_execution_evidence(self):
+        # These are policy/transport fixtures, not measured model judgements.
+        integer_rule = {
+            'when': 'A small finite domain of bounded integer variables.',
+            'do': 'Enumerate all integer tuples, check constraints and independently recompute the objective.',
+            'expect': 'Find a feasible global optimum in that finite integer domain.',
+        }
+        cases = (
+            ('translation', 0, 'Translate the stated limits into constraints.', False, False),
+            ('fully-covered', 0, 'Repeat bounded integer enumeration without new evidence.', True, False),
+            ('continuous-vertices', 1, 'Verify linear optimality at vertices of a bounded continuous polytope.', True, False),
+            ('monotone-reduction', 1, 'Use objective monotonicity to eliminate an integer variable while preserving the optimum.', True, False),
+            ('relaxation-integrality', 1, 'Check a structural certificate that LP relaxation retains an integer optimum.', True, False),
+            ('execution-only', 1, 'Check a reusable modelling mechanism seen in a similar successful execution.', False, True),
+            ('textbook-mechanism', 1, 'Check integral flow structure as a reusable reason to omit integer branching.', False, False),
+        )
+        provider = HttpChatProvider('https://synthetic.invalid/v1', 'synthetic-build62-model',
+                                    'synthetic-key', temperature=0.17, max_output_tokens=512)
+        for name, decision, mechanism, published, execution_only in cases:
+            with self.subTest(case=name):
+                hits = ([{'entry_id': 'synthetic-integer-rule', 'version': 1,
+                          'publication': {'state': 'published'}, 'rule_body': integer_rule}]
+                        if published else [])
+                if execution_only:
+                    hits.append({'execution_id': 'synthetic-past-execution',
+                                 'evidence_class': 'execution_evidence',
+                                 'method_actual': {'name': mechanism}, 'status': 'optimal'})
+                request = {
+                    'prediction_protocol': 'wm-so/1',
+                    'candidate': {'strategy_id': 'synthetic-' + name,
+                                  'method': {'name': name, 'steps': [mechanism]}},
+                    'prediction_context': {'joint_problem': {'text': 'Synthetic pre-execution structure.'},
+                                           'retrieval_evidence': {'hits': hits}},
+                }
+                gain = {'decision': decision, 'basis': ['Scripted policy boundary: ' + name]}
+                if decision:
+                    gain.update(claim=mechanism, verification_conditions=[{
+                        'condition': 'Check the stated mechanism with minimal feasible evidence.',
+                        'check_basis': 'Original task structure and this candidate implementation.'}])
+                response = MagicMock()
+                response.__enter__.return_value = response
+                response.read.return_value = json.dumps({'choices': [{'message': {
+                    'content': json.dumps({'capability_gain': gain})}, 'finish_reason': 'stop'}]}).encode()
+                frozen = copy.deepcopy(request)
+                with patch('urllib.request.urlopen', return_value=response) as send:
+                    result = provider.predict(request, timeout_s=2)
+                send.assert_called_once()
+                wire = json.loads(send.call_args.args[0].data)
+                self.assertEqual(wire['messages'][0]['content'], STRATEGY_OUTCOME_SYSTEM_PROMPT)
+                self.assertEqual(json.loads(wire['messages'][1]['content']), frozen)
+                self.assertEqual(request, frozen)
+                self.assertEqual(wire['model'], 'synthetic-build62-model')
+                self.assertEqual(wire['temperature'], 0.17)
+                self.assertEqual(wire['max_tokens'], 512)
+                self.assertEqual(result['payload']['capability_gain'], gain)
+                self.assertEqual(signal_from_payload(gain)['decision'], decision)
+        prompt = flat(STRATEGY_OUTCOME_SYSTEM_PROMPT)
+        for policy in (
+            'When (conditions, mathematical structure and prerequisites)',
+            'Do (core mathematical or operational mechanism)',
+            'Expect (effect, guarantee or verification purpose)',
+            'All its substantive content must be covered',
+            'Successful use is not proof of saved knowledge',
+            'Execution Evidence records what happened; Strategic Knowledge records the transferable mechanism',
+            'Partial coverage can leave a learning opportunity',
+            'textbook practice, a standard OR technique or a conventional solver/verification method is background, never by itself a reason for 0',
+            'an empty library or missing review history is NEVER sufficient for 1',
+            'ONLY a currently visible PUBLISHED strategy rule can establish existing-knowledge coverage',
+            'Execution Evidence is induction material, not completed induction',
+            'treat them as support for review, not a reason to reject it',
+            "Do not justify 0 solely by 'existing execution evidence already covers the method', 'historical successful executions' or 'existing solver capability'",
+        ):
+            self.assertIn(policy, prompt)
+
+
+class TestHistoricalEvidenceIsNotPublishedKnowledge(GCase):
+    def test_empty_strategy_bank_keeps_multiple_supporting_executions_in_actual_request(self):
+        # Scripted forecast + real local context construction. This proves
+        # visibility and the binary contract, not a real model's judgement.
+        method = {'name': 'equality coupling reduction', 'steps': [
+            'Use one shared factory decision for equality-coupled demands, '
+            'reducing independent choices while preserving feasible assignments.']}
+        executions = []
+        for index in range(3):
+            self.task['task_id'] = 'synthetic-coupled-history-' + str(index)
+            episode = 'history-' + str(index)
+            p = self.predict_g(method, episode)
+            record = self.run_g(p)
+            self.check_g(record)
+            self.close_g(episode)
+            executions.append(record.execution_id)
+        self.assertEqual(self.h.sbank.count(), 0)
+        claim = ('Equality-coupled assignments may share a decision, preserving '
+                 'the feasible set while reducing assignment search.')
+        self.provider.payload['capability_gain'] = {
+            'decision': 1, 'claim': claim,
+            'basis': ['Synthetic execution cases support a concrete mechanism; no published rule exists.'],
+            'verification_conditions': [{'condition': 'Check the equality contraction argument and its premises.'}],
+        }
+        self.task['task_id'] = 'synthetic-coupled-current'
+        current = self.predict_g(method, 'next')
+        request = self.provider.requests[-1]
+        hits = request['prediction_context']['retrieval_evidence']['hits']
+        recalled = {str(hit.get('evidence_id')) for hit in hits
+                    if hit.get('evidence_class') == 'execution_fact'}
+        self.assertTrue(set(executions) <= recalled)
+        self.assertFalse(any(hit.get('evidence_class') == 'verified_knowledge' for hit in hits))
+        for hit in hits:
+            if hit.get('evidence_id') in executions:
+                self.assertIn('shared factory decision', json.dumps(hit))
+        self.assertEqual(current.capability_gain.decision, 1)
+        self.assertEqual(current.capability_gain.claim, claim)
+        self.assertEqual(current.trace.model_info['hplus']['decision'], 1)
+        self.assertEqual(self.h.sbank.count(), 0)
 
 
 if __name__ == "__main__":

@@ -202,7 +202,7 @@ scheduled induction ID J.
 orx induction-material --task T --induction-id J
 ```
 
-Compare the actual methods, task constraints, checked outcomes, and relevant existing rules. During this post-answer review, available reference answers, checker verdicts, or user correctness feedback can supply evidence; cite their sources and coverage. Form a conclusion about the reusable method and its supported scope, using a contrast, derivation, or small executable check as needed.
+Assess the frozen H+ claim first against the actual method, task constraints and checked evidence. Extract the mechanism that changes a future decision: reductions, monotonicity, dominance, valid bounds, analytic certificates, applicability boundaries or implementation repairs. Avoid turning the execution steps into a repeated-solve recipe. Compare existing rules by When/Do/Expect; past success or similar terms do not prove coverage. Post-answer references and checker feedback can supply evidence with explicit sources and scope. Reuse a sufficient cheap certificate; further checks need an unresolved claim.
 
 A positive trigger schedules the review, not a rule. The review may settle as `already_covered`, `no_new_knowledge` or `insufficient_evidence`, and it records the original hypothesis outcome separately from the learning result; durable rules must be decidable at a future decision point. See [review decisions](references/induction.md#review-decisions) and [durable knowledge](references/induction.md#durable-knowledge-must-be-usable-by-a-future-decision).
 
