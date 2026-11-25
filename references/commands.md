@@ -458,6 +458,64 @@ Record an action performed outside `execute`. Choose `model|select_strategy|veri
 
 `--task` requires a task JSON object or JSON file containing `task_id`, not a bare task ID. `--params`, `--outcome` and `--cost` also require JSON objects or JSON files; malformed input returns a named argument error. `action --report verify` records an agent-reported action and does not submit G attribution. Use only `check-task EX --check check.json` for that; putting `g_attribution` in action params/outcome is rejected with the correct interface.
 
+### Implementation and correction reports
+
+The host uses the existing `orx action --report TYPE --task t.json --episode E --outcome report.json` (or Python `report_action` / `end_action`). Report facts from the actual solving workflow; batch concise facts when convenient. `plan-next` establishes the selection anchor and `execute` reuses it. The report names the selected prediction P.
+
+| Outcome field | When to submit | Required content |
+|---|---|---|
+| `implementation_facts` | When a real defect or corrective round is evidenced | List of facts with prediction, stable event ID, actual occurrence time, phase, classification, observer and evidence references |
+| `implementation_coverage` | At candidate completion or before moving to the next decision | Prediction P, actual `through`, `implemented`, `complete`, `candidate_complete`, observer and evidence references; `from` defaults to selection time |
+| `correction_coverage` | With `finish_task` | `from` = earliest covered decision start, `through` = actual task-end timestamp, `complete`, observer and evidence references |
+
+Example `model` outcome for an observed implementation defect and a started repair (replace identifiers, timestamps and references with actual observations):
+
+```json
+{
+  "implementation_facts": [{
+    "prediction_id": "P",
+    "event_id": "defect-17",
+    "occurred_at": 1795651201.0,
+    "phase": "pre_execute",
+    "classification": "implementation",
+    "confirmed": true,
+    "requires_correction": true,
+    "observer": "runner-session-42",
+    "summary": "Expression constructor rejected a native scalar.",
+    "evidence_refs": ["artifact:failure.py", "host-log:42/test17"],
+    "correction": {
+      "round_id": "repair-8",
+      "started_at": 1795651202.0,
+      "method": "Normalize scalar types before constructing expressions.",
+      "evidence_refs": ["artifact:repair.diff"],
+      "result": "targeted check passed",
+      "verification_refs": ["host-log:42/test18"]
+    }
+  }]
+}
+```
+
+Phases: `implementation`, `pre_execute`, `execution`, `technical_verification`. Classifications: `implementation`, `environment`, `framework`, `acceptance`, `mathematical`, `other`, `unknown`. Use `obstructed: true` for an evidenced obstacle; omit `correction` if no repair started. Mark routine probes or expected handling `excluded: true` if reported. Record actual root cause and verification outcome, or Unknown. Each report accepts up to 32 facts, 6,000 characters per fact; retain full artifacts in referenced evidence.
+
+For an error inside formal execution, supply `execution_id: EX`. The terminal formal implementation error uses the canonical `execution:EX:technical` identity. Distinct recovered defects in the same execution retain distinct host event IDs; set `formal_error: false` when the execution also has a terminal error. A later formal resubmission belonging to an existing repair is associated by re-reporting the same fact and round with its original times and `correction.retry_action_id` set to the real retry execute action ID.
+
+Example `verify` outcome at candidate completion:
+
+```json
+{"implementation_coverage":{"prediction_id":"P","through":1795651210.0,
+ "implemented":true,"complete":true,"candidate_complete":true,
+ "observer":"runner-session-42","evidence_refs":["host-log:42/implementation-span"]}}
+```
+
+Example `finish_task` outcome (use the same actual terminal time as the finish action):
+
+```json
+{"finished":true,"correction_coverage":{"from":1795651200.0,"through":1795651220.0,
+ "complete":true,"observer":"runner-session-42","evidence_refs":["host-log:42/correction-span"]}}
+```
+
+In Python, set `started_at` / `ended_at` on `report_action` when supplying measured action boundaries. Use `complete: false` when coverage is incomplete. See [observation and deduplication rules](episode_closeout.md#implementation-observation-and-correction-counting) for evaluation. Formal execution quotas use their own attempt increments.
+
 ### `orx budget --task ID [--episode ep1] [--declare llm_tokens=50000,...]`
 
 Read episode usage or save limits with `--declare`. Tokens, tool calls, solver runtime and retries accumulate over the episode. Latency limits apply per attempt. Read `status`, `exceeded_dims`, `episode_exhausted` and `attempt_limited`. Unknown usage for a declared dimension leaves the budget `unconfirmed`. An exhausted episode or confirmed host stop blocks new planning and execution.
@@ -468,8 +526,7 @@ Three attempts record 0/1/1 and consume 2 retries. The corresponding
 current world-model `retries` predicts started corrective/retry rounds from
 its own decision through task termination (`wm-retry-corrective-rounds/1`).
 It needs separate coverage and must not be backfilled as a formal increment.
-Use [action outcome reports](build64_implementation.md#minimal-host-reports) for
-local defects, corrections and coverage; formal execution limits are unchanged.
+See [implementation and correction reports](#implementation-and-correction-reports).
 
 ## 7. Close out and inspect calibration
 

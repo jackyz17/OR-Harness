@@ -5,7 +5,7 @@ Date: 2026-11-26 (Asia/Shanghai). Baseline: local HEAD
 
 The complete contract, actual bindings, host fields and runnable API example,
 deduplication, evidence paths, version isolation and Runner responsibilities are
-in [the build6.4 handoff](../../references/build64_implementation.md).
+in the maintained [host interface](../../references/commands.md#implementation-and-correction-reports) and [observation rules](../../references/episode_closeout.md#implementation-observation-and-correction-counting). This report records the earlier validation snapshot; subsequent commits establish the anchor automatically at decision completion.
 
 ## Delivered contracts
 

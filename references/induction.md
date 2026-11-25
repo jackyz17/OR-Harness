@@ -1,12 +1,6 @@
 # Offline induction and existing-entry management
 
-Implementation evidence uses the same existing action/receipt facts for R,
-corrective costs and H+ review. Inspect `implementation_evidence` for failing
-versions, repair diffs and final technical checks. Consider transferable API,
-numeric/domain, parsing/index, diagnosis/repair and status/protocol mechanisms
-that could change a future decision; a typo or one-off patch is not automatically
-a learning opportunity. H+=0 still retains the facts without starting induction.
-See [build6.4 evidence and Runner duties](build64_implementation.md).
+Inspect `implementation_evidence` alongside mathematical methods: compare failing versions, repair diffs and verified outcomes to identify transferable API, numeric/domain, parsing/index, diagnosis/repair or status/protocol mechanisms that change a future decision. Use the referenced artifacts to distinguish confirmed repairs from workarounds or unresolved causes. H+=0 retains execution evidence for later recall.
 
 Compare recorded executions to extract a method, test its scope, and submit the review. Use [SKILL.md](../SKILL.md) for solving and close-out.
 

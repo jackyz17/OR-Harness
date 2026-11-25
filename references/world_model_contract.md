@@ -103,16 +103,14 @@ R uses `wm-r-max-event/2` with implementation observations under
 `wm-r-implementation-window/1`. Implementation_failure means an evidenced
 substantive defect during the selected candidate's implementation/execution/
 necessary technical verification, including repaired local and recovered internal
-defects. Its window starts at the actual choice action and ends at completion or
-the next formal decision. Zero requires actual implementation and complete
+defects. Its window starts at automatic selection when the decision completes and ends at candidate completion or the next formal decision. Zero requires actual implementation and complete
 coverage; final execute success alone is insufficient. Timeout and
 `environment_failure` retain their bound formal execution scopes. R still takes
 the maximum valid per-event probability common to every ranked candidate,
 never a joint probability or a sum. Probabilities remain finite JSON numbers in
 [0,1]; missing, duplicate or invalid values stay Unknown. Original
 `wm-r-technical/1` receipts and `wm-r-max-event/1` predictions keep their archived
-formal definitions. No old/new labels or numeric feedback are pooled. See the
-[build6.4 contracts, bindings and host interface](build64_implementation.md).
+formal definitions. No old/new labels or numeric feedback are pooled. See [observation and correction counting](episode_closeout.md#implementation-observation-and-correction-counting).
 
 The candidate can cover an `attempt` or a `strategy_window` spanning the declared modelling, execution, repair and verification activities. Window scoring requires a matching task, episode and strategy, ended linked attempts, and `trace.comparable=True`. Read coverage and auxiliary cost when inspecting a window total.
 

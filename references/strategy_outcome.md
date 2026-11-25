@@ -299,7 +299,7 @@ Formal execution increments/quotas still use their original 0/1 accounting and
 do not count local repair events. Archived `wm-retry-additional-attempts/1`
 forecasts keep their original formal-attempt definition without mixing with new
 corrective counts. Other C dimensions/normalization/weights stay unchanged.
-See [build6.4 host reports and examples](build64_implementation.md). Absolute and
+See [host reports](commands.md#implementation-and-correction-reports). Absolute and
 signed errors accept zeros; log errors require positive values on both sides.
 
 **Four honest states** (`orx budget` prints `result.status`):

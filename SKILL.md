@@ -63,11 +63,7 @@ Put one or more concrete methods in `candidates.json` with `name`, `steps`, `sol
 orx --world-model URL::MODEL plan-next --task task.json --episode E --candidates candidates.json
 ```
 
-Read `result.selected_prediction_id` (P) and `result.selected_score`, then write
-the solve code for the selected candidate. The framework establishes P's
-implementation observation anchor when the decision completes, so `execute`
-binds to the same anchor. Follow `plan-next → write code → execute → check →
-fix/retry → settlement → H+ induction`.
+Read `result.selected_prediction_id` (P) and `result.selected_score`. The framework establishes the implementation observation anchor automatically.
 
 Carry any `capability_gain.verification_conditions` from the selected row into
 the solve. If planning returns a refusal, resolve its cause and plan again. See
@@ -76,13 +72,6 @@ the solve. If planning returns a refusal, resolve its cause and plan again. See
 ### 3a. Write the solve code and execute
 
 Write the selected model and method in `ws/solve.py`. Write the observed solver status, objective, solution variables, and available bound and gap to `result.json`. Follow the [output format](references/commands.md#5-execute-and-check) to capture the method actually run. Include `--used-entry-ids ENTRY@VERSION` when adopting a rule.
-
-Report evidenced defects, actually started correction rounds and honest coverage
-through existing action outcomes using `prediction_id: P`; the framework resolves
-the candidate's selection anchor. Preserve failure
-versions, repair diffs and checks by reference; see
-[build6.4 host reports](references/build64_implementation.md). Local correction
-reports do not consume or increase formal execution retry permission.
 
 One candidate/script can read files, solve an LP, derive a safe reduction and solve the final model. Predict/execute it once, without separate algorithm-step predictions. Carry out the actual solve here; do not pre-solve the instance in the host terminal and replay its answer in execute.
 Dynamic `open`, `pathlib` and installed readers share the input boundary. Inputs are read-only; write `result.json` and temporary files in `scratch/`.
@@ -262,7 +251,7 @@ When unsure about the input, optionally add `--dry-run` to the same submission c
 
 After completing the required reviews, start the next task in the same memory directory. The next `plan-next` can use applicable calibration, recalled rules, and completed reviews.
 
-The external Runner enforces hard stops, session lifetime/write locks, public-input authorization, host-terminal pre-solving audits and cross-task scratch/note isolation. OR-Harness observes submitted executions and reported usage; it cannot monitor arbitrary host-terminal solving.
+The external Runner manages hard stops, session locks, authorized inputs and per-task scratch isolation. It reports actual implementation defects, started corrective rounds and observation coverage through [host action reports](references/commands.md#implementation-and-correction-reports), with references to failing versions, repairs and checks. OR-Harness combines these reports with execution receipts.
 
 ## NL4Opt example · `nl4opt_0184`
 

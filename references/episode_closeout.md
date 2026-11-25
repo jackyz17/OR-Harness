@@ -57,7 +57,7 @@ continuous round count once. Complete host corrective coverage is required;
 otherwise report a lower bound/Unknown without scoring it as a complete actual.
 Archived `wm-retry-additional-attempts/1` forecasts keep their original additional
 formal-attempt target; execution budget increments remain separate. See
-[host fields, deduplication and compatibility](build64_implementation.md).
+[implementation observation and correction counting](#implementation-observation-and-correction-counting).
 Absolute/signed errors include zero values; log errors require positive values
 on both sides and report their coverage.
 
@@ -139,7 +139,15 @@ existing retrieval algorithm. `implementation_evidence` adds concise referenced
 failure/repair/check facts to Execution Evidence, actual provider requests,
 reflection and H+=1 induction material. Only matching-version labels/probabilities
 provide current numeric feedback; historical formal diagnostics remain qualitative.
-See [build6.4 contracts and Runner duties](build64_implementation.md).
+### Implementation observation and correction counting
+
+The implementation window begins at automatic selection (decision completion), ending at candidate completion or the next planning decision's start. Reporting by prediction ID resolves the original selection action. A selected candidate needs actual implementation evidence to enter the observation population. Report candidate coverage and task-end corrective coverage using the [host action interface](commands.md#implementation-and-correction-reports).
+
+Deduplicate events by stable ID within the task/episode; executor and host reports of the same terminal implementation error share `execution:EX:technical`. Distinct occurrences retain separate IDs, even when their exception text matches. Conflicting sources cannot establish a clean negative.
+
+Count distinct actually started correction rounds by round ID and start time. One round can address several defects. A failure, repair and formal resubmission in the same round count once when linked by `correction.retry_action_id`. A later forecast excludes rounds that began before its own decision anchor. If a failed attempt is followed by resubmission, the formal receipt can establish an additional round; ambiguous intervening repairs or conflicting round times leave only a lower bound and Unknown. A failed repair followed by new reimplementation is a separate started round.
+
+Retain original observations and versions; new numeric R/retries feedback uses matching contracts only. Abandoned implementations without formal execution remain auditable via their action facts and can accompany a later execution as context; they do not receive a fabricated Evaluation. Cross-task retrieval uses recorded Execution Evidence.
 
 ### C observations
 
@@ -207,7 +215,7 @@ Unknown is a normal close-out result. Do not repeat `check-task` or perform a fu
 
 | Event | Unit | Evidence |
 |---|---|---|
-| `implementation_failure` | One bound attempt | [Technical receipt](#technical-r-observations) |
+| `implementation_failure` | Selected candidate implementation window | [Implementation facts and coverage](#implementation-observation-and-correction-counting) |
 | `environment_failure` | Execution | `error_class == 'environment'` (dependency, licence, permission, external service; an ordinary code error is an implementation failure) |
 | `timeout` | Execution | `status == 'timeout'` AND the attempt was interrupted before a usable result (a solver-returned time-limit result is not this event) |
 | `solver_reported_infeasible` | Execution | `status == 'infeasible'` |
