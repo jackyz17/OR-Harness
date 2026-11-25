@@ -37,6 +37,7 @@ from or_harness.core.schema import (
 )
 from or_harness.core.storage import BudgetExhausted, StorageError, Store, resolve_home
 from or_harness.execution.executor import SafePythonExecutor
+from or_harness.execution.inputs import PreparedTask, prepare_task_inputs, execution_task_inputs
 from or_harness.profiling.profiler import derivation_report, profile_task
 from or_harness.strategy.embedding_index import (
     EmbeddingBackend,
@@ -397,6 +398,7 @@ class ORHarness:
         the other keys earlier actions established. ``hypothetical=True``
         marks a rollout successor state — excluded from real-state queries
         and from episode progress inheritance."""
+        task = prepare_task_inputs(task, self.home)
         # The receipt and the availability high-water mark describe the
         # same bank state, even if another process is publishing knowledge.
         with self.store.locked():
@@ -775,6 +777,8 @@ class ORHarness:
         the representation, X/B, retrieval evidence and capability evidence —
         it simply proposes no targets (and says so).
         """
+        if not (historical or (snapshot is not None and historical is None)):
+            task = prepare_task_inputs(task, self.home)
         if recall_result is not None:
             supplied = recall_result.get("task_digest") \
                 if isinstance(recall_result, dict) else None
@@ -1250,7 +1254,11 @@ class ORHarness:
                          "a default probability of 0)"),
             },
             "available_solver_families": available_families(),
-            "executor": {
+            # API hints for discovered modules only; doctor has the full
+            # installation report. Uninstalled solver tutorials should not
+            # inflate every protected prediction core.
+            "solver_capabilities": [r.to_dict() for r in probe_all() if r.available],
+            "executor": self.executor.capabilities() if hasattr(self.executor, "capabilities") else {
                 "timeout_seconds": getattr(self.executor, "timeout_seconds",
                                            None),
                 "workspace_policy": ("solve scripts must live inside their "
@@ -1550,6 +1558,7 @@ class ORHarness:
         from or_harness.world_model.strategy_prediction import (
             StrategyOutcomeService,
         )
+        task = prepare_task_inputs(task, self.home)
         # The budget gate: a stopped task must not spend a NEW model call.
         # Placed before the candidate is normalized so a refusal touches
         # nothing — no context build, no provider call, no persistence.
@@ -1655,6 +1664,8 @@ class ORHarness:
         prediction.trace.model_info["problem_identity_digest"] = (
             problem_identity_version(task, cir))
         prediction.trace.model_info["execution_decision_required"] = True
+        if task.get("input_resources"):
+            prediction.trace.model_info["input_resources"] = copy.deepcopy(task["input_resources"])
         if config_notes:
             # A normalization that was performed rather than refused is
             # RECORDED on the prediction, so a reader can see the field was
@@ -3265,6 +3276,7 @@ class ORHarness:
         limits. Execute that ID directly; actual adoption is recorded by execute.
         Shadow/disabled/unscorable decisions authorize no execution."""
         from or_harness.world_model.planner import PlanLimits, PlanResult
+        task = prepare_task_inputs(task, self.home)
         limits = (limits if isinstance(limits, PlanLimits)
                   else PlanLimits.from_dict(limits))
         # ONE protocol: the wm-so/1 macro strategy comparison. The legacy
@@ -3743,7 +3755,7 @@ class ORHarness:
                                                    outcome)
         root_snap = self.get_snapshot(decision.pre_snapshot_id) \
             if decision.pre_snapshot_id else None
-        task = dict((root_snap.problem_state.get("task_input")
+        task = PreparedTask((root_snap.problem_state.get("task_input")
                      or root_snap.problem_state.get("task_payload") or {})
                     if root_snap is not None else {})
         task.setdefault("task_id", decision.task_id)
@@ -4700,6 +4712,7 @@ class ORHarness:
         """
         try:
             from or_harness.strategy.triggers import classify_failure
+            action = self.actions.get(action.action_id) or action
             record = ExecutionRecord(
                 execution_id=ExecutionRecord.new_id(),
                 task_id=str(task_id),
@@ -4738,10 +4751,14 @@ class ORHarness:
             record.execution_features["baseline_measurement"] = (
                 "staged before the run began: latency reflects the real time "
                 "the attempt consumed up to the exception")
+            for key in ("artifacts", "input_resources"):
+                if (action.params or {}).get(key):
+                    record.execution_features[key] = copy.deepcopy(action.params[key])
             # A scored attempt stays consumed. Its failed fact retains the
             # original prediction; a repaired attempt uses a fresh decision.
             if prediction_id:
                 record.execution_features["predicted_for"] = str(prediction_id)
+                record.execution_features["prediction_id"] = str(prediction_id)
             if method_planned is not None:
                 record.method_planned = method_planned
             if task_text_ver is not None:
@@ -4784,6 +4801,9 @@ class ORHarness:
         candidate = None
         if not prediction_id:
             raise ValueError('execute requires the selected scored prediction from plan-next; bare strategy/solver and independent forecasts cannot authorize execution')
+        forecast = self.strategy_predictions.get(prediction_id)
+        if forecast is not None:
+            task = execution_task_inputs(task, (forecast.trace.model_info or {}).get("input_resources") or [])
         if prediction_id:
             candidate = self._resolve_execution_candidate(
                 prediction_id, task, episode_id,
@@ -4837,6 +4857,8 @@ class ORHarness:
         # copied from the candidate.
         exec_params: Dict[str, Any] = {
             "strategy_id": strategy_id, "solver": solver}
+        if task.get("input_resources"):
+            exec_params["input_resources"] = copy.deepcopy(task["input_resources"])
         if prediction_id:
             # The PRE-EXECUTION association: persisted with the action the
             # moment it exists, so the prediction→action link survives an
@@ -4923,15 +4945,15 @@ class ORHarness:
                 Path(code_path), Path(workspace), solver=str(solver),
                 task_id=str(task["task_id"]), strategy_id=str(strategy_id),
                 profile=profile, action_id=action.action_id,
-                method_planned=method_planned)
+                method_planned=method_planned, input_resources=task.get("input_resources"))
             try:
                 for key, value in getattr(record, "_captured_output", {}).items():
                     if value:
                         artifacts[key] = capture(self.home, value, kind=key,
                             source="executor captured output clip; may be truncated")
-                result_file = work_root / "result.json"
-                if record.execution_features.get("executed") and result_file.is_file():
-                    artifacts["workspace_result"] = capture(self.home, result_file.read_bytes(), kind="result",
+                result_bytes = getattr(record, "_result_bytes", None)
+                if record.execution_features.get("executed") and result_bytes is not None:
+                    artifacts["workspace_result"] = capture(self.home, result_bytes, kind="result",
                         source="file observed after attempt; acceptance is governed by execution checks")
                 if record.cir_snapshot is not None:
                     artifacts["cir"] = capture(self.home, self.store.dumps(record.cir_snapshot), kind="cir",
@@ -4960,11 +4982,10 @@ class ORHarness:
             # (if partial) cost, so an HONEST failure fact is staged and
             # linked to the action. On its own that stage gives the action a
             # ``linked_execution_id``, which is what makes the close-out see
-            # the failure as its own observation rather than a gap. When the
-            # attempt was tied to a prediction, the claim is then RELEASED
-            # (the prediction must stay testable on a real attempt, and must
-            # not be stranded on a dead action); the staged failure stays on
-            # record as the abandoned attempt.
+            # the failure as its own observation rather than a gap. A scored
+            # attempt keeps its prediction claim, even on this failure path;
+            # a repaired submission needs a fresh plan-next selection. The
+            # legacy release helper below leaves scored adoptions consumed.
             self._stage_interrupted_attempt(
                 action, exc, profile=profile, strategy_id=str(strategy_id),
                 solver=solver, method_planned=method_planned,
@@ -5055,6 +5076,7 @@ class ORHarness:
         self.actions.end_action(
             action.action_id, status=action_status,
             outcome={"execution_status": exec_status,
+                     "failure_stage": (record.execution_features.get("technical_outcome") or {}).get("failure_stage"),
                      "feasible": record.quality.get("feasible"),
                      "objective": record.quality.get("objective")},
             cost=record.cost,
@@ -5131,6 +5153,7 @@ class ORHarness:
                       task_id: str, strategy_id: str, profile: ProblemProfile,
                       action_id: Optional[str],
                       method_planned: Optional[Dict[str, Any]] = None,
+                      input_resources=None,
                       ) -> ExecutionRecord:
         """Call the executor, passing ``action_id`` only when it accepts it.
 
@@ -5160,6 +5183,7 @@ class ORHarness:
                               or any(p.kind == inspect.Parameter.VAR_KEYWORD
                                      for p in parameters.values()))
         except (TypeError, ValueError):
+            parameters = {}
             accepts = False
             accepts_method = False
         extra: Dict[str, Any] = {}
@@ -5172,6 +5196,12 @@ class ORHarness:
             pass
         if accepts_method:
             extra["method_planned"] = method_planned
+        if "input_home" in parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+            extra["input_home"] = self.home
+        if input_resources:
+            if "input_resources" not in parameters and not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+                raise ValueError("injected executor does not support declared task inputs")
+            extra.update(input_resources=input_resources, input_home=self.home)
         return self.executor.execute(
             code_path, workspace, solver=solver, task_id=task_id,
             strategy_id=strategy_id, profile=profile, **extra)
@@ -6844,6 +6874,7 @@ class ORHarness:
             "home": str(self.home),
             "solvers": [r.to_dict() for r in reports],
             "available_families": available_families(),
+            "executor": self.executor.capabilities() if hasattr(self.executor, "capabilities") else None,
             "memory": {"executions": self.bank.count(),
                        "entries": self.sbank.count(),
                        "cold_archive": len(self.sbank.cold_archive()),
@@ -7698,6 +7729,7 @@ class ORHarness:
         prediction = getattr(record, "prediction_snapshot", None)
         prediction_id = (getattr(prediction, "prediction_id", None)
                          if prediction is not None else None)
+        prediction_id = prediction_id or record.execution_features.get("prediction_id")
         return {
             "task_id": record.task_id,
             "episode_id": episode_id,
@@ -7724,6 +7756,7 @@ class ORHarness:
             "solver": dict(record.solver),
             "code_hash": (record.solver or {}).get("code_hash"),
             "artifacts": artifacts,
+            "input_resources": copy.deepcopy(record.execution_features.get("input_resources") or []),
             "artifacts_ref": {
                 "command": ("orx inspect --bank experience --execution "
                             + str(record.execution_id)),

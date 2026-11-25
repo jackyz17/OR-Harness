@@ -176,7 +176,7 @@ def task_with_effective_cir(task: Dict[str, Any],
     CIR raises here rather than being routed to consumers unchecked.
     """
     resolved = resolve_effective_cir(task, cir)   # gate; raises on bad shape
-    copy_task = dict(task or {})
+    copy_task = copy.copy(task) if task else {}
     if resolved is None:
         copy_task.pop("coupling", None)
     elif cir is not None:

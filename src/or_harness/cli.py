@@ -78,6 +78,17 @@ def _load_json_arg(value: str) -> Any:
     return json.loads(value)
 
 
+
+def _load_task_arg(value: str) -> Dict[str, Any]:
+    """Task-relative sources are relative to the JSON file, not the shell cwd."""
+    task = _load_json_arg(value)
+    if isinstance(task, dict) and "input_resources" in task:
+        from or_harness.execution.inputs import declarations
+        base = Path(value).absolute().parent if not value.lstrip().startswith("{") else Path.cwd()
+        task = {**task, "input_resources": declarations(task, base_dir=base)}
+    return task
+
+
 def _parse_dimension_pairs(text: str) -> Dict[str, float]:
     """Parse 'llm_tokens=1500,tool_calls=8' into a float-valued dict.
 
@@ -303,7 +314,7 @@ def cmd_profile(args) -> int:
         )
         from or_harness.profiling.model_syntax import verify_model
         from or_harness.profiling.profiler import derivation_report
-        task = _load_json_arg(args.task)
+        task = _load_task_arg(args.task)
         allow_empty = bool(getattr(args, "allow_empty_cir", False))
         # -- CIR side (validation, structural inference, groups, guidance) --
         # The shape gate runs FIRST: a malformed CIR is rejected here with a
@@ -462,7 +473,7 @@ def _summarize_profile(profile, report, coupling=None) -> str:
 def cmd_recall(args) -> int:
     h = _harness(args)
     try:
-        task = _load_json_arg(args.task)
+        task = _load_task_arg(args.task)
         result = h.recall(task, top=args.top,
                           exclude=args.exclude or [],
                           candidates=args.candidate or None,
@@ -477,13 +488,13 @@ def cmd_predict(args) -> int:
     """Pre-execution COST expectation snapshot for one (task, strategy)."""
     h = _harness(args)
     try:
-        task = _load_json_arg(args.task)
+        task = _load_task_arg(args.task)
         snapshot = h.predict_cost(task, args.strategy)
         result = {"prediction": snapshot.to_dict()}
         if snapshot.expected_cost is None:
+            note = snapshot.note or "Expected cost is UNKNOWN — not zero."
             summary = (f"No usable cost evidence for {args.strategy} "
-                       f"(source=unknown). {snapshot.note or 'Expected cost is '
-                       'UNKNOWN — not zero.'} Pass this snapshot back at "
+                       f"(source=unknown). {note} Pass this snapshot back at "
                        "record time so feedback never fabricates an error "
                        "against a placeholder zero.")
         else:
@@ -503,7 +514,7 @@ def cmd_predict(args) -> int:
 def cmd_execute(args) -> int:
     h = _harness(args)
     try:
-        task = _load_json_arg(args.task)
+        task = _load_task_arg(args.task)
         prediction_id = getattr(args, "prediction", None)
         method = _load_json_arg(args.method) if getattr(args, "method", None) \
             else None
@@ -545,8 +556,7 @@ def cmd_execute(args) -> int:
             # The executor raised AFTER the attempt started (a filesystem
             # error, an interruption). The attempt really ran and really
             # failed: its failure fact is staged with its cost and failure
-            # class, and (for a prediction-driven run) the prediction is
-            # freed so it can be tested against a real attempt. Report an
+            # class, and its selected prediction stays consumed. Report an
             # actionable line instead of a bare traceback, and point at the
             # staged failure so it is not mistaken for "nothing happened".
             staged = h.bank.pending(task_id=str(task.get("task_id", "")))
@@ -1433,7 +1443,7 @@ def cmd_inspect(args) -> int:
 def cmd_snapshot(args) -> int:
     h = _harness(args)
     try:
-        task = _load_json_arg(args.task)
+        task = _load_task_arg(args.task)
         snap = h.snapshot(task, episode_id=args.episode)
         result = {"snapshot": snap.to_dict(),
                   "snapshot_id": snap.snapshot_id}
@@ -1468,7 +1478,7 @@ def cmd_action(args) -> int:
         if not args.task:
             return _fail("--report requires --task")
         try:
-            task = _load_json_arg(args.task)
+            task = _load_task_arg(args.task)
         except (ValueError, OSError) as exc:
             return _fail('--task for action must be a task JSON object or JSON file '
                          '(e.g. --task task.json), not a bare task ID. '
@@ -1833,7 +1843,7 @@ def cmd_enforce_window(args) -> int:
 def cmd_plan_next(args) -> int:
     h = _harness(args)
     try:
-        task = _load_json_arg(args.task)
+        task = _load_task_arg(args.task)
         if getattr(args, "horizon", None) not in (None, 1):
             # Refused EXPLICITLY rather than accepted-and-ignored: there is
             # one horizon, and an agent that asked for a two-step rollout
@@ -2149,7 +2159,7 @@ def cmd_contract(args) -> int:
                          f"({result['contract'].get('prediction_type')}).")
         kind = args.kind
         if kind == "strategy_outcome":
-            task = _load_json_arg(args.task) if args.task else None
+            task = _load_task_arg(args.task) if args.task else None
             if task is None:
                 return _fail("--kind strategy_outcome requires --task")
             spec = _load_json_arg(args.spec)
@@ -2214,7 +2224,7 @@ def cmd_context(args) -> int:
         if not args.task:
             return _fail("orx context requires --task (to build) or "
                          "--context-id (to read)")
-        task = _load_json_arg(args.task)
+        task = _load_task_arg(args.task)
         if not isinstance(task, dict):
             return _fail("--task must be a JSON object")
         cir = _load_json_arg(args.cir) if args.cir else None

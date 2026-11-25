@@ -18,7 +18,8 @@ Cost semantics — only TWO dimensions are genuinely measured here:
   whole-subprocess wall clock as an EXPLICIT proxy (``"wall_proxy"``).
   A rejected or absent report is always downgraded to the proxy and noted —
   never silently zero, never pretending to be a precise solver runtime. A
-  script that never ran (rejected by the sandbox policy) measures NOTHING.
+  script that never ran measures submission/launch latency only, never a
+  fabricated solver runtime.
 
 Some dimensions are not observable inside the sandbox; the execution host
 or framework supplies them:
@@ -35,7 +36,8 @@ or framework supplies them:
   the executor itself leaves the dimension unmeasured.
 
 Consequently the measured-dimension mask produced here is exactly
-``{latency_s, solver_runtime_s}``. A constant is never put in the mask: the
+``{latency_s, solver_runtime_s}`` for a started script, or ``{latency_s}``
+for a rejected/launch-failed submission. A constant is never put in the mask: the
 mask means "this value is a real observation", and a placeholder is not.
 """
 
@@ -47,6 +49,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +64,8 @@ from or_harness.core.schema import (
     TrajectoryStep,
     normalize_method,
 )
+from or_harness.core.storage import StorageError
+from or_harness.execution.inputs import open_regular
 
 ALLOWED_STATUSES = ("optimal", "feasible", "infeasible", "unbounded", "timeout", "error")
 
@@ -72,6 +77,14 @@ ALLOWED_STATUSES = ("optimal", "feasible", "infeasible", "unbounded", "timeout",
 #: never silent: a check that needed a dropped variable sees the key absent
 #: and says so instead of passing.
 MAX_SOLUTION_VARIABLES = 2000
+
+
+def _result_data(path):
+    with open_regular(path) as stream:
+        data = stream.read(64 * 1024 * 1024 + 1)
+    if len(data) > 64 * 1024 * 1024:
+        raise OSError("result.json exceeds the output limit")
+    return data
 
 
 def _solution_variables(raw: Any) -> Optional[Dict[str, Any]]:
@@ -114,8 +127,8 @@ def _config_receipt(workspace: Path,
         return None
     path = Path(workspace) / "result.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = json.loads(_result_data(path))
+    except (OSError, ValueError, UnicodeError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -157,8 +170,8 @@ def _method_receipt(workspace: Path,
         return None
     path = Path(workspace) / "result.json"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        payload = json.loads(_result_data(path))
+    except (OSError, ValueError, UnicodeError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -204,8 +217,9 @@ def _resource_limits(cpu_seconds: int, memory_bytes: int, file_bytes: int):
             resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
             resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
             resource.setrlimit(resource.RLIMIT_FSIZE, (file_bytes, file_bytes))
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         except (ImportError, OSError, ValueError):
-            return
+            raise OSError("could not establish required POSIX resource limits")
 
     return apply_limits
 
@@ -230,7 +244,7 @@ class ExecutionOutcome:
     #: downgrade is always explainable, never a silent substitution.
     runtime_note: Optional[str] = None
     #: True when the script actually ran. A policy-rejected script never
-    #: executed, so it measures NOTHING — not even a zero runtime.
+    #: executed, so it measures no solver runtime — not even a zero runtime.
     executed: bool = True
     wall_seconds: float = 0.0
     message: str = ""
@@ -269,10 +283,13 @@ class ExecutionOutcome:
     method_report: Optional[Dict[str, Any]] = None
     result_received: bool = False
     protocol_error: Optional[str] = None
+    failure_stage: Optional[str] = None
+    failure_cause: Optional[str] = None
+    process_started: bool = False
 
 
 class SafePythonExecutor:
-    """Best-effort local sandbox for harness-written Python code."""
+    """AST checks plus fail-closed Linux process confinement."""
 
     def __init__(self, timeout_seconds: int = 120, solver_timeout_seconds: int = 60,
                  max_stdout_chars: int = 20000, max_stderr_chars: int = 20000):
@@ -281,23 +298,113 @@ class SafePythonExecutor:
         self.max_stdout_chars = max_stdout_chars
         self.max_stderr_chars = max_stderr_chars
 
+    def capabilities(self):
+        from or_harness.execution.sandbox import isolation_probe
+        return {"timeout_seconds": self.timeout_seconds,
+                "solver_timeout_seconds": self.solver_timeout_seconds,
+                "solver_timeout_enforcement": "script must set/read back the solver's own limit",
+                "workspace_policy": "fresh isolated /work; result.json is exported to --workspace",
+                "inputs": "task.input_resources files at inputs/<path>, read-only; dynamic open/Path and installed readers supported",
+                "outputs": "result.json plus scratch/ (64 MiB total) under isolated /work; only result.json is exported",
+                "imports": "installed runtime modules subject to AST checks; network, subprocess and dangerous OS operations blocked",
+                "limits": {"address_space_bytes": 2 * 1024**3, "file_bytes": 64 * 1024**2,
+                           "blas_omp_threads_default": 1},
+                "isolation": isolation_probe()}
+
     # -- execution ------------------------------------------------------------
 
     def run(self, code_path: Path, workspace: Path, solver: str,
-            *, action_id: Optional[str] = None) -> ExecutionOutcome:
+            *, action_id: Optional[str] = None,
+            input_resources=None, input_home=None) -> ExecutionOutcome:
         code_path = Path(code_path).resolve()
         workspace = Path(workspace).resolve()
         if workspace not in code_path.parents and code_path != workspace:
             raise ValueError("Solve script must live inside its execution workspace")
         workspace.mkdir(parents=True, exist_ok=True)
-        security_error = self.validate_source(code_path.read_text(encoding="utf-8"))
+        try:
+            source = code_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return ExecutionOutcome(status="error", solver=solver, executed=False,
+                failure_stage="submission", failure_cause="input_unavailable",
+                normalized_error=f"submitted script unavailable: {type(exc).__name__}: {exc}")
+        security_error = self.validate_source(source)
         if security_error:
             return ExecutionOutcome(
                 status="error", solver=solver,
                 normalized_error="security policy: " + security_error,
                 protocol_error=("code construction: " + security_error if security_error.startswith("SyntaxError:") else None),
                 executed=False,
+                failure_stage="submission", failure_cause="contract_violation",
                 message="Solve script was rejected before execution")
+        try:
+            from or_harness.execution.inputs import verify_execution_inputs
+            inputs = verify_execution_inputs(input_resources or [], input_home)
+        except (OSError, ValueError, StorageError) as exc:
+            return ExecutionOutcome(status="error", solver=solver, executed=False,
+                failure_stage="submission", failure_cause="input_unavailable",
+                normalized_error=f"task input rejected: {type(exc).__name__}: {exc}")
+        from or_harness.execution.sandbox import runtime_paths
+        runtimes = [Path(p).resolve() for p in runtime_paths() if Path(p).is_dir()]
+        sensitive = [workspace] + ([Path(input_home).resolve()] if input_home else [])
+        sensitive += [Path(item["source"]).resolve() for item in input_resources or []]
+        if any(path == runtime or runtime in path.parents for path in sensitive for runtime in runtimes):
+            return ExecutionOutcome(status="error", solver=solver, executed=False,
+                failure_stage="submission", failure_cause="input_unavailable",
+                normalized_error="isolation layout rejected: task/workspace/memory paths must be outside trusted runtime directories")
+        # The caller's workspace is a submission/output location, never an
+        # authorization of all files already in it. The script sees a fresh
+        # /work with only its frozen source, declared inputs and new outputs.
+        with tempfile.TemporaryDirectory(prefix="orx-execution-") as temporary:
+            root = Path(temporary)
+            work = root / "outputs"
+            work.mkdir()
+            (root / "root").mkdir()
+            frozen_script = root / "submitted.py"
+            frozen_script.write_text(source, encoding="utf-8")
+            outcome = self._run_isolated(frozen_script, work, solver,
+                root=root, inputs=inputs, action_id=action_id)
+            # Never follow a symlink left by an untrusted script from the
+            # jail into the host's namespace while collecting a result.
+            result = work / "result.json"
+            try:
+                data = _result_data(result)
+                if not data:  # pre-created writable mount point, never a delivered result
+                    raise FileNotFoundError("script did not write result.json")
+                outcome._result_bytes = data
+                target = workspace / "result.json"
+                stale = target.exists() or target.is_symlink()
+                # Atomic replace replaces the link itself, never its target.
+                with tempfile.NamedTemporaryFile(dir=workspace, delete=False) as output:
+                    output.write(data)
+                    pending = Path(output.name)
+                try:
+                    pending.replace(target)
+                finally:
+                    pending.unlink(missing_ok=True)
+                outcome.stale_result_cleared = stale
+            except FileNotFoundError:
+                # Clear stale output even when this attempt delivered none.
+                target = workspace / "result.json"
+                if target.is_file() or target.is_symlink():
+                    target.unlink()
+                    outcome.stale_result_cleared = True
+            except (OSError, ValueError) as exc:
+                outcome.status = "error"
+                outcome.failure_stage = "result"
+                outcome.failure_cause = "contract_violation"
+                outcome.protocol_error = f"unsafe result artifact: {type(exc).__name__}: {exc}"
+                outcome.normalized_error = outcome.protocol_error
+            if outcome.status == "error" and outcome.failure_stage is None:
+                outcome.failure_stage = "result" if outcome.protocol_error else "runtime"
+            elif outcome.status == "timeout" and not outcome.result_received and outcome.failure_stage is None:
+                outcome.failure_stage = "runtime" if outcome.executed else "sandbox_setup"
+            if outcome.executed:
+                outcome.process_started = True
+            return outcome
+
+    def _run_isolated(self, code_path, workspace, solver, *, root, inputs,
+                      action_id=None):
+        from or_harness.execution.sandbox import command, runtime_paths
         env = {
             "PATH": os.environ.get("PATH", ""),
             "LANG": os.environ.get("LANG", "C.UTF-8"),
@@ -305,6 +412,10 @@ class SafePythonExecutor:
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "OR_SOLVER_TIMEOUT_SECONDS": str(self.solver_timeout_seconds),
+            "TMPDIR": "/work/scratch",
+            "HOME": "/work",
+            "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
+            "LD_LIBRARY_PATH": str(Path(sys.base_prefix) / "lib"),
         }
         # The action id travels to the script so its config receipt can be
         # stamped with it: a receipt is only THIS attempt's configuration
@@ -314,6 +425,7 @@ class SafePythonExecutor:
         if action_id:
             env["OR_ACTION_ID"] = str(action_id)
         start = time.monotonic()
+        (workspace / "scratch").mkdir()
         # ATTRIBUTION OF THE RESULT BODY. The workspace may still hold a
         # ``result.json`` from an earlier run (a re-run in the same
         # directory, an abandoned attempt). Verifying the CONFIG receipt's
@@ -330,19 +442,7 @@ class SafePythonExecutor:
         result_path = workspace / "result.json"
         run_wall_start = time.time()
         stale_cleared = False
-        try:
-            if result_path.exists():
-                result_path.unlink()
-                stale_cleared = True
-        except OSError as exc:
-            return ExecutionOutcome(
-                status="error", solver=solver, executed=False,
-                normalized_error=(
-                    f"execution workspace is not writable: could not clear a "
-                    f"stale result.json ({type(exc).__name__}: {exc})"),
-                message=("the workspace held a result.json this attempt could "
-                         "not clear; refusing to run rather than risk reading "
-                         "another run's result"))
+        result_path.touch()
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
             # RLIMIT_CPU is set ABOVE the wall-clock timeout on purpose. When
@@ -363,16 +463,41 @@ class SafePythonExecutor:
         # is what :func:`_terminate_tree` signals.
         popen_kwargs: Dict[str, Any] = {
             "cwd": str(workspace), "env": env,
+            "stdin": subprocess.DEVNULL,
             "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+        # Regular log files are covered by RLIMIT_FSIZE. An unbounded PIPE
+        # plus communicate() would let a printing script exhaust parent RAM.
+        stdout_file = tempfile.TemporaryFile(dir=root)
+        stderr_file = tempfile.TemporaryFile(dir=root)
+        popen_kwargs.update(stdout=stdout_file, stderr=stderr_file)
         if os.name == "posix":
             popen_kwargs["start_new_session"] = True
         popen_kwargs.update(kwargs)
-        proc = subprocess.Popen(
-            [sys.executable, str(code_path)], **popen_kwargs)
+        receipt_read, receipt_write = os.pipe()
+        try:
+            configuration = root / "sandbox.json"
+            configuration.write_text(json.dumps({
+                "root": str(root / "root"), "work": str(workspace),
+                "script": str(code_path), "inputs": inputs,
+                "runtime_paths": runtime_paths(), "receipt_fd": receipt_write}))
+            popen_kwargs["pass_fds"] = (receipt_write,)
+            proc = subprocess.Popen(command(configuration), **popen_kwargs)
+        except (OSError, subprocess.SubprocessError) as exc:
+            os.close(receipt_read)
+            stdout_file.close()
+            stderr_file.close()
+            return ExecutionOutcome(status="error", solver=solver, executed=False,
+                failure_stage="launch", failure_cause="environment_unavailable",
+                wall_seconds=time.monotonic() - start,
+                normalized_error=f"process launch failed: {type(exc).__name__}: {exc}")
+        finally:
+            os.close(receipt_write)
+        timed_out = False
         try:
             stdout_b, stderr_b = proc.communicate(
                 timeout=self.timeout_seconds)
         except subprocess.TimeoutExpired:
+            timed_out = True
             # Kill the WHOLE process group (the script AND anything it
             # spawned), then reap whatever the script managed to write.
             _terminate_tree(proc)
@@ -380,8 +505,34 @@ class SafePythonExecutor:
                 stdout_b, stderr_b = proc.communicate(timeout=10.0)
             except subprocess.TimeoutExpired:
                 stdout_b, stderr_b = b"", b""
+        except BaseException:
+            _terminate_tree(proc)
+            proc.communicate()
+            os.close(receipt_read)
+            stdout_file.close()
+            stderr_file.close()
+            raise
+        stdout_b = _read_output(stdout_file, self.max_stdout_chars)
+        stderr_b = _read_output(stderr_file, self.max_stderr_chars)
+        try:
+            receipt_data = os.read(receipt_read, 8192)
+            receipt = json.loads(receipt_data) if receipt_data else {}
+        except (OSError, ValueError):
+            receipt = {}
+        finally:
+            os.close(receipt_read)
+        if not receipt.get("ready"):
+            return ExecutionOutcome(status="error", solver=solver, executed=False,
+                process_started=True, exit_code=proc.returncode,
+                failure_stage="sandbox_setup", failure_cause="environment_unavailable",
+                wall_seconds=time.monotonic() - start,
+                stderr=_clip(stderr_b.decode("utf-8", "replace"), self.max_stderr_chars),
+                normalized_error="sandbox setup failed: " + (receipt.get("error") or
+                    stderr_b.decode("utf-8", "replace")[-2000:] or "no trusted startup receipt"))
+        if timed_out:
             return ExecutionOutcome(
                 status="timeout", solver=solver,
+                process_started=True, failure_stage="runtime",
                 stdout=_clip(stdout_b.decode("utf-8", "replace"), self.max_stdout_chars),
                 stderr=_clip(stderr_b.decode("utf-8", "replace"), self.max_stderr_chars),
                 wall_seconds=time.monotonic() - start,
@@ -401,7 +552,7 @@ class SafePythonExecutor:
         proc = _Completed()
         stdout = _clip(proc.stdout.decode("utf-8", "replace"), self.max_stdout_chars)
         stderr = _clip(proc.stderr.decode("utf-8", "replace"), self.max_stderr_chars)
-        if proc.returncode != 0 or not result_path.exists():
+        if proc.returncode != 0 or not result_path.exists() or result_path.stat().st_size == 0:
             return ExecutionOutcome(
                 status="error", solver=solver, exit_code=proc.returncode,
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
@@ -432,8 +583,8 @@ class SafePythonExecutor:
         except OSError:
             pass
         try:
-            payload = json.loads(result_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            payload = json.loads(_result_data(result_path))
+        except (OSError, ValueError, UnicodeError) as exc:
             return ExecutionOutcome(
                 status="error", solver=solver, exit_code=proc.returncode,
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
@@ -571,7 +722,8 @@ class SafePythonExecutor:
                 task_id: str, strategy_id: str, profile: ProblemProfile,
                 code_hash: Optional[str] = None,
                 action_id: Optional[str] = None,
-                method_planned: Optional[Dict[str, Any]] = None
+                method_planned: Optional[Dict[str, Any]] = None,
+                input_resources=None, input_home=None
                 ) -> ExecutionRecord:
         """Run once, verify, meter cost, and assemble an ExecutionRecord.
 
@@ -606,18 +758,26 @@ class SafePythonExecutor:
         because a plan is not an observation.
         """
         started = time.monotonic()
-        outcome = self.run(code_path, workspace, solver, action_id=action_id)
+        outcome = self.run(code_path, workspace, solver, action_id=action_id,
+                           input_resources=input_resources, input_home=input_home)
+        # A trusted ready receipt proves process startup, including failed
+        # scripts; source rejection and bootstrap failure have separate facts.
+        if outcome.executed:
+            outcome.process_started = True
         check = self.verify(outcome)
+        if check["problems"] and outcome.failure_stage is None:
+            outcome.failure_stage = "result"
+            outcome.failure_cause = "contract_violation"
         # monotonic, not time.time(): a wall clock can jump backwards (NTP),
         # which would record a negative latency for a perfectly normal run.
         latency = time.monotonic() - started
         if not outcome.executed:
             # A policy-rejected script never ran: there is no runtime to
-            # measure and no call to count. Reporting 0.0 as a MEASURED
+            # measure and no solving call to count. Reporting 0.0 as a MEASURED
             # runtime would be a fabricated fact.
             runtime = 0.0
             runtime_provenance = None
-            measured: set = set()
+            measured: set = {"latency_s"}
         else:
             if outcome.status in ("error", "timeout"):
                 runtime = outcome.wall_seconds
@@ -637,7 +797,7 @@ class SafePythonExecutor:
         failures: List[FailureRecord] = []
         if outcome.status in ("error", "timeout"):
             failures.append(FailureRecord(
-                attempt=1, error=outcome.normalized_error or outcome.message,
+                attempt=1, error=outcome.normalized_error or outcome.message or "; ".join(check["problems"]),
                 recovery_action=None))
         # The method ACTUALLY performed, from the script's own receipt (if it
         # carried a matching stamp). An unobserved method stays None — the
@@ -661,7 +821,10 @@ class SafePythonExecutor:
         if check["problems"]:
             trajectory.append(TrajectoryStep(
                 action="verify:basic", outcome="; ".join(check["problems"])))
-        digest = code_hash or _sha256_file(code_path)
+        try:
+            digest = code_hash or _sha256_file(code_path)
+        except OSError:
+            digest = code_hash  # a missing submission still has an execution fact
         execution_features: Dict[str, Any] = {}
         from or_harness.world_model.r_signal import execution_receipt
         execution_features["technical_outcome"] = execution_receipt(outcome, check)
@@ -684,18 +847,20 @@ class SafePythonExecutor:
                              "a check needing a dropped variable will report "
                              "it as unchecked"),
                 }
-        if outcome.executed:
+        if outcome.process_started:
             # The one call this executor can PROVE happened. The total
             # ``tool_calls`` (all tool invocations in the declared scope) is
             # the harness's to declare, and must never be below this floor.
             execution_features["tool_calls_lower_bound"] = 1
         # Whether the script ACTUALLY RAN. A sandbox-policy rejection (or a
         # workspace it could not clear) never executed the script: the
-        # attempt produced no result and measured nothing. Persisted so a
+        # attempt produced no solver runtime. Persisted so a
         # later reader can tell "this attempt ran and failed" — a real,
         # observable non-completion — from "this attempt was refused before
-        # it ran", which is NOT an observation of the task at all.
+        # it ran", which is NOT an observation of algorithm runtime.
         execution_features["executed"] = bool(outcome.executed)
+        if input_resources:
+            execution_features["input_resources"] = input_resources
 
         # The configuration that ACTUALLY took effect, split by WHO could
         # observe it, and by HOW WELL the executor knows it. A key the
@@ -812,8 +977,8 @@ class SafePythonExecutor:
             cost_notes.extend(check["runtime_checks"])
         if not outcome.executed:
             cost_notes.append(
-                "the solve script was rejected before execution: no cost "
-                "dimension was measured for this record")
+                "the solve script never ran: submission/launch latency was "
+                "measured, but no solver runtime or solving call was observed")
         if cost_notes:
             execution_features["cost_notes"] = cost_notes
         # The method that REALLY ran, as a normalizer observation record (not
@@ -846,6 +1011,7 @@ class SafePythonExecutor:
         # Transient only: never serialized into an execution payload.
         record._captured_output = {"stdout_clip": outcome.stdout,
                                    "stderr_clip": outcome.stderr}
+        record._result_bytes = getattr(outcome, "_result_bytes", None)
         return record
 
     # -- static sandbox policy -------------------------------------------------------
@@ -886,24 +1052,16 @@ class SafePythonExecutor:
                 if root == "os" and module not in ("os", "os.path"):
                     return ("blocked import " + str(module) +
                             " (only os and os.path are allowed)")
-                if root == "pathlib":
-                    return "blocked import " + str(module)
                 if module == "os":
                     for alias in node.names:
                         if alias.name in os_blocked_attrs:
                             return "blocked from os import " + alias.name
             elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                   and node.func.id == "open"):
-                if (not node.args or not isinstance(node.args[0], ast.Constant)
-                        or not isinstance(node.args[0].value, str)):
-                    return ("open() requires a LITERAL string path (dynamic paths "
-                            "are blocked); write your result with "
-                            "open('result.json', 'w') in the execution workspace")
-                target = node.args[0].value
-                if (Path(target).is_absolute() or ".." in Path(target).parts
-                        or Path(target).name != "result.json"):
-                    return ("open() may only access the workspace-local file named "
-                            "result.json (relative path, no directories)")
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    target = Path(node.args[0].value)
+                    if target.is_absolute() or ".." in target.parts:
+                        return "file paths must be workspace-relative without parent traversal"
             elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
                 if node.value.id == "os" and node.attr in os_blocked_attrs:
                     return ("blocked call os.{}() — use open('result.json') for I/O"
@@ -916,6 +1074,19 @@ def _clip(text: str, limit: int) -> str:
         return text
     head = limit // 2
     return text[:head] + "\n... [truncated] ...\n" + text[-(limit - head):]
+
+
+def _read_output(stream, limit):
+    try:
+        size = stream.seek(0, os.SEEK_END)
+        stream.seek(0)
+        if size <= limit * 4:
+            return stream.read()
+        head = stream.read(limit * 2)
+        stream.seek(-limit * 2, os.SEEK_END)
+        return head + b"\n... [truncated] ...\n" + stream.read(limit * 2)
+    finally:
+        stream.close()
 
 
 def _normalize_error(text: str) -> str:

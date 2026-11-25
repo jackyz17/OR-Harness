@@ -60,13 +60,14 @@ class TestSandboxPolicy(ExecutorCase):
         self.assertBlocked("from os import remove")
         self.assertBlocked("import os\nos.listdir('.')")
 
-    def test_pathlib_blocked(self):
-        self.assertBlocked("from pathlib import Path")
+    def test_pathlib_allowed_under_runtime_confinement(self):
+        self.assertAllowed("from pathlib import Path")
 
-    def test_open_restricted_to_result_json(self):
+    def test_open_paths_checked_at_runtime_with_static_traversal_guard(self):
         self.assertBlocked("with open('/etc/passwd') as f: pass")
         self.assertBlocked("with open('../escape.json', 'w') as f: pass")
-        self.assertBlocked("name = 'result.json'\nwith open(name, 'w') as f: pass")
+        self.assertAllowed("name = 'result.json'\nwith open(name, 'w') as f: pass")
+        self.assertAllowed("with open('inputs/nodes.csv') as f: pass")
         self.assertAllowed("with open('result.json', 'w') as f: f.write('{}')")
 
     def test_syntax_error_reported(self):
@@ -247,14 +248,14 @@ class TestCostMeasurementHonesty(ExecutorCase):
         self.assertTrue(record.quality["feasible"])
         self.assertEqual(record.quality["problems"], [])
 
-    def test_a_rejected_script_measures_nothing(self):
+    def test_a_rejected_script_measures_only_submission_latency(self):
         """A policy-rejected script never ran: 0.0 seconds of solving would
         be a fabricated fact, so nothing enters the measured mask."""
         path = self.write("solve.py", "import subprocess\nsubprocess.run(['ls'])\n")
         record = self.executor.execute(
             path, self.work, solver="mock", task_id="t1",
             strategy_id="S01", profile=self.make_profile())
-        self.assertEqual(record.cost.measured_dims(), set())
+        self.assertEqual(record.cost.measured_dims(), {"latency_s"})
         self.assertIsNone(record.solver_runtime_provenance)
         self.assertNotIn("tool_calls_lower_bound", record.execution_features)
         notes = record.execution_features["cost_notes"]

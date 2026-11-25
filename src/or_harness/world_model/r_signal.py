@@ -175,6 +175,11 @@ def execution_receipt(outcome, checks):
     """Evidence the executor can establish before any business checker."""
     fact = {**R_CONVENTION, "label": None, "source": "SafePythonExecutor",
             "executed": bool(outcome.executed), "exit_code": outcome.exit_code,
+            "process_started": bool(outcome.process_started),
+            "failure_stage": outcome.failure_stage,
+            "failure_cause": outcome.failure_cause,
+            "submission_rejected": outcome.failure_stage == "submission",
+            "runtime_eligible": bool(outcome.executed),
             "result_received": bool(outcome.result_received),
             "protocol_problems": list(checks.get("problems") or []),
             "evidence_refs": ["execution_features.technical_outcome"]}

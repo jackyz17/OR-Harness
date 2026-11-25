@@ -140,7 +140,7 @@ def _labelled(value: Any, provenance: str = "observed",
 #: is never silently text-less.
 _TASK_PAYLOAD_KEYS = ("task_id", "family", "description", "text",
                       "objective", "constraints", "spec", "requirements",
-                      "business_rules", "data_ref")
+                      "business_rules", "data_ref", "input_resources")
 
 
 def _task_payload(task: Dict[str, Any]) -> Dict[str, Any]:
