@@ -1,4 +1,4 @@
-"""build6.2 H+ prompt and wire contracts, using synthetic fixtures only.
+"""H+ generalization, prompt and wire contracts, using synthetic fixtures only.
 
 Responses below are SCRIPTED, not model judgements or build6 replay results.
 They check that the actual HTTP system prompt states each policy boundary,
@@ -63,6 +63,124 @@ CASES = (
 
 
 class TestHplusPredictionSemantics(unittest.TestCase):
+    def test_six_prospective_cases_reach_the_provider_without_new_output_fields(self):
+        # The decisions are scripted transport/contract fixtures, not model
+        # judgements. Histories describe past runs, never this candidate's
+        # future execution. No teaching problem or reference answer is sent.
+        equality_rule = {
+            'when': 'Equality-linked decisions have compatible domains and a linear objective.',
+            'do': 'Use one variable per equality group, intersect member domains and aggregate objective coefficients.',
+            'expect': 'Preserve feasible assignments and objective values with fewer independent choices.',
+        }
+        integer_rule = {
+            'when': 'All decisions have bounded finite integer domains.',
+            'do': 'Enumerate integer tuples and check each tuple.',
+            'expect': 'Find an optimum over those finite integer domains.',
+        }
+
+        def execution(name, family, step, status='optimal'):
+            return {'execution_id': 'synthetic-' + name, 'evidence_class': 'execution_evidence',
+                    'profile': {'family': family}, 'method_actual': {'steps': [step]}, 'status': status}
+
+        group_step = equality_rule['do']
+        battery_task = ('Minimize a linear charge over bounded battery states. '
+                        'States in each equality group must agree; intersect their bounds.')
+        histories = [execution('team-groups', 'volunteer_assignment',
+            'Equality-linked team assignments share a binary variable; intersect domains and sum their linear costs.')]
+        delivery_history = [
+            execution('writer-failed', 'allocation', 'Wrote objective instead of objective_value.', 'error'),
+            execution('writer-repaired', 'allocation', 'Map actual status and write finite objective_value once.'),
+            execution('writer-reused', 'scheduling', 'Reuse the status and objective mapping for result delivery.'),
+        ]
+        # name, task family/text, current operation, executions, published rule,
+        # scripted decision, hypothesis/basis, minimum check.
+        cases = (
+            ('cross-domain-roles', 'battery_balancing', battery_task, group_step,
+             histories, None, 1,
+             'Equality-group contraction may preserve domains and linear cost across different task roles.',
+             'Inspect the equality substitution, intersected bounds and aggregated objective.'),
+            ('similar-name-different-mechanism', 'continuous_lp',
+             'Minimize a linear objective over a nonempty bounded continuous polytope.',
+             'Enumerate vertices to certify continuous linear optimality.', [], integer_rule, 1,
+             'Continuous vertex optimality needs premises and a guarantee not supplied by finite integer enumeration.',
+             'Check linearity, boundedness and the vertex-optimality argument.'),
+            ('execution-evidence-without-rule', 'resource_allocation',
+             'Deliver the selected solver result through the existing result protocol.',
+             'Centralize actual status and finite objective mapping across solver interfaces.',
+             delivery_history, None, 1,
+             'The failed/repaired writer difference may support a reusable result-delivery technique; no rule is saved.',
+             'Inspect the current status mapping, finite objective and protocol receipt.'),
+            ('ordinary-translation', 'capacity_planning',
+             'The task explicitly states total production must not exceed capacity.',
+             'Translate the stated capacity into a linear constraint.', [], None, 0,
+             'No specific reusable mechanism or boundary beyond the required task translation was identified.', None),
+            ('published-coverage', 'battery_balancing', battery_task, group_step,
+             histories, equality_rule, 0,
+             'Visible published synthetic-rule@2 covers the equality premises, domain intersection, '
+             'cost aggregation and preservation guarantee; this run adds no meaningful evidence.', None),
+            ('cold-start-structural-reduction', 'bounded_inventory',
+             'For fixed Y, feasible integer X is a finite interval and the minimization objective increases in X.',
+             'Select the lower feasible X endpoint for each Y instead of enumerating every X.', [], None, 1,
+             'Monotonicity may remove X enumeration while preserving each fixed-Y optimum despite no history.',
+             'Check the original interval bounds, monotonicity and selected feasible endpoints.'),
+        )
+        provider = HttpChatProvider('https://synthetic.invalid/v1', 'synthetic-prospective-model',
+                                    'synthetic-key', temperature=0.17, max_output_tokens=512)
+        for name, family, task, step, history, rule, decision, basis, condition in cases:
+            with self.subTest(case=name):
+                hits = copy.deepcopy(history)
+                if rule is not None:
+                    hits.append({'entry_id': 'synthetic-rule', 'version': 2,
+                        'publication': {'state': 'published'}, 'rule_body': copy.deepcopy(rule)})
+                request = {'prediction_protocol': 'wm-so/1',
+                    'candidate': {'strategy_id': 'synthetic-' + name,
+                                  'method': {'name': name, 'steps': [step]}},
+                    'prediction_context': {
+                        'joint_problem': {'text': task, 'profile': {'family': family}},
+                        'retrieval_evidence': {'hits': hits},
+                        'hplus_feedback': {'settled_examples': []}}}
+                gain = {'decision': decision, 'basis': [basis]}
+                if decision:
+                    gain.update(claim=basis, verification_conditions=[{
+                        'condition': condition, 'check_basis': 'This candidate and its original task; use minimum sufficient evidence.'}])
+                response = MagicMock()
+                response.__enter__.return_value = response
+                response.read.return_value = json.dumps({'choices': [{'message': {
+                    'content': json.dumps({'capability_gain': gain})}, 'finish_reason': 'stop'}]}).encode()
+                frozen = copy.deepcopy(request)
+                with patch('urllib.request.urlopen', return_value=response) as send:
+                    result = provider.predict(request, timeout_s=2)
+                send.assert_called_once()
+                wire = json.loads(send.call_args.args[0].data)
+                prompt = wire['messages'][0]['content']
+                self.assertEqual(prompt, STRATEGY_OUTCOME_SYSTEM_PROMPT)
+                self.assertEqual(json.loads(wire['messages'][1]['content']), frozen)
+                self.assertEqual(request, frozen)
+                self.assertEqual((wire['model'], wire['temperature'], wire['max_tokens']),
+                                 ('synthetic-prospective-model', 0.17, 512))
+                self.assertEqual(result['payload']['capability_gain'], gain)
+                parsed = CapabilityGain.from_dict(result['payload']['capability_gain'])
+                self.assertEqual(parsed.decision, decision)
+                self.assertEqual(signal_from_payload(gain)['decision'], decision)
+                self.assertEqual(set(gain), {'decision', 'basis', 'claim', 'verification_conditions'}
+                                 if decision else {'decision', 'basis'})
+                for policy in (
+                    'Identify a concrete modelling, solving, implementation or verification decision',
+                    'feasibility, optimality or solution quality, search space, computational work or reliability',
+                    'align their mathematical or operational roles with the current task',
+                    'Different domains or family labels do not rule out a shared mechanism',
+                    'similar solver/algorithm names or terms do not establish one',
+                    'Abstract case-specific entities by role and capacities or coefficients as parameters',
+                    'a failure-and-repair implementation technique',
+                    'which future decision this mechanism could improve, why it might work',
+                    'support, refine or challenge',
+                    'Future premises must be recognizable before solving',
+                    'prospective generalization, not completed induction',
+                    'Do not require advance proof of the mechanism or transferability, multiple independent executions',
+                ):
+                    self.assertIn(policy, flat(prompt))
+                self.assertNotIn('SIRL', prompt)
+
     def test_scripted_boundaries_reach_the_actual_http_system_prompt(self):
         provider = HttpChatProvider(
             "https://synthetic.invalid/v1", "synthetic-build61-model", "synthetic-key",
