@@ -522,12 +522,12 @@ class SafePythonExecutor:
         finally:
             os.close(receipt_read)
         if not receipt.get("ready"):
-            return ExecutionOutcome(status="error", solver=solver, executed=False,
+            return ExecutionOutcome(status="timeout" if timed_out else "error", solver=solver, executed=False,
                 process_started=True, exit_code=proc.returncode,
-                failure_stage="sandbox_setup", failure_cause="environment_unavailable",
+                failure_stage="sandbox_setup", failure_cause=None if timed_out else "environment_unavailable",
                 wall_seconds=time.monotonic() - start,
                 stderr=_clip(stderr_b.decode("utf-8", "replace"), self.max_stderr_chars),
-                normalized_error="sandbox setup failed: " + (receipt.get("error") or
+                normalized_error=("execution timeout during sandbox setup: " if timed_out else "sandbox setup failed: ") + (receipt.get("error") or
                     stderr_b.decode("utf-8", "replace")[-2000:] or "no trusted startup receipt"))
         if timed_out:
             return ExecutionOutcome(

@@ -283,10 +283,10 @@ class TestEventSemantics(CalibrationV2Case):
         prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        # A security-policy rejection: classified "environment" at record
-        # time by the executor.
+        # A real missing dependency is an environment failure. An explicit
+        # script-contract violation is tested separately as implementation.
         record = self.solve(task, strategy="S04", tag="env",
-                            body="import os\nos.system('ls')\n")
+                            body="import unavailable_build63_dependency\n")
         self.assertEqual(record.quality.get("status"), "error")
         bind_legacy(h,prediction.prediction_id,
                                 record.action_id)

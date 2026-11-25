@@ -263,19 +263,19 @@ class _Patch:
             counters.by_execution_calls += 1
             return orig_by(self, execution_id)
 
-        def decode(a, b=None):
+        def decode(self, row):
             counters.decodes += 1
-            return orig_decode(a) if b is None else orig_decode(b)
+            return orig_decode(self, row)
 
         actions_mod.ActionLog.query = query
         actions_mod.ActionLog.by_execution = by_execution
-        actions_mod.ActionLog._decode = staticmethod(decode)
+        actions_mod.ActionLog._decode = decode
         return self.counters
 
     def __exit__(self, *exc):
         actions_mod.ActionLog.query = self._orig_query
         actions_mod.ActionLog.by_execution = self._orig_by_execution
-        actions_mod.ActionLog._decode = staticmethod(self._orig_decode)
+        actions_mod.ActionLog._decode = self._orig_decode
         return False
 
 

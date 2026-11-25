@@ -124,6 +124,9 @@ def timeout_event_label(record):
     features = getattr(record, "execution_features", None) or {}
     status = (getattr(record, "quality", None) or {}).get("status")
     if status != "timeout":
+        if features.get("executed") is False:
+            return 0, ("the formal attempt was not interrupted by the harness timeout; "
+                       "the script never ran, so this is no evidence that the algorithm avoided timeout")
         return 0, ("the execution finished without hitting the harness "
                    "wall-clock limit")
     receipt = features.get("technical_outcome") or {}
@@ -150,9 +153,17 @@ def environment_event_label(record):
     features = getattr(record, "execution_features", None) or {}
     status = (getattr(record, "quality", None) or {}).get("status")
     classes = [c for c in _failure_classes(record) if c]
+    receipt = features.get("technical_outcome") or {}
+    if receipt.get("source") == "SafePythonExecutor":
+        if receipt.get("failure_cause") == "environment_unavailable":
+            return 1, "the executor recorded an unavailable dependency, license, process or isolation environment"
+        if receipt.get("failure_cause") == "input_unavailable":
+            return None, "the declared input is missing, changed or invalid; responsibility is unconfirmed"
+        if receipt.get("failure_cause") == "contract_violation":
+            return 0, "the recorded cause is a script-contract violation, not an unavailable environment"
     if "environment" in classes:
-        return 1, ("the executor recorded an ENVIRONMENT failure (sandbox "
-                   "policy / missing dependency / unavailable backend)")
+        return 1, ("the executor recorded an ENVIRONMENT failure (missing "
+                   "dependency / unavailable backend / isolation unavailable)")
     if status == "error" and not classes:
         return None, ("the failure carries no recorded error_class: the "
                       "cause is UNKNOWN and is not inferred from the error "
@@ -187,7 +198,10 @@ def execution_receipt(outcome, checks):
     exception = _exception_type(text)
     if exception:
         fact["exception_type"] = exception
-    if outcome.protocol_error and outcome.protocol_error.startswith("code construction:"):
+    if outcome.failure_cause == "contract_violation":
+        fact["label"] = 1
+        reason = "submitted code violated the execution contract: " + (outcome.protocol_error or outcome.normalized_error)
+    elif outcome.protocol_error and outcome.protocol_error.startswith("code construction:"):
         fact["label"] = 1
         reason = outcome.protocol_error
     elif not outcome.executed:
@@ -202,6 +216,7 @@ def execution_receipt(outcome, checks):
         reason = "process completed and delivered a readable protocol-valid result"
     elif exception in _EXTERNAL or (exception not in ("ValueError", "TypeError", "SyntaxError", "NameError", "KeyError", "AttributeError")
             and any(m in str(text).lower() for m in ("license", "not installed", "connection refused", "no module named"))):
+        fact["failure_cause"] = "environment_unavailable"
         reason = "external environment/interface blockage: " + str(exception or "receipt")
     elif exception:
         fact["label"] = 1
@@ -271,10 +286,16 @@ def technical_attempt_fact(record):
     # the technical receipt above; timeout/environment read their own rules.
     timeout_label, timeout_basis = timeout_event_label(record)
     environment_label, environment_basis = environment_event_label(record)
+    fact["runtime_eligible"] = features.get("executed")
+    fact["runtime_eligibility_note"] = (
+        "script startup is established; this alone does not prove a solver ran"
+        if features.get("executed") is True else
+        "no script runtime is established; the formal timeout label is not algorithm runtime evidence")
     fact["r_events"] = {
         "implementation_failure": {
             "label": fact["label"], "basis": fact["reason"]},
-        "timeout": {"label": timeout_label, "basis": timeout_basis},
+        "timeout": {"label": timeout_label, "basis": timeout_basis,
+                    "runtime_eligible": features.get("executed")},
         "environment_failure": {
             "label": environment_label, "basis": environment_basis},
     }
@@ -509,6 +530,10 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5):
         }
         for name in R_EVENTS}
     return {"observation_rule_version": R_OBSERVATION_VERSION, "groups": output,
+        "runtime_coverage": {"script_started": sum(f.get("runtime_eligible") is True for f in facts.values()),
+            "script_not_started": sum(f.get("runtime_eligible") is False for f in facts.values()),
+            "unknown": sum(f.get("runtime_eligible") is None for f in facts.values()),
+            "note": "formal timeout labels and Brier keep their definition; not-started attempts are not algorithm runtime evidence"},
         "coverage": {"n_actual_attempts": len(facts), "n_known_labels": sum(f["label"] in (0, 1) for f in facts.values()),
                      "n_reported_probabilities": len(predicted), "n_scorable": len(scored)},
         "coverage_by_event": coverage_by_event,

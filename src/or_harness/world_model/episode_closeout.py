@@ -3063,6 +3063,9 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                               if probability is not None
                               and label in (0, 1) else None),
                     "comparable": comparable,
+                    **({"runtime_eligible": fact.get("runtime_eligible"),
+                        "runtime_eligibility_note": fact.get("runtime_eligibility_note")}
+                       if name == "timeout" else {}),
                 }
             evaluation.risk["r_events_observation"] = {
                 "execution_id": fact.get("execution_id"),

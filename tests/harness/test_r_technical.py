@@ -129,14 +129,14 @@ class TestTechnicalRLabels(RCase):
         self.assertEqual(self.fact(e)["label"], 0)
         self.assertEqual(self.fact(e)["exit_code"], 0)
 
-    def test_environment_blocked_is_unknown_even_with_probability(self):
+    def test_explicit_contract_violation_is_implementation_failure(self):
         p = self.predict_r()
         self.body(p, text="import os\nos.system('echo blocked')\n")
         e = self.close_g()["evaluations"][0]
-        self.assertIsNone(self.fact(e)["label"])
+        self.assertEqual(self.fact(e)["label"], 1)
         c = self.h.calibration_summary()["technical_r"]["coverage"]
-        self.assertEqual(c, {"n_actual_attempts": 1, "n_known_labels": 0,
-                             "n_reported_probabilities": 1, "n_scorable": 0})
+        self.assertEqual(c, {"n_actual_attempts": 1, "n_known_labels": 1,
+                             "n_reported_probabilities": 1, "n_scorable": 1})
 
     def test_normal_timeout_is_unknown(self):
         self.h.executor = SafePythonExecutor(timeout_seconds=1)
