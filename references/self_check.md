@@ -24,6 +24,15 @@ Options include a small enumeration, an independent verification script, a dual 
 
 Verification is sufficiency-driven, not count-limited: pick the cheapest check for a named unresolved doubt; address independent doubts separately and reuse established results. Stop when sufficient evidence supports the conclusion. A complete independent re-solve is not the default; use it only when it reasonably resolves a specific open doubt. Neither H+=1 nor a missing G label requires another solve. Prefer an already sufficient analytic, dual or other certificate over repeating a complete solve. Equal optimal objectives may have different optimal solution points; check feasibility and the claimed guarantee rather than forcing identical vectors.
 
+Validation follows the bound formal solve. Record important independent scripts
+and results with `check-task --verification` on that execution, plus their
+actual cost in the existing verify action/host usage report. A new method or a
+substantially revised answer requires a fresh plan-next and execute. LP
+relaxations, reduction searches, solver comparisons and real-instance code
+trials that produce the original answer are part of the formal strategy, even
+when an intermediate calculation is called a check. The Runner audits host
+terminal activity; the framework does not monitor that terminal.
+
 ## Verify the model, not only the solver
 
 Verification of the model is not verification of the task:

@@ -317,6 +317,9 @@ class TestCompositeFileStrategy(FileCase):
     def test_lp_reduction_milp_and_full_observation_loop(self):
         if importlib.util.find_spec('scipy') is None:
             self.skipTest('optional scipy.optimize is not installed in this interpreter')
+        self.task['text']=('Choose binary columns from columns.csv to minimize the sum of selected costs. '
+            'For every row r0,r1,r2, total selected coverage must be at least its demand in demand.json. '
+            'Return the original-column solution and an optimality certificate.')
         self.resource('columns.csv','cost,r0,r1,r2\n1,1,1,0\n1,0,1,1\n1,1,0,1\n5,1,0,0\n')
         self.resource('demand.json','[1,1,1]')
         method={'name':'LP and reduced-cost fixing then MILP','steps':[

@@ -188,7 +188,114 @@ Record a rejection of a saved decision or confirm its scored winner. Use `--reje
 
 Run the selected code and stage the resulting attempt. Pass an unused P from `plan-next` with the same task and episode. The saved candidate supplies the strategy, solver and configuration.
 
-**Workspace** Keep the script inside `--workspace`, which is the working directory. Use in-process solvers such as `highspy` and `ortools`. The sandbox blocks subprocess launches, network libraries and imports such as `pathlib` and `shutil`. Use labels `C1`, `C2` and so on for L2 checks. The script has a wall-clock limit in addition to solver settings.
+**Workspace** Keep the submitted script inside `--workspace`. Execution uses a
+fresh isolated `/work`, with declared files at `inputs/<path>`, read-only
+`solve.py`, writable `result.json` and `scratch/`. Existing host workspace
+files are not exposed. Only this attempt's `result.json` is exported to
+`--workspace/result.json`; scratch is temporary (64 MiB total). Use in-process
+solver APIs. Network and subprocess launches remain blocked; PuLP/CBC and
+Pyomo backends that launch a binary require an in-process alternative.
+`pathlib` and dynamic paths are supported. The script has a wall-clock limit
+in addition to its solver settings. Use labels `C1`, `C2` and so on for L2 checks.
+
+#### File input and isolation
+
+Declare explicit regular files in the same task used for plan-next and execute:
+
+```json
+{
+  "task_id":"network-example", "family":"routing",
+  "text":"Solve the network specified by the declared nodes and edges.",
+  "input_resources":[
+    {"source":"data/nodes.csv","path":"network/nodes.csv"},
+    {"source":"data/edges.csv","path":"network/edges.csv"},
+    {"source":"data/config.json","path":"config.json"}
+  ]
+}
+```
+
+`source` is relative to the CLI task JSON file, or to the caller's cwd in the
+Python API. Explicit absolute sources are also supported. `path` is a unique
+relative POSIX file name under `inputs/`, without `..`, symlinks or directory
+declarations. An optional full `sha256` pins expected content. The framework
+streams each file into the existing content-addressed artifact store and
+freezes its source, relative path, bytes and hash with the task/prediction.
+Execution rechecks content and exposes only the matching files. Changed input
+declarations require a new plan; missing/changed bytes at submission are saved
+as a failed bound attempt. No file contents enter the model prompt or script.
+The trusted Runner must supply the public-input list: no automatic attachment,
+workspace or benchmark-directory scan includes reference answers, checkers,
+other tasks or memory banks.
+
+```python
+from pathlib import Path
+import csv, json
+
+filename = "nodes.csv"
+path = Path("inputs") / "network" / filename
+with path.open() as f:
+    nodes = list(csv.DictReader(f))
+with open(Path("inputs") / "config.json") as f:
+    config = json.load(f)
+# Installed pandas.read_csv(path), numpy.loadtxt(path), and native solver
+# readers can use the same authorized files. Write results from THIS solve.
+```
+
+CSV, JSON, TXT and arbitrary regular instance formats use this same interface;
+the corresponding parser must be installed. Text-only tasks omit
+`input_resources`. The Python API is unchanged:
+`h.execute(task, prediction_id=P, code_path="ws/solve.py", workspace="ws")`.
+
+Linux user/mount/network namespaces, `unshare` and `libseccomp.so.2` are required.
+Inputs and runtime files are read-only mounts; the remaining jail is read-only
+except `result.json`, bounded `scratch/` and log descriptors. Python auditing
+adds path diagnostics, while mounts/chroot and syscall filters also constrain
+native readers, aliases and third-party libraries. Runtime library directories,
+the current process's maps/executable link and CPU metadata are exposed for
+numerical runtimes; host `/proc`, fd directories, credentials and cwd are not.
+Network, process launches, namespace changes and cross-process access are
+blocked. CPU/address-space/file limits and whole-process-group timeout cleanup
+remain active. Missing isolation fails closed; there is no AST-only fallback.
+The host kernel and installed runtime are trusted. This is not a VM or metadata
+secrecy guarantee, and concurrent host filesystem mutation is outside this
+boundary. Run under a dedicated account/container for hostile multi-tenant use.
+Keep task files, submission workspaces and Harness memory outside runtime
+library directories; detected overlaps are rejected before launch. The Runner
+must also keep other tasks' materials and secrets out of trusted distributions.
+
+One selected method can include reading, LP relaxation, feasible-bound
+construction, certified reduction and final MILP in the same execute. Keep
+real-instance solving and code trials in formal attempts. Before planning,
+inspect data/structure and use only tiny artificial API probes. See
+[self-check](self_check.md) for post-execution validation and its cost/evidence.
+
+#### Submission and runtime diagnostics
+
+Existing execution statuses stay `error`, `timeout` or the script's result
+status. Read `execution.execution_features.technical_outcome`:
+
+| Case | `failure_stage` | `process_started` / `executed` | Risk evidence |
+|---|---|---|---|
+| Syntax or documented script-contract rejection | `submission` | false / false | implementation failure |
+| Missing, changed or invalid input | `submission` | false / false | cause Unknown |
+| Process cannot launch | `launch` | false / false | environment failure |
+| Required isolation setup fails | `sandbox_setup` | true / false | environment failure |
+| Python/API exception or missing dependency | `runtime` | true / true | code error → implementation; dependency/license unavailable → environment |
+| Invalid delivered JSON/protocol | `result` | true / true | implementation failure |
+| Harness interrupts script | `runtime`, status `timeout` | true / true | formal timeout; code cause remains Unknown without evidence |
+| Harness deadline interrupts isolation setup | `sandbox_setup`, status `timeout` | true / false | formal timeout; algorithm runtime unobserved |
+| Solver's own time limit returns readable result | no failure stage | true / true | no Harness timeout |
+
+The receipt also keeps `failure_cause`, `submission_rejected`, `result_received`
+and `runtime_eligible`. A rejected attempt has formal timeout=0 because it was
+not interrupted, but `runtime_eligible=false`: it is no algorithm runtime
+evidence. Formal timeout labels/Brier retain their existing definition;
+`technical_r.runtime_coverage` reports this distinction separately. Actual
+submission/launch latency is recorded; solver runtime stays unmeasured before
+script startup. Prediction, action, script, input refs, reason and spent cost
+survive failure. Record it, then obtain a fresh plan-next before a repaired
+submission; no implicit solve retry is introduced. Historical receipts and
+probabilities are not rewritten by this diagnosis.
 
 **Result file** Write `result.json` with `open('result.json', 'w')`. Set the solver's `status` to `optimal|feasible|infeasible|unbounded|timeout|error`. For `optimal` or `feasible`, include a finite `objective_value`. Include available bounds, gap, runtime and the values needed for task checks.
 
@@ -399,7 +506,15 @@ Read `result.completed`, `result.pending_ids`, `result.signal_counts` and `resul
 
 ### `orx doctor`
 
-Check installed solvers, memory, staged attempts and retrieval indexes. Read `retrieval_index` for the configured backend and missing, stale or orphaned vectors. Record outstanding attempts and rebuild an unhealthy index as needed.
+Check installed solver module specs, executor isolation, memory, staged attempts
+and retrieval indexes. `solvers[].api_hint` names the basic entry point, domains,
+constraint family, time-limit setting and process requirements.
+`available=true` means module discovery only: `runtime_usable` and
+`sandbox_usable` remain unknown until confirmed; no license/service probe is
+performed automatically. `executor` gives both time limits, paths, resource
+limits and a cached tiny isolation probe. The same compact capability facts
+reach plan-next in `execution_constraints`, without a per-task solver tutorial
+or real-instance probe. Read `retrieval_index` for missing/stale vectors.
 
 ### `orx contract [--kind strategy_outcome] [--payload JSON]`
 

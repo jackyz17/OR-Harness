@@ -42,6 +42,9 @@ In formal experiments, cross-task memory comes only through the configured Harne
 
 Create `task.json` with `task_id`, `family`, and the original requirements in `text`. Keep that file and one episode label E across repairs. Add `coupling` (CIR) to represent relationships that affect the solution. Use [modeling.md](references/modeling.md) for task inputs and CIR.
 
+For file tasks, declare only public inputs in `input_resources`:
+`[{"source":"data/nodes.csv","path":"network/nodes.csv"}]`; read `inputs/network/nodes.csv` in the solve. Sources are relative to the CLI task file or Python API caller's cwd. Text-only tasks omit the list. See [file input and isolation](references/commands.md#file-input-and-isolation).
+
 ```bash
 orx profile --task task.json
 orx recall --task task.json --top 5
@@ -50,6 +53,9 @@ orx recall --task task.json --top 5
 Read the returned profile, applicable rules and related executions once; reuse those fields and inspect only a missing detail needed for the next decision. Check rule premises before adoption.
 
 ### 2. Select a method
+
+Before planning, inspect data/schema/scale and mathematical structure; read `doctor` or `execution_constraints` for APIs and limits. Discovered modules have unknown backend/license usability. Use tiny artificial instances for API checks and report analysis/probing/coding costs through host usage.
+Original-task LP relaxations, subproblems, search/enumeration, column generation, optimization-based reductions, solver comparisons and real-instance code trials belong inside formal execute.
 
 Put one or more concrete methods in `candidates.json` with `name`, `steps`, `solver`, and any execution `config`. `plan-next` predicts G, C, R, and H+ in one call per candidate and selects by `U = alpha*G - beta*C - gamma*R`. Single candidates go through the same decision.
 
@@ -62,6 +68,9 @@ Read `result.selected_prediction_id` (P) and `result.selected_score`. Carry any 
 ### 3a. Build and execute
 
 Implement the selected model and method in `ws/solve.py`. Write the observed solver status, objective, solution variables, and available bound and gap to `result.json`. Follow the [output format](references/commands.md#5-execute-and-check) to capture the method actually run. Include `--used-entry-ids ENTRY@VERSION` when adopting a rule.
+
+One candidate/script can read files, solve an LP, derive a safe reduction and solve the final model. Predict/execute it once, without separate algorithm-step predictions. Carry out the actual solve here; do not pre-solve the instance in the host terminal and replay its answer in execute.
+Dynamic `open`, `pathlib` and installed readers share the input boundary. Inputs are read-only; write `result.json` and temporary files in `scratch/`.
 
 ```bash
 orx execute --task task.json --prediction P --code ws/solve.py --workspace ws
@@ -164,6 +173,8 @@ verification with `--verification`: it is captured as `agent_reported` evidence
 on the same execution, separate from the framework checks, and creates no
 solving attempt.
 
+Record verification artifacts and actual cost through the existing verify action or host usage report. A new solving method or substantially revised answer returns to plan-next and execute; verification cannot bypass binding/retry limits.
+
 `reflection_material` carries the task reference, method, artifacts, solution,
 check report and prior attempts. Reuse the returned evidence; batch necessary
 reads rather than issuing an inspect per field or rereading unchanged material. Record every real
@@ -235,6 +246,8 @@ When unsure about the input, optionally add `--dry-run` to the same submission c
 ### 6. Continue with the next task
 
 After completing the required reviews, start the next task in the same memory directory. The next `plan-next` can use applicable calibration, recalled rules, and completed reviews.
+
+The external Runner enforces hard stops, session lifetime/write locks, public-input authorization, host-terminal pre-solving audits and cross-task scratch/note isolation. OR-Harness observes submitted executions and reported usage; it cannot monitor arbitrary host-terminal solving.
 
 ## NL4Opt example · `nl4opt_0184`
 

@@ -14,6 +14,11 @@ python3 -m pip install -e .
 
 Python 3.9+ and the standard library support the core; solver packages are optional and availability is checked at runtime. Configure an OpenAI-compatible world-model endpoint/model (`--world-model URL::MODEL`, credential `OR_WM_API_KEY` when required). Formal execution needs a permitted U-scored selection, including for one candidate. Without a usable predictor, planning reports why it cannot select an executable prediction.
 
+Formal execution requires Linux user/mount/network namespaces, `unshare` and
+`libseccomp.so.2`; `orx doctor` checks isolation and fails closed when unavailable.
+File-driven tasks declare `input_resources` in their task JSON and read them at
+`inputs/<path>` inside the isolated workspace. See [file inputs and safety](references/commands.md#file-input-and-isolation).
+
 Read [SKILL.md](SKILL.md) to complete one task in six steps:
 
 | Step | Action | Main result |

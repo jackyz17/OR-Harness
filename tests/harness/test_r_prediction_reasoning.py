@@ -76,6 +76,9 @@ class TestRiskReasoningPrompt(unittest.TestCase):
                     'do not invent precision or impose a risk floor',
                     'Agent analysis, probing, code writing and repeated tool calls are not timeout labels',
                     'their elapsed time belongs to C.remaining_latency_s',
+                    'Pure code/API failures and harness wall-clock interruption belong to R',
+                    'do not also lower G for the same purely technical hazard',
+                    'mathematical correctness alone does not imply G=1',
                 ):
                     self.assertIn(policy, text)
                 for event_name in R_EVENTS:

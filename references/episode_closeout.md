@@ -98,6 +98,16 @@ The current summary uses `wm-obs/4` and the event vocabulary `wm-events/4`. Each
 
 ### Technical R observations
 
+Current executor receipts retain submission, launch, sandbox-setup, runtime and
+result failure stages. Explicit script-contract violations are implementation
+failures; unavailable isolation/dependencies/licences are environment failures;
+an input/framework rejection with unconfirmed responsibility stays Unknown.
+Legacy records keep their original evidence. A rejection has formal timeout=0
+and `runtime_eligible=false`, with no claim that an algorithm actually avoided
+timeout. `technical_r.runtime_coverage` exposes started/not-started/unknown
+attempts separately; the formal timeout event, aggregation and historical
+metrics are unchanged. See [executor diagnostics](commands.md#submission-and-runtime-diagnostics).
+
 R before execution is a maximum single-item technical-risk score for one attempt. Three R events can supply it: `implementation_failure` (the harness's own code/API path fails or the result cannot be delivered), `timeout` (the harness wall-clock limit interrupts the attempt before a usable result; a solver that stops at its own time limit and still returns a usable result is NOT this event) and `environment_failure` (dependencies, licences, permissions, sandbox policy or an unavailable external service block the attempt; ordinary code errors are not this event). Each probability must be a finite JSON number in `[0,1]`; zero is valid. For the ranked candidates the framework takes the COMMON event set: R = `max(p(event))` over the events every participant supplied validly. A missing/unknown event is dropped for everyone, never imputed as 0; when the set is empty, or the predictions were archived under different R conventions, R is omitted for all participants. R is a maximum single-item risk score, NOT a joint failure probability, and no joint/max Brier is computed from it. Other event probabilities remain diagnostics. See [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
 
 For each recorded attempt, `execution_features.technical_outcome` holds the executor's receipt for the `implementation_failure` label under `wm-r-technical/1`. Close-out reads the ONE bound execution, including when G covers a strategy window, and labels all three R events on that same attempt: read `evaluations[].risk.implementation_observation` for the implementation label and `evaluations[].risk.r_events_observation.events` for the per-event labels, bases and predicted probabilities of the multi-event convention. Later retries never enter these observations; an attempt and its repair get separate labels.

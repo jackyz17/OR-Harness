@@ -14,6 +14,11 @@ python3 -m pip install -e .
 
 Python 3.9+ and the standard library support the core; solver packages are optional and availability is checked at runtime. Configure an OpenAI-compatible world-model endpoint/model (`--world-model URL::MODEL`, credential `OR_WM_API_KEY` when required). Formal execution needs a permitted U-scored selection, including for one candidate. Without a usable predictor, planning reports why it cannot select an executable prediction.
 
+正式执行需要 Linux 用户、挂载和网络命名空间、`unshare` 及 `libseccomp.so.2`。
+`orx doctor` 检查隔离能力；隔离不可用时拒绝运行。文件任务通过 task JSON 的
+`input_resources` 声明输入，脚本在隔离目录的 `inputs/<path>` 读取原始文件。
+参见[文件输入与安全边界](references/commands.md#file-input-and-isolation)。
+
 Read [SKILL.md](SKILL.md) to complete one task in six steps:
 
 | Step | Action | Main result |

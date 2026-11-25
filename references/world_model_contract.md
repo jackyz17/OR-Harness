@@ -77,6 +77,13 @@ Three independent provider-only ceilings apply: history feedback (`OR_HARNESS_HI
 
 The default G convention is `effective_completion/task_check_passed_given_faithful_execution` in `probability` under `wm-g-faithful/1`. It asks whether the original task would pass its acceptance check if the candidate's steps were faithfully implemented. The framework fixes this convention before the call. Use a finite JSON number in `[0,1]` for that probability and retain the baseline. When G is unavailable, read the reason and `benefit.notes`, which can still explain how the candidate addresses a decisive task requirement.
 
+Pure code/API errors and Harness interruption belong primarily to R, without
+lowering G again for that same technical cause. A wrong model, unsafe reduction,
+approximation that changes the task or absent quality guarantee affects G.
+An explicitly time-limited approximation can affect G through the quality it
+delivers on normal completion. A mathematically correct model does not alone
+force G=1. G labels, attribution and calibration keep their existing rules.
+
 Other registered benefit kinds include `solution_quality` (normalized quality), `valid_progress` and `correct_infeasibility_diagnosis`. Use the declared metric and unit when comparing results. For intervals, `interval_kind` identifies an individual outcome or a mean. See [G attribution](episode_closeout.md#g-attribution-evidence) for how an executed attempt supplies a label.
 
 ### C and R
@@ -95,6 +102,22 @@ or its normalization scale. See [generated-token observations](strategy_outcome.
 R uses the one-attempt technical-failure convention `wm-r-max-event/1` (observations under `wm-r-technical/1`). R is the MAXIMUM single-event probability over the events every ranked candidate supplies validly: `implementation_failure` (the harness's code/API path fails or the result cannot be delivered), `timeout` (the harness wall-clock limit interrupts the attempt before a usable result; a solver returning a usable result at its own time limit is NOT this event) and `environment_failure` (dependencies, licences, permissions, sandbox policy or an unavailable external service block the attempt; ordinary code errors are not this event). Each probability must be a finite JSON number in `[0,1]`; an explicit zero is a supplied value. The set E is COMMON: an event a participant left unknown or gave an unusable probability is omitted for everyone, and when E is empty R is omitted for all participants. A duplicate event or an illegal probability makes that event unknown, never a coerced or averaged number. R is a maximum single-item risk score, NOT a joint failure probability; no joint or maxed Brier is computed from it. Other event predictions remain diagnostics. Predictions archived before the multi-event convention keep their original single-event `wm-r-technical/1` meaning. See [technical R observations](episode_closeout.md#technical-r-observations) and [U scoring](strategy_outcome.md#3-score-one-or-more-candidates).
 
 The candidate can cover an `attempt` or a `strategy_window` spanning the declared modelling, execution, repair and verification activities. Window scoring requires a matching task, episode and strategy, ended linked attempts, and `trace.comparable=True`. Read coverage and auxiliary cost when inspecting a window total.
+
+The candidate must describe the actual formal solve, including LP relaxations,
+reductions and final optimization when they form one composite strategy.
+`execution_constraints` carries solver module/API hints, unknown runtime/license
+usability and executor isolation/limits. `joint_problem.task_payload.input_resources`
+carries only the explicit input manifest (source, path, bytes, hash and artifact
+reference), never the large file bodies. The same content versions bind the
+prediction and execution. A source/manifest change is not a reusable forecast.
+
+Current structured receipts distinguish a documented script-contract violation
+(implementation failure), unavailable process/isolation/dependency/license
+(environment failure), and input/framework rejections with uncertain
+responsibility (Unknown). Legacy receipts retain their recorded classifications.
+Formal R.timeout still asks whether the bound attempt was interrupted;
+`runtime_eligible=false` on a pre-runtime rejection prevents using its zero label
+as evidence that an algorithm ran without timing out. See [diagnostics](commands.md#submission-and-runtime-diagnostics).
 
 For C, `cost.retries` under `remaining_to_task_end` predicts the expected
 additional solve attempts AFTER this prediction's bound execution. It may be

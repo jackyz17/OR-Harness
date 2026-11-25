@@ -107,9 +107,11 @@ R_EVENT_DEFINITIONS: Dict[str, str] = {
         "limit and still returns a readable result is NOT this event"),
     "environment_failure": (
         "the attempt is blocked by its environment: a missing dependency or "
-        "import, a licence, a permission, sandbox policy, or an unavailable "
+        "import, a licence, a permission, unavailable sandbox isolation, or an unavailable "
         "external service/backend; an ordinary code/API error is "
-        "implementation_failure, not environment_failure"),
+        "implementation_failure, not environment_failure; violating the "
+        "documented script contract is also an implementation failure; "
+        "a framework rejection with unconfirmed responsibility stays unknown"),
 }
 
 #: The R SCORING convention (not an observation rule). R = MAXIMUM

@@ -12,6 +12,30 @@ import importlib.util
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+API_HINTS = {
+    "highs": {"entrypoint": "highspy.Highs", "domains": "continuous, integer, binary",
+              "constraints": "linear", "time_limit_api": "setOptionValue('time_limit', seconds)",
+              "execution_mode": "in-process"},
+    "pulp": {"entrypoint": "pulp.LpProblem / LpVariable", "domains": "continuous, integer, binary",
+             "constraints": "linear", "time_limit_api": "backend-dependent",
+             "execution_mode": "external CBC launch is blocked; use an in-process backend"},
+    "ortools": {"entrypoint": "ortools.sat.python.cp_model.CpModel / CpSolver",
+                "domains": "integer, boolean", "constraints": "CP-SAT linear, logical, scheduling",
+                "time_limit_api": "solver.parameters.max_time_in_seconds", "execution_mode": "in-process"},
+    "scip": {"entrypoint": "pyscipopt.Model", "domains": "continuous, integer, binary",
+             "constraints": "linear and supported nonlinear", "time_limit_api": "setParam('limits/time', seconds)",
+             "execution_mode": "in-process"},
+    "copt": {"entrypoint": "coptpy.Envr().createModel()", "domains": "continuous, integer, binary",
+             "constraints": "binding-dependent; confirm required type", "time_limit_api": "model.setParam('TimeLimit', seconds)",
+             "execution_mode": "in-process; license availability unknown"},
+    "pyomo": {"entrypoint": "pyomo.environ.ConcreteModel / SolverFactory",
+              "domains": "continuous, integer, binary", "constraints": "backend-dependent",
+              "time_limit_api": "backend-dependent", "execution_mode": "external solver launches are blocked"},
+    "gurobi": {"entrypoint": "gurobipy.Model", "domains": "continuous, integer, binary",
+               "constraints": "binding-dependent; confirm required type", "time_limit_api": "model.Params.TimeLimit",
+               "execution_mode": "in-process; remote/license-service networking is blocked"},
+}
+
 
 @dataclass
 class Availability:
@@ -24,7 +48,10 @@ class Availability:
     def to_dict(self) -> Dict[str, object]:
         return {"name": self.name, "solver_family": self.solver_family,
                 "api": self.api, "available": self.available,
-                "message": self.message}
+                "message": self.message, "probe_scope": "module_spec_only",
+                "runtime_usable": None, "sandbox_usable": None,
+                "api_hint": API_HINTS.get(self.name),
+                "note": "module discovery does not confirm imports, backend, license or execution in the sandbox"}
 
 
 class SolverAdapter:
@@ -106,21 +133,7 @@ class GurobiAdapter(SolverAdapter):
     name, solver_family, api = "gurobi", "milp", "gurobipy"
 
     def is_available(self) -> Availability:
-        if importlib.util.find_spec("gurobipy") is None:
-            return Availability(self.name, self.solver_family, self.api, False,
-                                "gurobipy is not installed")
-        try:  # license probe: starting an environment fails without a license
-            import gurobipy as gp
-
-            env = gp.Env(empty=True)
-            env.setParam("OutputFlag", 0)
-            env.start()
-            env.dispose()
-            return Availability(self.name, self.solver_family, self.api, True,
-                                "gurobipy and license are available")
-        except Exception as exc:  # pragma: no cover - environment specific
-            return Availability(self.name, self.solver_family, self.api, False,
-                                f"{type(exc).__name__}: {str(exc)[:200]}")
+        return self._spec_probe("gurobipy module found; license/runtime not tested")
 
 
 def default_adapters() -> List[SolverAdapter]:
