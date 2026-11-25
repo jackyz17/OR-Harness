@@ -106,14 +106,118 @@ class TestBuild64Implementation(GCase):
         self.report(c)
         self.report(c, event_id='bug-2', round_id='repair-2')
         failed = self.run_g(p, crash=True)
-        self.report(c, execution_id=failed.execution_id, round_id='repair-3')
+        repair = self.report(c, execution_id=failed.execution_id, round_id='repair-3')
         q, d = self.predict()
-        self.run_g(q)
+        retry = self.run_g(q)
+        repair['correction']['retry_action_id'] = retry.action_id
+        self.h.report_action('model', self.task, 'ep1', outcome={'implementation_facts': [repair]})
         self.covered(d)
         self.finish(p)
         self.assertEqual(self.summary(p).cost['retries']['comparable']['value'], 3)
         self.assertEqual(self.summary(q).cost['retries']['comparable']['value'], 0)
         self.assertEqual(self.summary(p).implementation_observation['label'], 1)
+
+    def test_explicit_repair_and_formal_resubmission_are_one_round(self):
+        p, c = self.predict()
+        failed = self.run_g(p, crash=True)
+        repair = self.report(c, execution_id=failed.execution_id)
+        q, d = self.predict()
+        retry = self.run_g(q)
+        repair['correction']['retry_action_id'] = retry.action_id
+        for _ in range(2):
+            self.h.report_action('model', self.task, 'ep1', outcome={'implementation_facts': [repair]})
+        self.covered(d)
+        self.finish(p)
+        self.assertEqual(self.summary(p).cost['retries']['comparable']['value'], 1)
+        self.assertEqual(self.summary(q).cost['retries']['comparable']['value'], 0)
+
+    def test_unlinked_overlapping_repair_keeps_only_trustworthy_lower_bound(self):
+        p, c = self.predict()
+        self.run_g(p, crash=True)
+        self.report(c, event_id='old-method-defect', round_id='old-method-repair')
+        q, d = self.predict()
+        self.run_g(q)
+        self.covered(d)
+        self.finish(p)
+        for prediction, lower in ((p, 1), (q, 0)):
+            with self.subTest(prediction=prediction.prediction_id):
+                real = self.summary(prediction).cost['retries']
+                self.assertFalse(real['complete'])
+                self.assertIsNone(real['comparable']['value'])
+                self.assertEqual(real['lower_bound'], lower)
+                self.assertTrue(any('association' in gap for gap in real['observed_from']['gaps']))
+
+    def test_abandoned_repair_then_started_reimplementation_are_distinct_rounds(self):
+        p, c = self.predict()
+        self.run_g(p, crash=True)
+        self.report(c, event_id='old-method-defect', round_id='abandoned-repair')
+        q = self.predict_g(method={'name': 'replacement method', 'steps': ['Reimplement the failed strategy.']})
+        d = self.h.actions.get(self.h.choose_next(q.trace.model_info['decision_action_id'],
+                                                 prediction_id=q.prediction_id)['action_id'])
+        rework = self.report(d, event_id='replacement-rework', classification='mathematical', round_id='replacement-round')
+        retry = self.run_g(q)
+        rework['correction']['retry_action_id'] = retry.action_id
+        self.h.report_action('model', self.task, 'ep1', outcome={'implementation_facts': [rework]})
+        self.covered(d)
+        self.finish(p)
+        self.assertEqual(self.summary(p).cost['retries']['comparable']['value'], 2)
+        self.assertEqual(self.summary(q).cost['retries']['comparable']['value'], 1)
+
+    def test_round_association_requires_a_real_retry_action(self):
+        _, c = self.predict()
+        repair = self.report(c)
+        repair['correction']['retry_action_id'] = 'missing-retry-action'
+        before = len(self.h.actions.query(task_id=self.task['task_id']))
+        with self.assertRaisesRegex(ValueError, 'actual resubmission'):
+            self.h.report_action('model', self.task, 'ep1', outcome={'implementation_facts': [repair]})
+        self.assertEqual(len(self.h.actions.query(task_id=self.task['task_id'])), before)
+
+    def test_repeated_choice_reuses_window_before_and_after_execution(self):
+        from pathlib import Path
+        p, c = self.predict()
+        decision_id = p.trace.model_info['decision_action_id']
+        for _ in range(2):
+            self.assertEqual(self.h.choose_next(decision_id, prediction_id=p.prediction_id)['action_id'], c.action_id)
+        self.run_g(p)
+        self.assertEqual(self.h.choose_next(decision_id, prediction_id=p.prediction_id)['action_id'], c.action_id)
+        selections = [a for a in self.h.actions.query(task_id=self.task['task_id'])
+                      if a.parent_action_id == decision_id and a.outcome.get('kind') == 'plan_next_choice']
+        self.assertEqual([a.action_id for a in selections], [c.action_id])
+        self.assertEqual(implementation_window(p, self.h.actions.query(task_id=self.task['task_id']))['start'], c.started_at)
+        work = Path(self.home)/p.prediction_id
+        with self.assertRaisesRegex(ValueError, 'consumed|bound|claimed'):
+            self.h.execute(self.task, None, str(work/'solve.py'), str(work),
+                           prediction_id=p.prediction_id, episode_id='ep1')
+
+    def test_cli_main_flow_selects_before_implementation_and_returns_binding_id(self):
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from or_harness.cli import main
+        self.provider.payload['capability_gain'] = {'decision': 0, 'basis': ['No new mechanism.']}
+        candidate = {'strategy_id': 'S04', 'solver': 'highs',
+                     'method': {'name': 'selected method', 'steps': ['Implement the selected model.']}}
+
+        def cli(*args):
+            output = io.StringIO()
+            with patch('or_harness.cli._harness', return_value=self.h), patch.object(self.h, 'close'), redirect_stdout(output):
+                self.assertEqual(main(list(args)), 0)
+            return json.loads(output.getvalue())
+
+        plan = cli('plan-next', '--task', json.dumps(self.task), '--episode', 'ep1',
+                   '--candidates', json.dumps([candidate]))
+        decision = plan['result']['decision_action_id']
+        prediction = plan['result']['selected_prediction_id']
+        self.assertNotIn('choose-next', plan['summary'])
+        self.assertIn('implementation observation anchor', plan['summary'])
+        self.assertIn(f'orx execute --task ... --prediction {prediction}', plan['summary'])
+        chosen = cli('choose-next', '--decision', decision, '--prediction', prediction)
+        self.assertIn(chosen['result']['action_id'], chosen['summary'])
+        self.assertIn('observation window', chosen['summary'])
+        self.assertNotIn('Compatibility choice', chosen['summary'])
+        repeated = cli('choose-next', '--decision', decision, '--prediction', prediction)
+        self.assertEqual(repeated['result']['action_id'], chosen['result']['action_id'])
+        self.assertEqual(len(self.provider.requests), 1)
 
     def test_d_duplicate_logs_and_formal_host_identity(self):
         p, c = self.predict()

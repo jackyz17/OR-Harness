@@ -25,8 +25,8 @@ Use the same [task input](modeling.md#start-from-the-shared-original-input) for 
 | ID | Where to read it | Where to use it |
 |---|---|---|
 | Task / episode | One task ID per problem and one episode per solving effort | Reuse both for retries |
-| Decision action | `plan-next` → `result.decision_action_id` | `choose-next --decision` |
-| Selected prediction P | `plan-next` → `result.selected_prediction_id` | `execute --prediction P` |
+| Decision action | `plan-next` → `result.decision_action_id` | Framework observation anchor; optional `choose-next --decision` |
+| Selected prediction P | `plan-next` → `result.selected_prediction_id` | Implement/debug, then `execute --prediction P`; `implementation_facts[].prediction_id` |
 | Execution EX | `execute` → `result.execution_id` | `check-task`, `record --from-staged`, evidence corrections |
 | Execution action | `execute` → `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
 | Induction job J | `close-episode` → `result.induction_schedule.pending_ids[]` | `induction-material --induction-id`, `induce --induction-id` |
@@ -174,19 +174,35 @@ If the plan has no eligible U, read its reason and the saved prediction's `failu
 
 ### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode E] --candidates specs.json [--cost-scales JSON_OR_FILE] [--horizon 1] [--max-calls N] [--prediction-mode M] [--time-budget S]`
 
-Predict G/C/R/H+ once per candidate under one shared context. Save the scores and select the eligible candidate with highest U. Read `result.selected_prediction_id`, `result.selected_score` and `result.plan.candidates[]`. Use the selected P in `execute`. For a new attempt, get a fresh selection in the same episode.
+Predict G/C/R/H+ once per candidate under one shared context. Save the scores and select the eligible candidate with highest U. Read `result.decision_action_id` (D), `result.selected_prediction_id` (P), `result.selected_score` and `result.plan.candidates[]`.
+
+Solve flow: `plan-next → implement/debug → execute → check/finish/closeout`.
+The framework establishes the selected candidate's implementation anchor at decision
+completion. Report implementation facts and coverage with P; execution binds to
+the same anchor. For a new attempt, obtain a fresh decision in the same episode.
 
 Use `--cost-scales '{"tool_calls":30}'` to declare resource scales. `--execution-context runner.json` sets the solver interface, taking precedence over `OR_EXECUTION_CONTEXT`; a legacy `phase` key is accepted but C no longer uses a modelling phase. See [score calculation](strategy_outcome.md#3-score-one-or-more-candidates).
 
 ### `orx choose-next --decision ACTION_ID (--prediction P | --chosen spec.json | --rejected) [--note "..."]`
 
-Record a rejection of a saved decision or confirm its scored winner. Use `--rejected --note TEXT` to record why the plan was rejected. An accepted choice uses the winner already selected by U.
+Optionally confirm a saved decision's scored winner or record its rejection.
+Use `--rejected --note TEXT` to record why the plan was rejected. Normal solving
+continues directly from `plan-next` to implementation and `execute`.
+
+`result.action_id` identifies the framework's selection action. Repeated
+confirmation reuses that action and observation window. Existing
+`selection_action_id` reports remain supported. Confirmation does not consume
+the prediction or change execution authorization.
 
 ## 5. Execute and check
 
 ### `orx execute --task t.json --prediction PREDICTION_ID --code solve.py --workspace DIR [--episode ep1] [--method JSON] [--adapted-from ex_a,ex_b] [--adaptation TEXT] [--used-entry-ids ENTRY@VERSION]`
 
 Run the selected code and stage the resulting attempt. Pass an unused P from `plan-next` with the same task and episode. The saved candidate supplies the strategy, solver and configuration.
+
+Execute binds the submission to the implementation anchor already established
+by `plan-next`. It also retains automatic selection for older saved decisions;
+their observations retain their original boundaries.
 
 **Workspace** Keep the submitted script inside `--workspace`. Execution uses a
 fresh isolated `/work`, with declared files at `inputs/<path>`, read-only

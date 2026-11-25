@@ -36,16 +36,26 @@ def _refs(value, name):
 def normalize_report(harness, outcome, *, task_id, episode_id, ended_at):
     """Validate the optional extensions to report_action's existing outcome.
 
-    A selection is a real choose_next action for the scored winner. It need
-    not have an execution. This does not claim/consume a formal execution.
+    The framework resolves the selected prediction to its implementation
+    anchor. Reporting evidence does not consume a formal execution.
     """
     outcome = copy.deepcopy(outcome)
     facts = outcome.get("implementation_facts", [])
     if not isinstance(facts, list) or len(facts) > 32:
         raise ValueError("implementation_facts must be a concise list (at most 32)")
 
-    def selection(value):
-        action = harness.actions.get(value)
+    def selection(metadata):
+        reference = metadata.get("selection_action_id")
+        pid = metadata.get("prediction_id")
+        if reference is None and pid:
+            prediction = harness.strategy_predictions.get(pid)
+            decision = harness.actions.get(prediction.trace.model_info.get("decision_action_id")) if prediction else None
+            if decision and (decision.outcome or {}).get("selected_prediction_id") == pid:
+                reference = decision.outcome.get("implementation_selection_action_id")
+                if reference is None:
+                    earlier = choices(episode_actions(harness, task_id, episode_id), pid)
+                    reference = earlier[0].action_id if len(earlier) == 1 else None
+        action = harness.actions.get(reference) if reference else None
         if (not action or action.action_type != "select_strategy"
                 or str(action.task_id) != str(task_id)
                 or str(action.episode_id or "") != str(episode_id or "")
@@ -59,12 +69,16 @@ def normalize_report(harness, outcome, *, task_id, episode_id, ended_at):
                 or decision.action_id != prediction.trace.model_info.get("decision_action_id")
                 or decision.outcome.get("selected_prediction_id") != prediction.prediction_id):
             raise ValueError("selection must belong to the actual scored planning decision")
+        if pid is not None and pid != prediction.prediction_id:
+            raise ValueError("implementation evidence contradicts selected prediction")
+        metadata["selection_action_id"] = action.action_id
+        metadata["prediction_id"] = prediction.prediction_id
         return action
 
     for fact in facts:
         if not isinstance(fact, dict):
             raise ValueError("implementation fact must be an object")
-        choice = selection(fact.get("selection_action_id"))
+        choice = selection(fact)
         pid = choice.outcome["prediction_id"]
         if fact.get("prediction_id", pid) != pid:
             raise ValueError("implementation fact contradicts selected prediction")
@@ -125,6 +139,17 @@ def normalize_report(harness, outcome, *, task_id, episode_id, ended_at):
             repair["evidence_refs"] = _refs(repair.get("evidence_refs"), "correction")
             if not isinstance(repair.get("method"), str) or not repair["method"].strip():
                 raise ValueError("correction requires a concise method")
+            if "retry_action_id" in repair:
+                retry_id = repair["retry_action_id"]
+                retry = harness.actions.get(retry_id) if isinstance(retry_id, str) else None
+                receipt = (harness.bank.get_pending(retry.linked_execution_id) or
+                           harness.bank.get(retry.linked_execution_id)) if retry and retry.linked_execution_id else None
+                if (not retry or retry.action_type != "execute_strategy" or retry.source == "hypothetical"
+                        or str(retry.task_id) != str(task_id) or str(retry.episode_id or "") != str(episode_id or "")
+                        or retry.ended_at is None or retry.started_at < start or retry.started_at > ended_at
+                        or (retry.outcome or {}).get("phase") == "association" or receipt is None
+                        or receipt.source != "executed"):
+                    raise ValueError("correction.retry_action_id must reference its actual resubmission in this episode")
         # Bound the fact itself, not just the number of events. Full versions
         # and diffs live in artifacts/host logs referenced by evidence_refs.
         import json
@@ -136,6 +161,9 @@ def normalize_report(harness, outcome, *, task_id, episode_id, ended_at):
             continue
         if not isinstance(value, dict) or type(value.get("complete")) is not bool:
             raise ValueError(key + " requires explicit complete boolean")
+        if key == "implementation_coverage":
+            choice = selection(value)
+            value.setdefault("from", choice.started_at)
         start, stop = timestamp(value.get("from")), timestamp(value.get("through"))
         if start is None or stop is None or not start <= stop <= ended_at:
             raise ValueError(key + " requires valid from/through boundaries before report end")
@@ -144,7 +172,6 @@ def normalize_report(harness, outcome, *, task_id, episode_id, ended_at):
             raise ValueError(key + " requires observer provenance")
         value["source"] = "host_report"
         if key == "implementation_coverage":
-            choice = selection(value.get("selection_action_id"))
             if abs(start - choice.started_at) > 1e-6:
                 raise ValueError("implementation coverage must start at the actual selection")
             for flag in ("implemented", "candidate_complete"):
@@ -237,6 +264,14 @@ def implementation_window(prediction, actions, records=(), *, cutoff=None):
     positives = [f for f in facts if f.get("confirmed") is True and not f.get("conflicts")
                  and not f.get("excluded") and f.get("classification") == "implementation"
                  and (f.get("requires_correction") or f.get("obstructed"))]
+    submitted = any((a.params or {}).get("decision_choice_action_id") == choice.action_id
+                    and a.linked_execution_id == r.execution_id
+                    and ((r.execution_features or {}).get("executed") is True or
+                         ((r.execution_features or {}).get("artifacts") or {}).get("submitted_script"))
+                    for a in actions for r in records) if choice else False
+    implemented = bool(submitted or any(c.get("implemented") for _, c in coverages) or
+        any(f.get("confirmed") is True and not f.get("excluded")
+            and (f.get("requires_correction") or f.get("obstructed")) for f in facts))
     complete = bool(ends) and any(c.get("complete") and c.get("implemented")
                      and c["from"] <= start and c["through"] >= end for _, c in coverages)
     ambiguous = any(not f.get("excluded") and (f.get("conflicts") or
@@ -250,7 +285,7 @@ def implementation_window(prediction, actions, records=(), *, cutoff=None):
                        "implementation coverage or selection attribution is incomplete"),
             "selection_action_id": choice.action_id if choice else None,
             "prediction_id": prediction.prediction_id, "start": start, "end": end,
-            "complete": complete, "facts": facts,
+            "implemented": implemented, "complete": complete, "facts": facts,
             "coverage_refs": [a.action_id for a, _ in coverages],
             "evidence_refs": sorted({r for f in facts for r in f.get("evidence_refs") or []})}
 
@@ -280,10 +315,14 @@ def corrective_rounds(actions, records, *, anchor, end):
                     continue
                 if rid in rounds and rounds[rid]["started_at"] != start:
                     gaps.append("conflicting start for correction round " + rid)
-                rounds[rid] = {"round_id": rid, "started_at": start,
-                    "event_id": fact["event_id"], "source_refs": fact.get("source_action_ids") or []}
-    # Formal retries remain an automatic lower bound. A repair followed by
-    # resubmission is one continuous round, not two charges.
+                row = rounds.setdefault(rid, {"round_id": rid, "started_at": start,
+                    "event_id": fact["event_id"], "source_refs": [], "retry_action_ids": []})
+                row["source_refs"] = sorted(set(row["source_refs"]) | set(fact.get("source_action_ids") or []))
+                if isinstance(correction.get("retry_action_id"), str):
+                    row["retry_action_ids"] = sorted(set(row["retry_action_ids"]) | {correction["retry_action_id"]})
+    # A real failed attempt followed by resubmission can supplement host
+    # facts. Only an explicit association proves that a reported round owns
+    # that resubmission; temporal overlap alone leaves the count incomplete.
     by_id = {r.execution_id: r for r in records}
     for action in actions:
         if (action.action_type == "execute_strategy" and action.source != "hypothetical"
@@ -301,6 +340,10 @@ def corrective_rounds(actions, records, *, anchor, end):
             unique.append(action)
             seen.add(action.linked_execution_id)
     attempts = unique
+    targets = {a.action_id: a.linked_execution_id for a in actions
+               if a.action_type == "execute_strategy" and a.linked_execution_id in by_id
+               and a.source != "hypothetical" and (a.outcome or {}).get("phase") != "association"}
+    repairs = [(f, c) for f in facts if not f.get("excluded") for c in f.get("corrections") or []]
     for previous, current in zip(attempts, attempts[1:]):
         record = by_id[previous.linked_execution_id]
         acceptance_failures = [a for a in actions if a.action_type == "verify"
@@ -310,16 +353,30 @@ def corrective_rounds(actions, records, *, anchor, end):
         failed = bool(record.failures) or (record.quality or {}).get("status") in ("error", "timeout") or bool(acceptance_failures)
         if not failed or anchor is None or current.started_at < anchor:
             continue
-        matching = [r for r in rounds.values() if previous.ended_at is not None
-                    and previous.ended_at <= r["started_at"] <= current.started_at]
-        if matching:
+        owners = [(f, c) for f, c in repairs if isinstance(c.get("retry_action_id"), str)
+                  and targets.get(c["retry_action_id"]) == current.linked_execution_id]
+        if owners:
+            if any(f.get("confirmed") is not True or c["started_at"] > current.started_at
+                   or len(starts.get(c["round_id"]) or []) > 1 for f, c in owners):
+                gaps.append("unreliable correction/resubmission association: " + current.action_id)
+            # A linked round that began before this forecast is not charged
+            # again at its later formal resubmission.
             continue
-        # A round started before this forecast is not charged again at its
-        # later formal resubmission. Inspect the same event facts pre-anchor.
-        prior_repairs = [c for f in facts if f.get("confirmed") is True and not f.get("excluded")
-                         for c in f.get("corrections") or []
-                         if previous.ended_at is not None and previous.ended_at <= c["started_at"] <= current.started_at]
-        if prior_repairs:
+        trigger_refs = {previous.action_id, previous.linked_execution_id,
+                        formal_event_id(previous.linked_execution_id)} | {a.action_id for a in acceptance_failures}
+        ambiguous = []
+        for fact, correction in repairs:
+            start = correction["started_at"]
+            in_between = previous.ended_at is not None and previous.ended_at <= start <= current.started_at
+            same_trigger = (fact.get("event_id") in trigger_refs or fact.get("execution_id") == previous.linked_execution_id
+                            or bool(trigger_refs.intersection(fact.get("evidence_refs") or [])))
+            target = correction.get("retry_action_id")
+            if (in_between or same_trigger and start <= current.started_at) and (
+                    not isinstance(target, str) or target not in targets):
+                ambiguous.append(correction["round_id"])
+        if ambiguous:
+            gaps.append("formal retry has no explicit round association: " + current.action_id
+                        + "; possible rounds: " + ", ".join(sorted(set(ambiguous))))
             continue
         rid = "formal-retry:" + current.action_id
         rounds[rid] = {"round_id": rid, "started_at": current.started_at,
@@ -365,7 +422,7 @@ def compact_evidence(value, *, max_facts=3):
     """Bounded send-time view, with exact actions for full versions/diffs."""
     out = {k: copy.deepcopy(value[k]) for k in (
         "observation_rule_version", "scope", "label", "reason", "selection_action_id",
-        "prediction_id", "start", "end", "complete", "coverage", "coverage_refs",
+        "prediction_id", "start", "end", "implemented", "complete", "coverage", "coverage_refs",
         "prior_selected_implementations") if k in value}
     facts = value.get("facts") or []
     out["n_facts"] = len(facts)
@@ -380,7 +437,7 @@ def compact_evidence(value, *, max_facts=3):
         item["detail_refs"] = ["orx inspect --bank actions --action " + aid
                                for aid in (fact.get("source_action_ids") or [])[:3]]
         item["corrections"] = [{**{k: copy.deepcopy(c[k]) for k in (
-            "round_id", "started_at", "result", "evidence_refs", "verification_refs") if k in c},
+            "round_id", "started_at", "result", "evidence_refs", "verification_refs", "retry_action_id") if k in c},
             "method": str(c.get("method") or "")[:240]} for c in (fact.get("corrections") or [])[:3]]
         out["facts"].append(item)
     out["omitted_facts"] = max(0, len(facts) - max_facts)

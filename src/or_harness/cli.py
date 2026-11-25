@@ -1927,8 +1927,9 @@ def cmd_plan_next(args) -> int:
         if selected:
             parts.append(f"Selected {selected}; U={score.get('utility')}; common terms={score.get('scoring_basis',{}).get('terms')}; "
                          f"G={score.get('benefit_value')}, C={score.get('cost_normalized')}, R={score.get('risk_effective')}. "
-                         f"Run `orx execute --task ... --prediction {selected} --code solve.py --workspace ws` directly; "
-                         "the original prediction is reused and actual adoption is recorded before execution. "
+                         "The framework established the implementation observation anchor at decision completion. "
+                         f"Implement/debug, then run `orx execute --task ... --prediction {selected} --code solve.py --workspace ws`. "
+                         "Report implementation facts and coverage with this prediction_id. "
                          "See selected_score.scoring_basis for omitted dimensions and reasons.")
         else:
             parts.append('No executable U decision: '+str(plan.get('truncation_reason') or plan.get('suggestion_basis') or plan.get('status'))+
@@ -1965,9 +1966,8 @@ def cmd_choose_next(args) -> int:
                        + (f"{(result.get('selected') or {}).get('strategy_id')}"
                           if (result.get('selected') or {}).get('strategy_id')
                           else "")
-                       + ". Compatibility choice saved; execution still requires "
-                         "the original unused U-permitted winner. The normal "
-                         "flow executes result.selected_prediction_id directly.")
+                       + f". Selection action {result['action_id']} confirms the existing observation window. "
+                         "Implement/debug this candidate, then execute the original unused U-permitted prediction.")
         if result.get("deviation"):
             summary += " (deviation from the suggestion recorded)"
         return _emit(result, summary)
@@ -2937,7 +2937,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="report what would be evicted without writing")
     p.set_defaults(func=cmd_enforce_window)
 
-    p = sub.add_parser("plan-next", help="score one or more proposed candidates, select by U, then execute the selected prediction directly")
+    p = sub.add_parser("plan-next", help="select by U and establish the observation anchor; implement/debug, then execute")
     p.add_argument("--task", required=True)
     p.add_argument("--episode", default=None)
     p.add_argument("--candidates", default=None,
@@ -2990,9 +2990,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_plan_next)
 
     p = sub.add_parser("choose-next",
-                       help="compatibility choice/rejection record for an existing plan; "
-                            "cannot authorize an unscored or losing candidate. Normal "
-                            "solving executes result.selected_prediction_id directly")
+                       help="optionally confirm the scored winner or reject the plan; reuses its selection action")
     p.add_argument("--decision", required=True, metavar="ACTION_ID",
                    help="the select_strategy decision action id from "
                         "plan-next")
@@ -3005,7 +3003,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "(action type/strategy/solver/config), not the whole "
                         "JSON")
     p.add_argument("--chosen", default=None,
-                   help="ActionSpec JSON for a compatibility choice record "
+                   help="ActionSpec JSON selecting the scored winner "
                         "(an alternative to --prediction; if both are given "
                         "they must name the same candidate)")
     p.add_argument("--rejected", action="store_true",

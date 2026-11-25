@@ -593,6 +593,8 @@ def technical_r_statistics(facts_by_episode, samples, *, min_samples=5, harness=
                     fact = bound_r_observation(harness, prediction, action)
                 else:
                     fact = implementation_window(prediction, actions, records)
+                    if not fact["implemented"]:
+                        continue
                     fact["r_events"] = {name: {"label": fact["label"] if name == "implementation_failure" else None}
                                         for name in R_EVENTS}
                     coverage_gaps.append({"prediction_id": prediction.prediction_id,

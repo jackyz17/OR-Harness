@@ -166,10 +166,21 @@ Stdout containing an exception is never automatically treated as a new defect.
   and cannot produce a clean negative.
 - Corrections deduplicate by stable `correction.round_id` and actual start time.
   Several edits/tools, or repeated event reports within a round, count once.
-  Conflicting round times make completeness unknown. Formal resubmission after
-  a failure is an automatic lower-bound round only when no already-started
-  continuous repair covers that transition. A round started before a later
-  decision is not charged again at its resubmission.
+  Conflicting round times make completeness unknown. To associate a formal
+  resubmission with that same round, report `correction.retry_action_id` using
+  the real execute action ID in the same task/episode. This can be a later report
+  of the same event/round, preserving its original occurrence/start times and
+  adding the actual retry action ID and supporting references. It grants no
+  execution permission. A proven linked round started before a later decision
+  is not charged again at resubmission.
+  Time overlap or the same failed event alone cannot prove that a repair owns
+  the next formal retry. If an intervening repair has no reliable association,
+  retain incomplete coverage and the count of evidenced started rounds as a
+  lower bound, even when the host reported complete coverage. Abandoning an old
+  repair and actually starting reimplementation needs distinct round IDs; link
+  the resubmission to the round that performed it. Automatic formal-retry facts
+  supplement explicit reports only when the actual failed attempt/resubmission
+  establishes an additional round without an ambiguous reported repair.
 - Defect references preserve failing scripts/tests; correction references carry
   the diff/fixed script and observable result; verification references locate
   final checks. Reflection and induction material include the same facts.

@@ -3639,6 +3639,7 @@ class ORHarness:
             "root_snapshot_id": plan.root_snapshot_id,
             "n_candidates": len(candidate_rows),
             "execution_contract": "wm-u-decision/1",
+            "implementation_anchor": "decision_completion" if plan.selected_prediction_id else None,
             "selected_prediction_id": plan.selected_prediction_id,
             "selected_score": plan.selected_score,
             "candidates": candidate_rows,
@@ -3656,6 +3657,13 @@ class ORHarness:
             decision_result["candidate_rejections"] = list(candidate_rejections)
         self.actions.end_action(decision.action_id, status="completed",
                                 outcome=decision_result)
+        if plan.selected_prediction_id:
+            # Establish the implementation anchor before returning to the
+            # solving Agent. Actual implementation is confirmed by evidence.
+            selection = self.choose_next(decision.action_id, prediction_id=plan.selected_prediction_id)
+            settled = self.actions.get(decision.action_id)
+            settled.outcome["implementation_selection_action_id"] = selection["action_id"]
+            self.actions._update(settled)
         result = plan.to_dict()
         result.update({key: decision_result[key] for key in (
             "prediction_context_id", "prediction_context_version", "protocol",
@@ -3667,11 +3675,11 @@ class ORHarness:
                     prediction_id: Optional[str] = None,
                     rejected: bool = False,
                     deviation_note: Optional[str] = None) -> Dict[str, Any]:
-        """Record a compatible scored choice intent or reject a decision.
+        """Read/confirm the scored selection, or reject an existing decision.
 
-        This optional compatibility path cannot select an unscored or losing
-        candidate. Execute automatically records actual adoption, reusing an
-        existing compatible intent. Rejection requires a new decision to solve."""
+        plan_next establishes new implementation anchors internally. Optional
+        repeated choices reuse that action; execute alone consumes permission.
+        Rejection requires a new decision to solve."""
         from or_harness.world_model.actions import PROGRESS_UPDATES
         decision = self.actions.get(decision_action_id)
         if decision is None:
@@ -3705,7 +3713,6 @@ class ORHarness:
                          if _candidate_reference(r.get('action_spec'))==_candidate_reference(wanted)]
                 if len(matches)!=1:raise ValueError('manual chosen candidate must identify one scored plan-next candidate')
                 prediction_id=matches[0]['prediction_id']
-            self._scored_decision(self.strategy_predictions.get(prediction_id))
             # Re-reading/reaffirming the same choice must not start a second
             # implementation window. It still does not consume an execution.
             existing = [a for a in self.actions.query(task_id=decision.task_id, episode_id=decision.episode_id)
@@ -3713,6 +3720,10 @@ class ORHarness:
                         and (a.outcome or {}).get("kind") == "plan_next_choice"
                         and (a.outcome or {}).get("prediction_id") == prediction_id
                         and not (a.outcome or {}).get("rejected")]
+            # Reaffirming an adopted choice is a read of its original
+            # selection, not permission for another execution.
+            self._scored_decision(self.strategy_predictions.get(prediction_id),
+                action_id=(existing[0].outcome.get("adopted_by_action_id") if existing else None))
             if existing:
                 item = existing[0]
                 return {"action_id": item.action_id, "status": item.status,
@@ -3753,10 +3764,16 @@ class ORHarness:
         else:
             raise ValueError("choose_next requires chosen=... or "
                              "rejected=True")
+        automatic = (decision.outcome or {}).get("implementation_anchor") == "decision_completion" and not rejected
         record = self.actions.report_action(
             "select_strategy", decision.task_id, decision.episode_id,
             params={"decision_action_id": decision_action_id},
-            outcome=outcome, status="completed")
+            outcome=outcome, status="completed",
+            started_at=decision.ended_at if automatic else None,
+            ended_at=decision.ended_at if automatic else None)
+        if automatic:
+            record.source = "executed"
+            record.outcome["selection_source"] = "plan_next"
         # Link the choice to the decision it answers (parent-child).
         record.parent_action_id = decision_action_id
         self.actions._update(record)
