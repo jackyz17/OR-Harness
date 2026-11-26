@@ -103,12 +103,12 @@ class TestGFeedbackChain(GCase):
         self.assertEqual((group['unknown'], group['n_scored']), (1, 0))
         self.assertIsNone(group['brier'])
 
-    def test_passing_checker_does_not_replace_fidelity_or_acceptance_coverage(self):
-        for episode, changes in (
-                ('fidelity', {'method_fidelity': 'unknown'}),
-                ('coverage', {'acceptance_scope': 'partial'}),
+    def test_passing_checker_needs_fidelity_and_agent_coverage_limits_are_negative(self):
+        for episode, changes, label in (
+                ('fidelity', {'method_fidelity': 'unknown'}, None),
+                ('coverage', {'acceptance_scope': 'partial'}, 0),
                 ('no-evidence', {'method_fidelity': 'unknown',
-                                 'acceptance_scope': 'unknown', 'evidence_refs': []})):
+                                 'acceptance_scope': 'unknown', 'evidence_refs': []}, None)):
             with self.subTest(episode=episode):
                 # Distinct synthetic tasks respect the existing two-attempt
                 # diversity cap instead of changing retrieval to fit tests.
@@ -117,15 +117,15 @@ class TestGFeedbackChain(GCase):
                 r = self.run_g(p)
                 self.assertEqual(self.submit(r, self.declaration(r, **changes))['state'], 'passed')
                 b = self.close_g(episode)['evaluations'][0]['benefit']
-                self.assertEqual(b['label_eligibility'], 'unknown')
-                self.assertNotIn('observed', b)
+                self.assertEqual(b['label_eligibility'], 'unknown' if label is None else 'attributable')
+                self.assertEqual(b.get('observed'), label)
                 self.assertTrue(b['reason'])
-                self.assert_feedback(self.next_view('next-' + episode), p.prediction_id, r.execution_id, None)
+                self.assert_feedback(self.next_view('next-' + episode), p.prediction_id, r.execution_id, label)
         groups = self.h.calibration_summary()['conditional_g']
-        self.assertEqual(sum(g['n_scored'] for g in groups), 0)
-        self.assertEqual(sum(g['unknown'] for g in groups), 3)
+        self.assertEqual(sum(g['n_scored'] for g in groups), 1)
+        self.assertEqual(sum(g['unknown'] for g in groups), 2)
 
-    def test_reference_conflict_stays_unknown_until_supported_resolution(self):
+    def test_trusted_reference_conflict_is_negative_until_supported_resolution(self):
         p = self.predict_g()
         r = self.run_g(p)
         conflict = self.declaration(r, failure_source='reference_conflict',
@@ -135,12 +135,11 @@ class TestGFeedbackChain(GCase):
             'g_attribution': conflict})
         closed = self.close_g()
         evaluation_id = closed['evaluations'][0]['evaluation_id']
-        self.assertNotIn('observed', closed['evaluations'][0]['benefit'])
-        self.assertIn('reference_conflict', closed['evaluations'][0]['benefit']['reason'])
-        pair, case = self.assert_feedback(self.next_view(), p.prediction_id, r.execution_id, None)
+        self.assertEqual(closed['evaluations'][0]['benefit']['observed'], 0)
+        pair, case = self.assert_feedback(self.next_view(), p.prediction_id, r.execution_id, 0)
         self.assertEqual(case['recorded_cause']['failure_source'], 'reference_conflict')
         self.assertEqual(pair['benefit']['attribution_ref'], checked['g_assessment_ref'])
-        self.assertEqual(self.h.calibration_summary()['conditional_g'][0]['n_scored'], 0)
+        self.assertEqual(self.h.calibration_summary()['conditional_g'][0]['n_scored'], 1)
         # A separate synthetic trusted reference now resolves the dispute;
         # simply claiming that the benchmark is wrong would not supply G=1.
         self.h.check_task_result(r.execution_id, {
@@ -148,7 +147,7 @@ class TestGFeedbackChain(GCase):
             'reference_version': 'synthetic-independent-check/1',
             'g_attribution': self.declaration(r)})
         self.assert_feedback(self.next_view('resolved'), p.prediction_id, r.execution_id, 1)
-        self.assertNotIn('observed', self.h.get_strategy_evaluation(evaluation_id)['benefit'])
+        self.assertEqual(self.h.get_strategy_evaluation(evaluation_id)['benefit']['observed'], 0)
         group = self.h.calibration_summary()['conditional_g'][0]
         self.assertEqual((group['passed'], group['n_execution_units']), (1, 1))
 
@@ -157,6 +156,7 @@ class TestGFeedbackChain(GCase):
         r = self.run_g(p)
         invalid = [None, [], 'faithful', self.declaration(r, method_fidelity='yes'),
                    self.declaration(r, failure_source='solver_optimal'),
+                   self.declaration(r, evidence_status='lost-or-bad-maybe'),
                    self.declaration(r, source=''),
                    self.declaration(r, evidence_refs=['artifacts.missing']),
                    self.declaration(r, resolved_refs={'artifacts.submitted_script': {'sha256': 'wrong'}})]

@@ -86,7 +86,7 @@ class GCase(HarnessTestCase):
 
     def check_g(self, record, *, fidelity="faithful", failure="unknown",
                 coverage="original_task", acceptance="factory-coupling/v1", evidence=True,
-                check_spec=None):
+                check_spec=None, evidence_status=None):
         check = copy.deepcopy(check_spec) if check_spec is not None else {"semantic_probe": [{
             "path": "execution_features.solution_variables.CFC", "equals": 1}]}
         if evidence:
@@ -102,6 +102,8 @@ class GCase(HarnessTestCase):
                 "source": "test auditor reviewed captured script and result",
                 "assessment": "Code follows the recorded factory-selection steps; compare the recorded BE=1 and CFC values against the same-factory requirement.",
                 "evidence_refs": refs}
+            if evidence_status is not None:
+                check["g_attribution"]["evidence_status"] = evidence_status
         return self.h.check_task_result(record.execution_id, check)
 
     def close_g(self, episode="ep1"):

@@ -88,7 +88,7 @@ from or_harness.world_model.cost_eligibility import (
     cost_eligibility,
 )
 from or_harness.world_model.contracts import (
-    FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
+    FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, FAITHFUL_G_OBSERVATION_VERSIONS, is_g_probability,
     R_EVENTS, R_OBSERVATION_VERSION, R_SCORING_VERSION,
     R_FORMAL_OBSERVATION_VERSION, R_FORMAL_SCORING_VERSION,
 )
@@ -2732,7 +2732,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
     } if benefit is not None else {})
     if benefit is not None and benefit.metric == FAITHFUL_G_METRIC and benefit.value is not None and (
             not is_g_probability(benefit.value) or benefit.unit != "probability" or
-            benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION):
+            benefit.observation_rule_version not in FAITHFUL_G_OBSERVATION_VERSIONS):
         evaluation.benefit = {"eligibility": "not_predicted",
             "reason": "invalid faithful G value/unit/observation rule", "metric": benefit.metric,
             "unit": benefit.unit, "predicted": None}
@@ -2814,7 +2814,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "acceptance_support": copy.deepcopy(fact.get("acceptance_support")),
         })
         if attributable:
-            for key in ("observed", "acceptance_id", "evidence_refs", "verified_objective"):
+            for key in ("observed", "reason", "acceptance_id", "evidence_refs", "verified_objective"):
                 if key in fact:
                     evaluation.benefit[key] = copy.deepcopy(fact[key])
         else:
@@ -4787,9 +4787,9 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
     possible (its prediction was archived, or the record is gone). What the
     calibration reads is the DERIVED one:
 
-    - G is re-derived through the SAME faithful-execution attribution and
-      acceptance adapter used at close-out: a failed check alone is never
-      a candidate-method failure. Legacy metrics keep their own rules;
+    - G is re-derived through the SAME versioned faithful-execution and
+      acceptance adapter used at close-out. /2 includes Agent verification
+      insufficiency; /1 retains its narrower cause attribution. Legacy metrics keep their own rules;
       measured COST stays exactly what the execution actually consumed;
     - a task check that was WITHDRAWN restores the un-gated observation;
     - an execution WITHDRAWN from the evidence set (``exclude``) makes the
@@ -6415,7 +6415,7 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
             "acceptance_id", "acceptance_rule", "evidence_refs") if k in benefit}
     if benefit.get("attribution"):
         benefit_row["attribution"] = {k: copy.deepcopy(benefit["attribution"].get(k))
-            for k in ("method_fidelity", "failure_source", "source", "assessment")}
+            for k in ("method_fidelity", "failure_source", "evidence_status", "acceptance_scope", "source", "assessment")}
     predicted_benefit = getattr(prediction, "benefit", None)
     if predicted_benefit is not None and predicted_benefit.notes:
         benefit_row["notes"] = list(predicted_benefit.notes)

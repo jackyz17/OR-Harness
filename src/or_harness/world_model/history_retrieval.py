@@ -660,7 +660,7 @@ def _evaluation_fact(pair: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(attribution, dict) and attribution:
         fact["attribution"] = {
             key: copy.deepcopy(attribution[key]) for key in (
-                "method_fidelity", "failure_source", "source", "assessment")
+                "method_fidelity", "failure_source", "evidence_status", "acceptance_scope", "source", "assessment")
             if attribution.get(key) not in (None, "", [], {})}
     if pair.get("task_check") is not None:
         fact["task_check"] = copy.deepcopy(pair["task_check"])
@@ -765,6 +765,7 @@ def global_g_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     unknown = 0
     unknown_reasons: Dict[str, int] = {}
     n_predicted = 0
+    n_current = 0
     from or_harness.world_model.g_signal import pair_g_fact, _pair_g_observation
     for pair in pairs:
         benefit = pair_g_fact(pair)
@@ -772,6 +773,7 @@ def global_g_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         rule = benefit.get("observation_rule_version")
         if metric != FAITHFUL_G_METRIC or rule != FAITHFUL_G_OBSERVATION_VERSION:
             continue
+        n_current += 1
         observed, _ = _pair_g_observation(pair)
         predicted_raw = benefit.get("predicted")
         predicted = (float(predicted_raw)
@@ -825,7 +827,8 @@ def global_g_statistics(pairs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                         "scored (prediction, observation) pairs; an observed "
                         "label without a prediction is counted separately and "
                         "never paired by array position"),
-        "n_pairs": len(pairs),
+        "n_pairs": n_current,
+        "n_other_conventions": len(pairs) - n_current,
         "n_observed": len(labels),
         "n_predicted": n_predicted,
         "n_scored": n_scored,
@@ -1635,6 +1638,8 @@ def _g_case(row: Dict[str, Any], *, similarity: Dict[str, Any],
     else:
         case["g"] = {
             "observed": None,
+            "metric": g_block.get("metric"),
+            "rule": g_block.get("observation_rule_version"),
             "reason": (g_block.get("reason")
                        or "no attributable G label in this closed pair"),
         }

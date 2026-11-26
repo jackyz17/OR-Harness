@@ -36,6 +36,16 @@ forecasts remain readable and need a scored plan before formal execution.
 
 The provider receives the frozen context, the candidate, and the decision's benefit convention. In `benefit.notes`, connect a decisive task requirement to the proposed step and its expected consequence. For example, choosing factories separately for two products can violate an original requirement to produce them at the same factory. When numeric G is unavailable, retain the explanation.
 
+G (`wm-g-faithful/2`) predicts effective completion and sufficient verification
+of the original task by the current Agent and Harness, given faithful execution.
+Understanding, modelling, solving and verification limitations affect G. An
+evaluable faithful run that fails or lacks sufficient credible verification is
+G=0, including when the cause is unknown; G=1 needs verified original-task
+completion. Unknown denotes missing opportunity, fidelity or key evidence,
+external disruption or a defective evaluation standard. Pure technical failure
+without an evaluable result belongs to R. `/1` forecasts retain their original
+labels and calibration groups. See [G attribution](episode_closeout.md#g-attribution-evidence).
+
 Use `trace.unsupported_fields` and the saved call diagnostics to inspect unusable predictions. [Forecast recovery](commands.md#stored-forecasts-and-their-conventions) describes the CLI outputs.
 
 ## 3. Score one or more candidates

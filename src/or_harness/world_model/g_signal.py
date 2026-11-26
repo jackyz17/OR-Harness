@@ -13,7 +13,9 @@ from collections import Counter
 
 from or_harness.core.schema import normalize_method
 from or_harness.world_model.contracts import (
-    FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
+    FAITHFUL_G_METRIC,
+    FAITHFUL_G_OBSERVATION_VERSIONS, LEGACY_FAITHFUL_G_OBSERVATION_VERSION,
+    is_g_probability,
 )
 
 
@@ -83,7 +85,11 @@ def requested_solving_conditions(candidate, constraints):
 
 
 def _acceptance_support(report):
-    """Only checks that ran and support THIS verdict can supply a G label."""
+    """Checks supporting this verdict, independent of cause attribution.
+
+    No support prevents a positive label. Under /2 it can also establish
+    inadequate Agent verification once an evaluation opportunity is confirmed.
+    """
     decisive = False if report.get("state") == "failed" else True
     trusted = []
     for check in report.get("checks") or []:
@@ -244,6 +250,9 @@ def checked_attribution(record, declaration):
     }.items():
         if out.get(key) not in choices:
             issues.append(f"{key} must be one of {choices}")
+    if "evidence_status" in out and out["evidence_status"] not in (
+            "sufficient", "agent_insufficient", "unavailable", "invalid_standard", "unknown"):
+        issues.append("evidence_status must be sufficient, agent_insufficient, unavailable, invalid_standard or unknown")
     for key in ("source", "assessment", "acceptance_id"):
         if not isinstance(out.get(key), str) or not out[key].strip():
             issues.append(f"{key} must name the assessment/source/acceptance standard")
@@ -304,7 +313,7 @@ def _assessment_key(execution_id, report):
 
 
 def save_g_assessment(store, record, report, attribution, *, prediction_id=None,
-                      execution_action_id=None):
+                      execution_action_id=None, observation_rule_version=None):
     """Own G-only evidence in the world-model log; the task check stays generic.
 
     Also used when an old inline assessment is rewritten by a normal bank
@@ -335,7 +344,9 @@ def save_g_assessment(store, record, report, attribution, *, prediction_id=None,
             audit['resolved_refs'] = {key: {'sha256': value.get('sha256')}
                 for key, value in audit['resolved_refs'].items() if isinstance(value, dict)}
         value = {'evaluation_version': 'wm-g-assessment/1',
-            'observation_rule_version': FAITHFUL_G_OBSERVATION_VERSION,
+            # Assessments contain sourced facts. Normal submission uses the
+            # bound forecast's rule; rewriting old inline data keeps /1.
+            'observation_rule_version': observation_rule_version or LEGACY_FAITHFUL_G_OBSERVATION_VERSION,
             'execution_id': str(execution_id),
             'execution_action_id': execution_action_id or raw.get('action_id'),
             'prediction_id': prediction_id,
@@ -364,7 +375,7 @@ def read_g_assessment(store, record, report=None):
         except (StorageError, KeyError, TypeError):
             return {'issues': ['G assessment evidence is unavailable']}, None
         if (not isinstance(value, dict) or value.get('evaluation_version') != 'wm-g-assessment/1' or
-                value.get('observation_rule_version') != FAITHFUL_G_OBSERVATION_VERSION):
+                value.get('observation_rule_version') not in FAITHFUL_G_OBSERVATION_VERSIONS):
             return {'issues': ['unsupported G assessment version']}, None
         if not isinstance(value.get('attribution'), dict):
             return {'issues': ['invalid G assessment evidence']}, None
@@ -396,7 +407,8 @@ def observe_faithful_g(summary, records, prediction, *, store=None):
     reasons = []
     if summary.eligibility.get("scope.execution"):
         reasons.append("the declared execution scope has missing records")
-    if convention.get("observation_rule_version") != FAITHFUL_G_OBSERVATION_VERSION:
+    legacy = convention.get("observation_rule_version") == LEGACY_FAITHFUL_G_OBSERVATION_VERSION
+    if convention.get("observation_rule_version") not in FAITHFUL_G_OBSERVATION_VERSIONS:
         reasons.append("unsupported or missing faithful G observation rule")
     if not records:
         reasons.append("no in-scope execution")
@@ -436,7 +448,7 @@ def observe_faithful_g(summary, records, prediction, *, store=None):
             reasons.append("method_actual was not recorded")
         if audit.get("method_fidelity") != "faithful":
             reasons.append("execution deviated from the candidate or fidelity is unknown")
-        if audit.get("failure_source") == "reference_conflict":
+        if legacy and audit.get("failure_source") == "reference_conflict":
             reasons.append("reference_conflict: reference/acceptance evidence remains unresolved")
         from or_harness.core.evidence_encoding import method_fingerprint
         bound_methods=all(audit.get(key+'_fingerprint')==method_fingerprint(getattr(record,key))
@@ -444,23 +456,50 @@ def observe_faithful_g(summary, records, prediction, *, store=None):
             for key in ('method_planned','method_actual'))
         if audit and (audit.get("execution_id") != record.execution_id or not bound_methods):
             reasons.append("attribution does not identify this execution and its methods")
-        if audit.get("acceptance_scope") != "original_task" or not audit.get("acceptance_id"):
-            reasons.append("checker coverage of original-task acceptance is insufficient")
-        if report.get("intent") or not (report.get("scope") or {}).get("basis"):
-            reasons.append("intermediate result or no declared acceptance basis")
         state = report.get("state")
-        if state not in ("passed", "failed"):
-            reasons.append("no decisive task-check verdict")
         support = _acceptance_support(report)
         fact["acceptance_support"] = support
-        if not support:
-            reasons.append("no trusted executed acceptance check supports the verdict; self-derived or unstated reference values are insufficient")
-        if state == "failed" and audit.get("failure_source") != "candidate_method":
-            reasons.append("failure is not attributed to the candidate method")
-        if state == "passed" and audit.get("failure_source") not in ("unknown", None):
-            reasons.append("passing result contradicts the failure-source assessment")
+        if legacy:
+            # Historical forecasts retain their original narrow attribution
+            # target, including during live rederivation and rebuilds.
+            if audit.get("acceptance_scope") != "original_task" or not audit.get("acceptance_id"):
+                reasons.append("checker coverage of original-task acceptance is insufficient")
+            if report.get("intent") or not (report.get("scope") or {}).get("basis"):
+                reasons.append("intermediate result or no declared acceptance basis")
+            if state not in ("passed", "failed"):
+                reasons.append("no decisive task-check verdict")
+            if not support:
+                reasons.append("no trusted executed acceptance check supports the verdict; self-derived or unstated reference values are insufficient")
+            if state == "failed" and audit.get("failure_source") != "candidate_method":
+                reasons.append("failure is not attributed to the candidate method")
+            if state == "passed" and audit.get("failure_source") not in ("unknown", None):
+                reasons.append("passing result contradicts the failure-source assessment")
+        else:
+            refs = audit.get("resolved_refs") or {}
+            if record.source != "executed" or not set(refs).intersection((
+                    "artifacts.workspace_result", "execution_features.solution_variables")):
+                reasons.append("no sourced evaluable result from an actual execution")
+            if state not in ("passed", "failed", "insufficient"):
+                reasons.append("task-check evidence is unavailable or invalid")
+            evidence_status = audit.get("evidence_status")
+            if evidence_status in ("unavailable", "invalid_standard", "unknown"):
+                reasons.append({
+                    "unavailable": "external or framework evidence is unavailable",
+                    "invalid_standard": "original task or reference standard is defective and unresolved",
+                    "unknown": "verification evidence responsibility is not established",
+                }[evidence_status])
+            completed = (state == "passed" and bool(support)
+                         and audit.get("acceptance_scope") == "original_task"
+                         and bool((report.get("scope") or {}).get("basis"))
+                         and not report.get("intent")
+                         and audit.get("failure_source") not in ("candidate_method", "reference_conflict")
+                         and evidence_status != "agent_insufficient")
         if not reasons:
-            fact["observed"] = 1.0 if state == "passed" else 0.0
+            fact["observed"] = float(state == "passed" if legacy else completed)
+            if not legacy:
+                fact["reason"] = (
+                    "faithful execution effectively completed and sufficiently verified the original task"
+                    if completed else "faithful execution had an evaluation opportunity but did not establish effective original-task completion and sufficient verification")
             fact["acceptance_id"] = audit["acceptance_id"]
             fact["evidence_refs"] = copy.deepcopy(audit.get("resolved_refs"))
             # A business objective is a case fact, never a second binary win.

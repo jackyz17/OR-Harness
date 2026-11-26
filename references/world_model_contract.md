@@ -75,14 +75,22 @@ Three independent provider-only ceilings apply: history feedback (`OR_HARNESS_HI
 
 ### G and acceptance
 
-The default G convention is `effective_completion/task_check_passed_given_faithful_execution` in `probability` under `wm-g-faithful/1`. It asks whether the original task would pass its acceptance check if the candidate's steps were faithfully implemented. The framework fixes this convention before the call. Use a finite JSON number in `[0,1]` for that probability and retain the baseline. When G is unavailable, read the reason and `benefit.notes`, which can still explain how the candidate addresses a decisive task requirement.
+The default G convention is `effective_completion/task_check_passed_given_faithful_execution` in `probability` under `wm-g-faithful/2`. It measures whether the current Agent and Harness can faithfully execute the candidate, effectively complete the original task and sufficiently verify the result. Task understanding, modelling, solving and verification ability all matter. The framework fixes the convention before the call. Use a finite JSON number in `[0,1]` and retain the baseline and evidence-grounded `benefit.notes`.
 
 Pure code/API errors and Harness interruption belong primarily to R, without
 lowering G again for that same technical cause. A wrong model, unsafe reduction,
 approximation that changes the task or absent quality guarantee affects G.
 An explicitly time-limited approximation can affect G through the quality it
 delivers on normal completion. A mathematically correct model does not alone
-force G=1. G labels, attribution and calibration keep their existing rules.
+force G=1. With faithful execution, an evaluable result and valid sourced
+attribution, insufficient verification, circular evidence, confirmed failure
+with an unknown cause and unresolved trusted-reference conflicts yield G=0.
+G=1 requires sufficient credible original-task verification. Unknown covers
+missing opportunity, unestablished fidelity, invalid binding, lost key facts,
+external disruption or an unresolved defective task/reference standard.
+The checker's passed/failed/insufficient verdict remains a separate fact.
+Historical `/1` observations keep their original attribution rules, and numeric
+feedback groups and current global G diagnostics keep the versions separate.
 
 Other registered benefit kinds include `solution_quality` (normalized quality), `valid_progress` and `correct_infeasibility_diagnosis`. Use the declared metric and unit when comparing results. For intervals, `interval_kind` identifies an individual outcome or a mean. See [G attribution](episode_closeout.md#g-attribution-evidence) for how an executed attempt supplies a label.
 

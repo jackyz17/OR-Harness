@@ -7362,6 +7362,7 @@ class ORHarness:
         check = check if check is not None else {}
         from or_harness.world_model.g_signal import (
             checked_attribution, require_g_attribution_location, save_g_assessment,
+            g_observation_convention,
         )
         require_g_attribution_location(check)
         # Resolve the producing action, not the newest verify action linked
@@ -7443,9 +7444,12 @@ class ORHarness:
         g_assessment_ref = None
         with self.store.transaction():
             if attribution is not None:
+                g_convention = g_observation_convention(
+                    self.strategy_predictions.get(prediction_id)) if prediction_id else None
                 g_assessment_ref = save_g_assessment(
                     self.store, record, report, attribution, prediction_id=prediction_id,
-                    execution_action_id=execution_action_id)
+                    execution_action_id=execution_action_id,
+                    observation_rule_version=(g_convention or {}).get("observation_rule_version"))
             self.actions.end_action(
                 action.action_id, status="completed",
                 outcome={"state": report["state"],

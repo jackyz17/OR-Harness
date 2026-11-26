@@ -143,8 +143,12 @@ worked cases.
 not the whole self-check, and an inapplicable basis must not be declared for
 form. After reviewing the captured method/code/result, include one sourced
 `g_attribution` in the same JSON through the [G attribution interface](references/episode_closeout.md#g-attribution-evidence).
-Use `method_fidelity` and `acceptance_scope` honestly; when the evidence cannot
-support a judgement, record `unknown` with the available references. EX is
+Use `method_fidelity` and `acceptance_scope` honestly. G=1 requires faithful
+execution, original-task completion and sufficient credible verification by the
+current Agent. Faithful, evaluable execution with
+insufficient original-task verification is G=0, even when the failure cause is
+unknown. Missing evaluation opportunity or key external evidence remains Unknown;
+use `evidence_status` to distinguish Agent insufficiency from evidence loss. EX is
 `result.execution_id` from `execute`.
 
 ```bash
@@ -158,9 +162,9 @@ the saved attribution for that check revision. Invalid or
 misplaced attribution is rejected before the check is written. `check-task` is
 the sole G submission interface; `action --report verify` only reports an
 external action. The framework derives G from the saved facts at close-out.
-Unknown is a normal outcome: do not repeat checks or run a full independent
-solve merely to obtain G=1 or G=0; re-check only for changed facts or a corrected
-check.
+Use the minimum sufficient verification. Do not repeat checks or run a full
+independent solve merely to obtain a G label; re-check only for changed facts or
+a corrected check. Record observed failure honestly, including an unknown cause.
 
 Read `result.state`:
 

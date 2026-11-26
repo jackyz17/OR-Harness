@@ -52,6 +52,15 @@ When the selected prediction has H+=1, its `verification_conditions` test the pr
 - `failed`: a declared check found a violation. The framework does not decide whether the task reading, the model, the code or the check itself is wrong. Analyse which one it is. A bad check, a broken verification script or missing evidence is corrected and re-run on the SAME execution; a new attempt is planned only when the model or implementation is the real problem.
 - `insufficient`: the declared check could not decide. It is neither a pass nor a failure, and it does not by itself require a complete re-solve.
 
+G separately measures effective completion and verification by the current
+Agent. With faithful execution and an evaluable result, substantive coverage
+gaps, circular evidence or Agent-supplied insufficient checks yield G=0; locating
+the exact failure cause is not required. Record that cause as unknown when
+needed. Missing key external evidence or a defective task/reference standard
+remains Unknown; declare the distinction through `g_attribution.evidence_status`.
+Verification sufficiency depends on the original requirements and evidence,
+not the number of scripts, checks or solvers. Keep the minimum sufficient check.
+
 Never mark the self-check complete or passed when a verification script raised or an assertion failed without handling it. A failed verification is evidence about the model, the implementation, the task reading or the script; decide which, and act on that decision.
 
 An agent-run verification attached with `--verification` is captured as immutable artifacts and labelled `agent_reported`. It is a different source than the framework's `task_check`, creates no solving attempt, and never overwrites the solve `result.json`. `state` distinguishes `script_error` (the script did not run or raised) from `assertion_violations` (it ran and an assertion failed); neither is a pass.

@@ -232,9 +232,10 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "block naming the ONE yardstick this decision uses. Predict under it. "
     "The PRIMARY benefit is `kind=effective_completion` with "
     "`metric=task_check_passed_given_faithful_execution`: the probability "
-    "that faithfully implementing the candidate steps, under the current "
-    "original task and agreed solving conditions, passes original-task "
-    "acceptance. Faithful means the code follows the candidate steps; "
+    "that the current Agent and Harness, faithfully following the candidate "
+    "steps under the agreed conditions, effectively complete and sufficiently "
+    "verify the original task. Task understanding, modelling, solving and "
+    "verification ability all affect G. Faithful means the code follows the candidate steps; "
     "constraints omitted by the METHOD remain omitted in this assumption. "
     "Focus on the original requirements, candidate steps and expected "
     "result. Before estimating G, identify the candidate's decisive premises: "
@@ -257,6 +258,14 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "reduction or missing solution-quality guarantee affects G. A declared "
     "time-limited approximation may affect G through the quality delivered on "
     "normal completion; mathematical correctness alone does not imply G=1. "
+    "Under wm-g-faithful/2, a faithful evaluable run is G=1 only with sufficient "
+    "credible original-task verification. Failure to complete or verify, "
+    "partial coverage, circular evidence and unresolved trusted-reference "
+    "conflicts are G=0 even when the cause is unknown; this does not prove "
+    "the mathematical method wrong. Unknown means no evaluation opportunity, "
+    "unestablished fidelity, missing execution/check facts or attribution, "
+    "external disruption, or a defective evaluation standard. Verification "
+    "insufficiency is an observed capability limit, not missing opportunity. "
     "`kind=solution_quality` with "
     "`metric=normalized_objective_gap` measures how well the SOLVER solved "
     "the MODEL it was given — that is a SUPPORTING fact, NOT the same as "
@@ -605,9 +614,10 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
     **FAITHFUL_G_CONVENTION,
     "required": True,
     "scope": "the prediction's own candidate scope",
-    "note": ("probability of original-task acceptance GIVEN faithful execution "
-             "of the candidate steps under the agreed conditions; method omissions "
-             "remain omissions, script implementation failure is a separate risk"),
+    "note": ("probability the current Agent effectively completes and sufficiently verifies "
+             "the original task GIVEN faithful execution of the candidate steps; "
+             "Agent verification insufficiency is a negative observation, while purely "
+             "technical failure without an evaluable result belongs to R"),
 }
 
 #: The COST span every candidate predicts under by default: from the

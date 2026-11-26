@@ -626,7 +626,7 @@ def _provider_g_attribution(attribution, ref):
     if not isinstance(attribution, dict):
         return {}
     out = {}
-    for key in ("method_fidelity", "failure_source", "source"):
+    for key in ("method_fidelity", "failure_source", "evidence_status", "acceptance_scope", "source"):
         if attribution.get(key) not in (None, ""):
             out[key], _ = _clip(attribution[key], 120)
     if attribution.get("assessment") not in (None, ""):

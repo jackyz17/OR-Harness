@@ -46,10 +46,12 @@ def main():
     with tempfile.TemporaryDirectory(prefix="or-harness-g-demo-") as home:
         h = ORHarness(home=home, world_model=provider, embedding=LocalHashEmbeddingBackend())
         try:
-            for ep, method, cfc, fidelity, failure in [
-                ("method_omission", split, 2, "faithful", "candidate_method"),
-                ("faithful_pass", joint, 1, "faithful", "unknown"),
-                ("code_omission", joint, 2, "deviated", "implementation"),
+            for ep, method, cfc, fidelity, failure, coverage in [
+                ("method_omission", split, 2, "faithful", "candidate_method", "original_task"),
+                ("unknown_failure_cause", split, 2, "faithful", "unknown", "original_task"),
+                ("partial_verification", joint, 1, "faithful", "unknown", "partial"),
+                ("faithful_pass", joint, 1, "faithful", "unknown", "original_task"),
+                ("code_omission", joint, 2, "deviated", "implementation", "original_task"),
             ]:
                 p = planned_prediction(h,task, {"action_type": "execute_strategy",
                     "strategy_id": "S04", "method": method}, ep, benefit_convention=FAITHFUL_G_CONVENTION)
@@ -69,7 +71,7 @@ def main():
                 h.check_task_result(record.execution_id, {
                     "semantic_probe": [{"path": "execution_features.solution_variables.CFC", "equals": 1}],
                     "g_attribution": {"method_fidelity": fidelity, "failure_source": failure,
-                        "acceptance_scope": "original_task", "acceptance_id": "same-factory/v1",
+                        "acceptance_scope": coverage, "acceptance_id": "same-factory/v1",
                         "source": "example auditor inspected the captured script and BE/CFC result",
                         "assessment": "BE is fixed at 1; compare CFC against the original same-factory constraint and audit whether the code preserves the declared method.",
                         "evidence_refs": ["artifacts.submitted_script", "artifacts.workspace_result"]}})

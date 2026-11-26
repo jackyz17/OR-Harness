@@ -249,12 +249,16 @@ BENEFIT_KINDS = ("effective_completion", "solution_quality",
 # A distinct currency and observation rule; old completion/gap predictions
 # keep their declared meaning, including when read from an unversioned bank.
 FAITHFUL_G_METRIC = "task_check_passed_given_faithful_execution"
-FAITHFUL_G_OBSERVATION_VERSION = "wm-g-faithful/1"
+LEGACY_FAITHFUL_G_OBSERVATION_VERSION = "wm-g-faithful/1"
+FAITHFUL_G_OBSERVATION_VERSION = "wm-g-faithful/2"
+FAITHFUL_G_OBSERVATION_VERSIONS = (
+    LEGACY_FAITHFUL_G_OBSERVATION_VERSION, FAITHFUL_G_OBSERVATION_VERSION,
+)
 FAITHFUL_G_CONVENTION = {
     "kind": "effective_completion", "metric": FAITHFUL_G_METRIC,
     "unit": "probability",
     "observation_rule_version": FAITHFUL_G_OBSERVATION_VERSION,
-    "observed_from": "attributable original-task acceptance after faithful execution",
+    "observed_from": "effective original-task completion and sufficient verification by the current Agent after faithful execution",
 }
 
 
@@ -2307,7 +2311,7 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
         if benefit.metric == FAITHFUL_G_METRIC:
             if benefit.kind != "effective_completion" or benefit.unit != "probability":
                 problems.append("faithful G requires effective_completion/probability")
-            if benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION:
+            if benefit.observation_rule_version not in FAITHFUL_G_OBSERVATION_VERSIONS:
                 problems.append("faithful G requires its declared observation rule version")
             if benefit.value is not None and not is_g_probability(benefit.value):
                 problems.append("faithful G benefit.value must be finite and in [0, 1]")

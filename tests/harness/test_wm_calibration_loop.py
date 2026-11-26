@@ -583,9 +583,9 @@ class TestFaithfulGObservations(GCase):
             ("method_omission", SPLIT, True, False, "faithful", "candidate_method", "original_task", True, 0.0),
             ("code_omission", COUPLED, True, False, "deviated", "implementation", "original_task", True, None),
             ("crash", COUPLED, False, True, "unknown", "implementation", "original_task", True, None),
-            ("partial_check", COUPLED, False, False, "faithful", "unknown", "partial", True, None),
+            ("partial_check", COUPLED, False, False, "faithful", "unknown", "partial", True, 0.0),
             ("no_audit", COUPLED, True, False, "faithful", "candidate_method", "original_task", False, None),
-            ("cause_unknown", SPLIT, True, False, "faithful", "unknown", "original_task", True, None),
+            ("cause_unknown", SPLIT, True, False, "faithful", "unknown", "original_task", True, 0.0),
         ]
         for ep, method, split, crash, fidelity, failure, coverage, evidence, expected in cases:
             with self.subTest(ep=ep):
@@ -740,7 +740,7 @@ class TestFaithfulGObservations(GCase):
         self.assertEqual(b["label_eligibility"], "attributable")
         self.assertEqual(b["observed"], 1)
 
-    def test_timeout_and_insufficient_checker_are_unknown(self):
+    def test_timeout_is_unknown_but_agent_insufficient_checker_is_zero(self):
         self.h.executor.timeout_seconds = 1
         p = self.predict_g()
         r = self.run_g(p, timeout=True)
@@ -754,7 +754,7 @@ class TestFaithfulGObservations(GCase):
         audit = get_value(self.h.store,result['g_assessment_ref'])['attribution']
         self.h.check_task_result(r2.execution_id, {"integer": {"variables": ["missing"]},
             "g_attribution": audit})
-        self.assertNotIn("observed", self.close_g("ep2")["evaluations"][0]["benefit"])
+        self.assertEqual(self.close_g("ep2")["evaluations"][0]["benefit"]["observed"], 0)
 
 
 class TestGReviewReproductions(GCase):
@@ -762,7 +762,7 @@ class TestGReviewReproductions(GCase):
         self.predict_g(episode=episode)
         return self.provider.requests[-1]["prediction_context"]
 
-    def test_self_referenced_or_unstated_objective_cannot_supply_g(self):
+    def test_self_referenced_or_unstated_objective_cannot_establish_completion(self):
         for ep, source in [("self", "self_derived"), ("unstated", None)]:
             with self.subTest(source=source):
                 p = self.predict_g(SPLIT, ep)
@@ -774,8 +774,9 @@ class TestGReviewReproductions(GCase):
                 self.assertEqual(checked["state"], "passed")
                 self.assertFalse(checked["report"]["reference_source"]["independent"])
                 benefit = self.close_g(ep)["evaluations"][0]["benefit"]
-                self.assertEqual(benefit["label_eligibility"], "unknown")
-                self.assertIn("reference", benefit["reason"])
+                self.assertEqual(benefit["label_eligibility"], "attributable")
+                self.assertEqual(benefit["observed"], 0)
+                self.assertEqual(benefit["acceptance_support"], [])
         view = self.next_feedback()
         self.assertTrue(all(g["passed"] == 0 for g in view["strategy_outcome_calibration"]["conditional_g"]))
 
@@ -787,7 +788,9 @@ class TestGReviewReproductions(GCase):
             "semantic_probe": {"path": "execution_features.solution_variables.CFC", "equals": 1}})
         self.assertEqual(checked["state"], "failed")
         self.assertFalse(any(c["check"] == "semantic_probe" for c in checked["report"]["checks"]))
-        self.assertEqual(self.close_g()["evaluations"][0]["benefit"]["label_eligibility"], "unknown")
+        benefit = self.close_g()["evaluations"][0]["benefit"]
+        self.assertEqual(benefit["observed"], 0)
+        self.assertEqual(benefit["acceptance_support"], [])
         self.assertFalse(self.next_feedback()["prediction_execution_pairs"]["same_task_comparisons"])
 
     def test_different_actual_time_limits_remain_individual_cases(self):

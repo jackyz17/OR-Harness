@@ -1425,6 +1425,7 @@ class TestFaithfulGContract(GCase):
             {"value": 1.2}, {"value": float("inf")}, {"value": float("nan")},
             {"value": True}, {"value": "0.7"}, {"unit": "boolean"}, {"scope": "strategy_window"},
             {"observation_rule_version": "unknown/9"},
+            {"observation_rule_version": "wm-g-faithful/1"},
         ]
         for index, patch in enumerate(variants):
             with self.subTest(patch=patch):
