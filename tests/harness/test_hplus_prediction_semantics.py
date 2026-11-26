@@ -275,6 +275,11 @@ class TestHplusPredictionSemantics(unittest.TestCase):
                  '3. CHECK THE ACTUAL KNOWLEDGE GAP.', '4. CHECK EVIDENCE AND DECIDE.')
         offsets = [prompt.index(step) for step in steps]
         self.assertEqual(offsets, sorted(offsets))
+        generalize = prompt[offsets[0]:offsets[1]]
+        self.assertIn('visible published strategic knowledge', generalize)
+        self.assertIn('same Agent additionally receiving', generalize)
+        gap = prompt[offsets[2]:offsets[3]]
+        self.assertIn('stronger supporting evidence beyond the existing published knowledge', gap)
         for policy in (
             'semantic disambiguation grounded in original task inputs',
             'without a hidden answer',
@@ -282,7 +287,12 @@ class TestHplusPredictionSemantics(unittest.TestCase):
             'A previous H+ judgement (positive or negative) is not evidence of rule coverage',
             'A consequential, testable interpretation or repair is not mere translation',
             'name the decision considered and why no reusable mechanism or feasible evidence was found',
-            'Compare an Agent receiving a reusable rule distilled from this execution with one not receiving that rule',
+            "Start from the current Harness's visible published strategic knowledge and identify which concrete decisions could still be improved",
+            'Compare an Agent equipped with this existing knowledge against the same Agent additionally receiving a reusable rule distilled from this execution',
+            'Treat existing rules as scoped guidance, not proof that the Agent has mastered the entire method or domain',
+            'a concrete decision improvement, a broader applicability scope, a correction, or stronger supporting evidence beyond the existing published knowledge',
+            'missing retrieval does not prove global absence',
+            'with the same existing strategic knowledge on both sides',
             'What concrete decision could it make better, under what conditions, and why would the difference matter?',
             'A familiar method can improve future decisions if its conditions, use or checks are made explicit',
             'These are examples of reuse value, not automatic positives',
