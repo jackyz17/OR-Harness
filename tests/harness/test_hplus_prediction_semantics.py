@@ -282,6 +282,12 @@ class TestHplusPredictionSemantics(unittest.TestCase):
             'A previous H+ judgement (positive or negative) is not evidence of rule coverage',
             'A consequential, testable interpretation or repair is not mere translation',
             'name the decision considered and why no reusable mechanism or feasible evidence was found',
+            'Compare an Agent receiving a reusable rule distilled from this execution with one not receiving that rule',
+            'What concrete decision could it make better, under what conditions, and why would the difference matter?',
+            'A familiar method can improve future decisions if its conditions, use or checks are made explicit',
+            'These are examples of reuse value, not automatic positives',
+            "or prior failure; publication standards remain the offline review's responsibility",
+            'Basis explains the concrete improvement over not receiving the rule',
         ):
             self.assertIn(policy, prompt)
 
@@ -375,12 +381,12 @@ class TestHplusPredictionSemantics(unittest.TestCase):
             'Successful use is not proof of saved knowledge',
             'Execution Evidence records what happened; Strategic Knowledge records the transferable mechanism',
             'Partial coverage can leave a learning opportunity',
-            'textbook practice, a standard OR technique or a conventional solver/verification method is background, never by itself a reason for 0',
+            'A known technique is not by itself a reason for 0',
             'an empty library or missing review history is NEVER sufficient for 1',
             'ONLY a currently visible PUBLISHED strategy rule can establish existing-knowledge coverage',
             'Execution Evidence is induction material, not completed induction',
             'treat them as support for review, not a reason to reject it',
-            "Do not justify 0 solely by 'existing execution evidence already covers the method', 'historical successful executions' or 'existing solver capability'",
+            "The comparison is against the current Harness's explicit strategy library, NOT the model's pretrained knowledge or novelty to OR research",
         ):
             self.assertIn(policy, prompt)
 
