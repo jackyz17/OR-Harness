@@ -64,7 +64,7 @@ CASES = (
 
 
 class TestHplusPredictionSemantics(unittest.TestCase):
-    def test_six_prospective_cases_reach_the_provider_without_new_output_fields(self):
+    def test_prospective_cases_reach_the_provider_without_new_output_fields(self):
         # The decisions are scripted transport/contract fixtures, not model
         # judgements. Histories describe past runs, never this candidate's
         # future execution. No teaching problem or reference answer is sent.
@@ -119,6 +119,24 @@ class TestHplusPredictionSemantics(unittest.TestCase):
              histories, equality_rule, 0,
              'Visible published synthetic-rule@2 covers the equality premises, domain intersection, '
              'cost aggregation and preservation guarantee; this run adds no meaningful evidence.', None),
+            ('semantic-domain-choice', 'purchasing',
+             'Buy a divisible bulk ingredient by weight; a whole-package restriction applies only to sealed packages.',
+             'Determine each variable domain from its purchasing granularity, then solve the continuous LP.',
+             [], None, 1,
+             'Distinguishing divisible quantities from package counts may prevent a false integer restriction.',
+             'Check the variable domain against the stated purchasing units and divisibility.'),
+            ('semantic-domain-choice-alternative', 'purchasing',
+             'Buy a divisible bulk ingredient by weight; a whole-package restriction applies only to sealed packages.',
+             'Use an integer package variable only for sealed packages; keep bulk weight continuous.',
+             [], None, 1,
+             'The same domain interpretation mechanism is testable with this alternative candidate.',
+             'Check both variable domains against the original purchasing units.'),
+            ('foreseeable-api-repair', 'allocation',
+             'Return the actual solver objective and status for a linear allocation model.',
+             'Use a supported status accessor and test the status-to-result mapping after a known interface failure.',
+             delivery_history, None, 1,
+             'The prior failure and repair may support a reusable status mapping mechanism.',
+             'Inspect the selected accessor, status and result receipt.'),
             ('cold-start-structural-reduction', 'bounded_inventory',
              'For fixed Y, feasible integer X is a finite interval and the minimization objective increases in X.',
              'Select the lower feasible X endpoint for each Y instead of enumerating every X.', [], None, 1,
@@ -166,7 +184,7 @@ class TestHplusPredictionSemantics(unittest.TestCase):
                 self.assertEqual(set(gain), {'decision', 'basis', 'claim', 'verification_conditions'}
                                  if decision else {'decision', 'basis'})
                 for policy in (
-                    'Identify a concrete modelling, solving, implementation or verification decision',
+                    'Identify a concrete problem-understanding, modelling, solving, implementation or verification decision',
                     'feasibility, optimality or solution quality, search space, computational work or reliability',
                     'align their mathematical or operational roles with the current task',
                     'Different domains or family labels do not rule out a shared mechanism',
@@ -250,6 +268,22 @@ class TestHplusPredictionSemantics(unittest.TestCase):
                 signal = signal_from_payload(parsed)
                 self.assertEqual(signal["decision_status"], "explicit")
                 self.assertEqual(signal["decision"], decision)
+
+    def test_learning_decision_order_and_candidate_independence(self):
+        prompt = flat(STRATEGY_OUTCOME_SYSTEM_PROMPT)
+        steps = ('1. GENERALIZE FIRST.', '2. STATE THE LEARNING HYPOTHESIS.',
+                 '3. CHECK THE ACTUAL KNOWLEDGE GAP.', '4. CHECK EVIDENCE AND DECIDE.')
+        offsets = [prompt.index(step) for step in steps]
+        self.assertEqual(offsets, sorted(offsets))
+        for policy in (
+            'semantic disambiguation grounded in original task inputs',
+            'without a hidden answer',
+            'a shared understanding or verification step can support the same hypothesis for multiple candidates',
+            'A previous H+ judgement (positive or negative) is not evidence of rule coverage',
+            'A consequential, testable interpretation or repair is not mere translation',
+            'name the decision considered and why no reusable mechanism or feasible evidence was found',
+        ):
+            self.assertIn(policy, prompt)
 
     def test_feedback_does_not_turn_unknown_or_missing_evidence_into_global_negatives(self):
         followup = flat(STRATEGY_OUTCOME_SYSTEM_PROMPT.split(
