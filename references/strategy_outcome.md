@@ -309,7 +309,7 @@ Formal execution increments/quotas still use their original 0/1 accounting and
 do not count local repair events. Archived `wm-retry-additional-attempts/1`
 forecasts keep their original formal-attempt definition without mixing with new
 corrective counts. Other C dimensions/normalization/weights stay unchanged.
-See [host reports](commands.md#implementation-and-correction-reports). Absolute and
+See [host reports](host_operations.md#implementation-and-correction-reports). Absolute and
 signed errors accept zeros; log errors require positive values on both sides.
 
 **Four honest states** (`orx budget` prints `result.status`):
@@ -373,3 +373,20 @@ The action's `execution_config` contains what the executor observed and any scri
 Historical prediction records retain their original scope and metrics. See [historical records](snapshot_lifecycle.md#read-historical-records). `HttpChatProvider` selects its prompt using the request protocol, with `wm-so/1` selecting the current strategy-outcome prompt.
 
 Current executions require a saved `wm-u-decision/1` selection. An interrupted adopted attempt retains its failure evidence and consumes the prediction. Repair by planning again.
+
+## Optional CLI selection confirmation and historical binding
+
+### `orx choose-next --decision ACTION_ID (--prediction P | --chosen spec.json | --rejected) [--note "..."]`
+
+Optionally confirm a saved decision's scored winner or record its rejection.
+Use `--rejected --note TEXT` to record why the plan was rejected. Normal solving
+continues directly from `plan-next` to writing the solve code and `execute`.
+
+`result.action_id` identifies the framework's selection action. Repeated
+confirmation reuses that action and observation window. Existing
+`selection_action_id` reports remain supported. Confirmation does not consume
+the prediction or change execution authorization.
+
+### `orx bind-strategy --prediction ID --action ACTION_ID`
+
+Recover the association between a saved prediction and an action already run. Compare their identities and observed configuration. Read `binding_mismatch` for a known mismatch and `binding_unknown` for missing evidence. [Close-out](episode_closeout.md) determines eligibility by signal. Execution permission comes from `plan-next`.

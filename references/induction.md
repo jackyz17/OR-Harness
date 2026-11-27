@@ -715,3 +715,13 @@ Later `plan-next` calls in the same memory home select applicable receipts recor
 Use a supported covered/no-increment conclusion as negative feedback only for a specifically comparable mechanism and its premises. Insufficient evidence, unfinished or unobserved induction, and execution failures that prevent verification leave the hypothesis unknown. Empty feedback does not imply no learning opportunity; none of these unknowns justifies globally tightening H+.
 
 Ordinary prediction homes enable H+ by default. To set it explicitly, use global `--induction-mode hplus` or `OR_INDUCTION_MODE=hplus`. Settle required reviews before freezing the library. Use separate homes for [H+, NoH+ and random controls](../docs/validation/hplus_binary.md) and follow the [fixed-memory test procedure](snapshot_lifecycle.md#fixed-memory-testing-with-per-question-copies).
+
+## Legacy CLI review details
+
+The legacy advanced form
+`orx induce [--induction-id J] [--review JSON_OR_FILE] [--relation JSON] [--strategy S] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
+remains accepted for compatibility (merge, assertion audits and existing-entry
+utility management) but cannot be mixed with `--submission` in one call.
+Assertions in `--verify` take precedence over assertions embedded in
+`--relation`; `--attribute-effect` records a sourced judgment about an adopted
+rule. See [version use and utility](induction.md#existing-entry-use-and-utility).

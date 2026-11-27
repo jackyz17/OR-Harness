@@ -43,7 +43,7 @@ In formal experiments, cross-task memory comes only through the configured Harne
 Create `task.json` with `task_id`, `family`, and the original requirements in `text`. Keep that file and one episode label E across repairs. Add `coupling` (CIR) to represent relationships that affect the solution. Use [modeling.md](references/modeling.md) for task inputs and CIR.
 
 For file tasks, declare only public inputs in `input_resources`:
-`[{"source":"data/nodes.csv","path":"network/nodes.csv"}]`; read `inputs/network/nodes.csv` in the solve. Sources are relative to the CLI task file or Python API caller's cwd. Text-only tasks omit the list. See [file input and isolation](references/commands.md#file-input-and-isolation).
+`[{"source":"data/nodes.csv","path":"network/nodes.csv"}]`; read `inputs/network/nodes.csv` in the solve. Sources are relative to the CLI task file or Python API caller's cwd. Text-only tasks omit the list. See [file input and isolation](references/modeling.md#file-input-and-isolation).
 
 ```bash
 orx profile --task task.json
@@ -255,7 +255,7 @@ When unsure about the input, optionally add `--dry-run` to the same submission c
 
 After completing the required reviews, start the next task in the same memory directory. The next `plan-next` can use applicable calibration, recalled rules, and completed reviews.
 
-The external Runner manages hard stops, session locks, authorized inputs and per-task scratch isolation. It reports actual implementation defects, started corrective rounds and observation coverage through [host action reports](references/commands.md#implementation-and-correction-reports), with references to failing versions, repairs and checks. OR-Harness combines these reports with execution receipts.
+The external Runner manages hard stops, session locks, authorized inputs and per-task scratch isolation. It reports actual implementation defects, started corrective rounds and observation coverage through [host action reports](references/host_operations.md#implementation-and-correction-reports), with references to failing versions, repairs and checks. OR-Harness combines these reports with execution receipts.
 
 ## NL4Opt example · `nl4opt_0184`
 
@@ -292,7 +292,10 @@ This small task needs only the base check; do not add a second solver run.
 
 ## References
 
-- [commands.md](references/commands.md) for CLI syntax, host usage, and recovery.
+Read the relevant command or contract section when needed; do not read every reference before solving.
+
+- [commands.md](references/commands.md) for routine CLI syntax and key results.
+- [host_operations.md](references/host_operations.md) for host usage, execution diagnostics and recovery.
 - [self_check.md](references/self_check.md) for self-check layers, failure handling, and worked examples.
 - [episode_closeout.md](references/episode_closeout.md) for acceptance evidence, G feedback, and calibration.
 - [induction.md](references/induction.md) for H+ review dispatch, induction, publication, and existing rule use.

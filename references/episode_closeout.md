@@ -105,7 +105,7 @@ Legacy records keep their original evidence. A rejection has formal timeout=0
 and `runtime_eligible=false`, with no claim that an algorithm actually avoided
 timeout. `technical_r.runtime_coverage` exposes started/not-started/unknown
 attempts separately; the formal timeout event, aggregation and historical
-metrics are unchanged. See [executor diagnostics](commands.md#submission-and-runtime-diagnostics).
+metrics are unchanged. See [executor diagnostics](host_operations.md#submission-and-runtime-diagnostics).
 
 R is the maximum valid single-event probability common to every ranked
 candidate, never a joint probability. Current scoring is `wm-r-max-event/2`.
@@ -141,7 +141,7 @@ reflection and H+=1 induction material. Only matching-version labels/probabiliti
 provide current numeric feedback; historical formal diagnostics remain qualitative.
 ### Implementation observation and correction counting
 
-The implementation window begins at automatic selection (decision completion), ending at candidate completion or the next planning decision's start. Reporting by prediction ID resolves the original selection action. A selected candidate needs actual implementation evidence to enter the observation population. Report candidate coverage and task-end corrective coverage using the [host action interface](commands.md#implementation-and-correction-reports).
+The implementation window begins at automatic selection (decision completion), ending at candidate completion or the next planning decision's start. Reporting by prediction ID resolves the original selection action. A selected candidate needs actual implementation evidence to enter the observation population. Report candidate coverage and task-end corrective coverage using the [host action interface](host_operations.md#implementation-and-correction-reports).
 
 Deduplicate events by stable ID within the task/episode; executor and host reports of the same terminal implementation error share `execution:EX:technical`. Distinct occurrences retain separate IDs, even when their exception text matches. Conflicting sources cannot establish a clean negative.
 

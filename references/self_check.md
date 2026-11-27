@@ -92,3 +92,56 @@ A task asks to minimise total cost, but the script maximises revenue and then ne
 ### A failed verification script is not a pass
 
 If a verification script raises or an assertion fails, the self-check is not done. Decide whether the model, the implementation, the task reading or the verification script is wrong. A broken verification script or a bad check declaration is fixed and re-run on the SAME execution with `check-task`; it does not create a new solving attempt and it cannot be recorded as a pass.
+
+## CLI check contract
+
+Check original task requirements against a staged or recorded execution. `check-task` writes a `verify` action and `execution_features.task_check`. It never runs the solver again, so a corrected check or a late check on the same execution does not create a solving attempt or consume a retry.
+
+Normal order is execute → necessary self-check/verification → final `check-task` with supported `g_attribution` (or honest Unknown) → `record` → `close-episode`. Each call makes a new check revision. A later check without attribution does not inherit the old assessment, even if its verdict is the same. Avoid rechecking unchanged evidence; a necessary changed check must carry its own current attribution or remain Unknown.
+
+**Before answering** The self-check is the agent's, not the tool's: check the model against the original task, then check the result against both. A solver's `optimal` proves only that the written model was solved. Use the base check on every task; add targeted enhanced checks only for concrete reasons, continue while an unresolved doubt can still change the conclusion, and stop when the evidence is sufficient. Do not default to a complete independent re-solve, and check the model-to-statement correspondence before trusting a second algorithm or solver. See [self-check detail](self_check.md) for the two layers, failure handling and examples. `--check` takes a JSON object or JSON file containing the computable bases and optional G/H+ evidence annotations; it is not the whole self-check.
+
+| Check key | Use |
+|---|---|
+| `reference_objective` | Compare the reported objective with a value you source (`reference_source`, `reference_version`, optional `tolerance`) |
+| `reference_status` | Check the reported solver status |
+| `integer` | Check named `variables` or the recorded variables, with optional tolerance (default `1e-6`). Declare it only if the TASK requires integer values; the framework never infers integrality, and a continuous task is not "missing" this check |
+| `recompute_objective` | Compute the objective from the variables with coefficients the agent declares |
+| `semantic_probe` | Apply `{path, equals\|min\|max\|in}` probes to recorded fields |
+| `intent` | Mark a `relaxation` or `intermediate` result |
+| `g_attribution` | Optional sourced G assessment; saved separately from the generic acceptance rule and checker verdict |
+
+A useful deterministic check is not a proof that the model represents the task: `recompute_objective` with the coefficient you already used in the code can reproduce a unit error (see [the B018 example](self_check.md#b018--a-consistent-answer-with-the-wrong-unit)). The declared bases must come from the task's units and constraints.
+
+Read:
+
+- `result.state` — `passed`: the declared checks held on the recorded values; `failed`: a declared check found a violation; `insufficient`: the check could not decide. None of them decides the next action. A pass does not block a new `plan-next`; a failure does not prove the model is wrong, and an `insufficient` result is neither a pass nor a reason to force a full re-solve. On a failure, analyse whether the task reading, the model, the implementation or the check itself is wrong, then act on that finding.
+- `report.checks[]` — what the framework actually executed, with observed values, tolerance and `ok`.
+- `report.diffs[]` — the numeric differences for a failure.
+- `report.scope.basis` — the declared bases evaluated; `report.scope.unchecked` — only declared checks that could not run, with the reason; `report.scope.note` — the fixed scope statement. The framework does not scan the task text for uncovered constraints, so an empty `unchecked` is not a claim that nothing else needed checking.
+- `reflection_material` — the self-check material: `task_text`/`task_ref`, the candidate and performed method, `artifacts` references (script, result.json, error clips), the captured solution with `solution_ref`, the check report, `verification_evidence`, and prior attempts as one-line references. Read it before deciding, and prefer the references over re-reading the whole attempt chain.
+- `result.g_assessment_ref` — the saved G assessment, also referenced by the verify action's `outcome.g_assessment_ref` and the Evaluation's `benefit.attribution_ref`. A generic check without G attribution has no such reference. Invalid declarations return an actionable error before writing; valid Unknown attribution is accepted.
+
+### Independent verification payload
+
+**Independent verification** When the agent runs its own verification (a separate script, an enumeration, a hand computation), attach the evidence to this same execution:
+
+```json
+{
+  "script": "ws/verify.py",
+  "output": "ws/verify.out",
+  "result": {"ran": true, "exit_code": 0,
+             "assertions": [
+               {"name": "B018 order coefficient equals 15*50",
+                "ok": false, "observed": 750, "expected": 50,
+                "note": "code used the per-chair price per order"}]}
+}
+```
+
+`--verification` accepts that JSON or a file path; `result_path` can name a JSON file instead of inline `result`. The script, output and result are captured as immutable artifacts and the normalised block is labelled `source=agent_reported` under `execution_features.verification_evidence` — a different source than the framework's `task_check`, and a separate file from the solve `result.json` (which is never overwritten). `state` distinguishes a `script_error` (the script did not run / raised) from `assertion_violations` (the script ran and an assertion was not satisfied); `assertions_*` and `evidence_only` cover the other cases. A satisfied assertion is the agent's claim, not a framework verdict, and creates no solving attempt. A `script_error` or `assertion_violations` result is NOT a pass: the self-check is not done until the cause is handled.
+
+When the selected prediction has H+=1, the same `--check` JSON may include `hplus_verification` items for its frozen verification conditions (see [the H+ review handoff](induction.md#when-to-start-induction)). They check the predicted knowledge hypothesis, not an extra task requirement. Reuse self-check evidence where it applies; if the condition cannot be checked, record `not_checked`/`unavailable`. A complete re-solve is not the default, but an affordable check that actually verifies the mechanism is allowed — never one run merely to make the state show as checked.
+
+A changed fact or incorrect check can be corrected by re-running `check-task` on the same execution; a real model or implementation change requires a fresh `plan-next` selection and a new execution. Submit a sourced G assessment once through this same interface. Unknown does not require repeated checks or extra solving to force a numeric label. See [G attribution evidence](episode_closeout.md#g-attribution-evidence), including unresolved reference conflicts.
+
+**After answering** Benchmark evaluators compare the locked answer with reference evidence outside the retry loop; reference comparisons are for evaluation and offline analysis, never a reason to return to solving. For offline checks use `reference_objective` or `reference_status` with `reference_source` (`bench_declared\|independent\|self_derived`) and an available `reference_version`. The default objective tolerance is `1e-6 * max(1, abs(reference))`. Omitted source is treated as `self_derived`. See [offline use of reference evidence](induction.md#read-material-and-choose-comparisons).

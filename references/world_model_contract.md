@@ -136,7 +136,7 @@ Current structured receipts distinguish a documented script-contract violation
 responsibility (Unknown). Legacy receipts retain their recorded classifications.
 Formal R.timeout still asks whether the bound attempt was interrupted;
 `runtime_eligible=false` on a pre-runtime rejection prevents using its zero label
-as evidence that an algorithm ran without timing out. See [diagnostics](commands.md#submission-and-runtime-diagnostics).
+as evidence that an algorithm ran without timing out. See [diagnostics](host_operations.md#submission-and-runtime-diagnostics).
 
 For C, `cost.retries` under `remaining_to_task_end` predicts additional
 corrective/retry rounds actually started from this prediction's decision anchor
@@ -173,3 +173,115 @@ Read `result.prediction.prediction` for the saved forecast. Its `trace.model_inf
 Use `prediction_made` to confirm that a forecast exists. Read `trace.unsupported_fields` for unavailable values. `provider_configured` and `service_available` describe the setup. `orx contract` constructs or reads the contract. Use the [command reference](commands.md#stored-forecasts-and-their-conventions) for provider failures, and [historical records](snapshot_lifecycle.md#read-historical-records) for old payloads.
 
 Runnable examples are available for [context assembly](examples/prediction_context.py) and the [contract round trip](examples/contract_roundtrip.py).
+
+## Recall and embedding configuration
+
+Find text matches and related structural evidence. `--top` caps returned hits and `--candidate` filters by strategy ID. `--memory-mode` controls the structural channel. `none` leaves it empty, `cases` returns statistics, and `strategic` or `cost-aware` adds knowledge. Structural recommendations include only rules with confirmed or partial machine conditions; a rule with empty predicates (`not_specified`) or unmeasured conditions (`unknown`) is not a structural match and is reachable only through vector retrieval. Vector retrieval remains available in all modes. Use `--include-unverified` to inspect unpublished candidates.
+
+Runtime boundary: when no embedding backend or usable index exists, semantic-only rules cannot enter `recommendations`. `degraded.path=profile_only` explains the missing channel, and `recall_budget.omitted_without_machine_support` reports how many such rules were withheld. Restore the backend/index (`rebuild-index`) or read the entry directly with `inspect --bank strategic`; this is not a reason to let empty predicates occupy structural slots.
+
+| Result field | What to read |
+|---|---|
+| `profile` | Task structure |
+| `recommendations[]` | Published rules or conditional statistics, with basis and evidence |
+| `recommendations_basis`, `recall_budget` | Matching basis and counts |
+| `vector_recall.execution_evidence[]` | Past methods, task checks, costs and failures |
+| `vector_recall.strategic_knowledge[]` | Rules, applicability and verification |
+| `evidence_candidates[]`, `vector_recall.suggested_candidates[]` | Methods found in prior executions |
+| `available_solver_families`, `solver_advisories` | Available solvers and observed environment failures |
+
+Check the rule's conditions against the task. Read `recommendations[].knowledge.rule` or use `inspect --bank strategic --entry ENTRY` to get `rule.view_version` before declaring adoption. `similarity` is cosine similarity. For a rule, `structural_match` reports `applies|conflicts|unknown` from its predicates. For an execution it compares structural cells.
+
+Use `method.actual` to adapt a method that was performed. `method.planned` records intent. Read its task check or failure details and use `inspect_hint` to open the full record. Cite adapted cases with `execute --adapted-from`. Propose a method from the task when the retrieved material is sparse.
+
+**Recover text retrieval** Read `degraded.reason` if retrieval falls back to the profile. Supply task text, configure the backend, or run `rebuild-index` when the index is missing or the embedding model changes.
+
+### Embedding configuration
+
+| Variable | Value |
+|---|---|
+| `OR_EMBEDDING_BASE_URL` | OpenAI-compatible embedding endpoint |
+| `OR_EMBEDDING_MODEL` | Embedding model |
+| `OR_EMBEDDING_API_KEY` | Embedding credential |
+| `OR_EMBEDDING_BACKEND` | `auto`, `none` or `local-hashing` |
+
+`auto` needs the URL, model and key. Use `local-hashing` with its own index for offline tests.
+
+Historical-retrieval thresholds are selected from the **actual backend**,
+including when it is wrapped by `EmbeddingIndex`. Model identity is not
+inferred from vector width. Local hashing retains its existing profile:
+problem 0.62, candidate method 0.60, conditions 0.30, method relevance 0.62.
+An uncalibrated remote model, including `GLM-Embedding-3`, uses the existing
+`openai-compatible` provisional profile: 0.45, 0.45, 0.40, 0.45 respectively,
+with `threshold_verified=false`. These numbers are not GLM calibration.
+
+An unknown injected or missing backend never inherits verified hashing
+thresholds. Its configuration explicitly reports an unverified generic
+provisional fallback, its actual model id (or null when unavailable),
+`backend_source` and `threshold_diagnostics`. A missing backend or unusable
+index continues to report degraded local retrieval and retains global
+statistics; no keyword substitute is introduced.
+
+| Independent threshold override | Configuration field |
+|---|---|
+| `OR_HARNESS_HISTORY_THRESHOLD` | `similarity_thresholds.problem` |
+| `OR_HARNESS_HISTORY_METHOD_THRESHOLD` | `similarity_thresholds.candidate_method` |
+| `OR_HARNESS_HISTORY_CONDITIONS_THRESHOLD` | `similarity_thresholds.conditions` |
+| `OR_HARNESS_HISTORY_METHOD_RELEVANCE_THRESHOLD` | `method_similarity_threshold` |
+
+`threshold_sources` records all four sources: `profile:<name>`, an explicit
+`fallback:<name>`, or `env:<variable>`. Manual overrides are independent and
+are not calibration evidence: even one override, or an override equal to a
+default, makes the effective configuration unverified. Zero is preserved.
+Non-finite or malformed overrides are ignored with a diagnostic and also
+cannot certify verification. `threshold_basis` identifies the actual model,
+profile and verification limits. Pool limits, per-view admission, reranking
+and task-diversification behavior are unchanged.
+
+Real-model calibration is a separate experiment. Supply the exact model and
+version, embedding preprocessing/document-builder version, production-shaped
+problem/method/conditions queries, independently labelled relevant and
+irrelevant historical executions (including paraphrased cross-task positives),
+per-view cosine scores and sample counts, and held-out precision/recall and
+admission results. Record method relevance separately from admission. Synthetic
+vectors and a matching embedding dimension cannot establish a real model's
+score distribution or a verified threshold.
+
+### Context inspection options
+
+Build and save a frozen prediction input for inspection or explicit reuse. `plan-next` builds its own shared context. Use `--no-persist` for a preview and `orx context --context-id CTX_ID` to read a saved context.
+
+`--cir` sets the effective CIR and `--math` supplies known attributes, such as `'{"linearity":"linear","objective_kind":"min"}'`. Read `context_id`, `joint.math`, `joint.unknowns`, `missing` and `degraded[]`. For Python reuse pass the context and the same effective task, episode and CIR to `ORHarness.predict_strategy_outcome`. See [prediction inputs and identity](world_model_contract.md#1-prediction-inputs).
+
+## Stored forecasts and their conventions
+
+```bash
+orx inspect --bank predictions --prediction P
+```
+
+Read the stored forecast in `result.prediction.prediction` and its kind in `result.prediction.kind`. Use [contract fields](world_model_contract.md) when declaring a benefit metric or inspecting a forecast.
+
+If the plan has no eligible U, read its reason and the saved prediction's `failure.kind` and notes. Fix the input or provider settings and run `plan-next` again.
+
+| `failure.kind` | Action |
+|---|---|
+| `truncated` | Raise `--wm-max-tokens` or `OR_WM_MAX_TOKENS`. Check the shared output budget when `OR_WM_ENABLE_THINKING` is enabled |
+| `wrong_top_level` | Check the provider response for a JSON object |
+| `empty_response`, `unparsable` | Inspect the response and output format |
+| `timeout`, `network_error` | Check the endpoint, `--wm-timeout` / `OR_WM_TIMEOUT` and the planning time budget |
+| `unusable_payload` | Fix or review the fields named in the validation notes |
+
+## Contract CLI
+
+Build a strategy-outcome contract with `--task`, `--spec` and optional estimates. Use `--payload` to read a saved contract.
+
+```bash
+orx contract --kind strategy_outcome --task t.json \
+  --spec '{"action_type":"execute_strategy","strategy_id":"S01","scope":"attempt"}' \
+  --benefit '{"kind":"solution_quality","metric":"normalized_objective_gap","unit":"1-gap","value":0.8,"baseline":{"kind":"conditional_stats","value":0.7}}' \
+  --cost '{"expected":{"llm_tokens":1200},"expected_measured":["llm_tokens"]}' \
+  --risk '{"events":[{"event":"task_failure","probability":0.2}]}'
+orx contract --payload prediction.json
+```
+
+Read `status` and `prediction_made` to see whether the payload contains a prediction. A constructed contract reports `contract_only`. See [field definitions and stored payloads](world_model_contract.md).

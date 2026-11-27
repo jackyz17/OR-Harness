@@ -140,3 +140,105 @@ it replaces neither the agent's judgment about which constraints matter nor an
 optimality argument the task requires. An agent-run verification script and its
 result can be attached to the same execution with `check-task --verification`
 and stay a separate, agent-reported source.
+
+## CLI profile input example
+
+Read the pre-strategy structure and modelling guidance. CIR comes from `--cir` or `task.coupling`. Use lists under `entities`, `decisions`, `constraints`, `relations`, `coupling_groups` and `issues`. Name entities and decisions, give constraints IDs, and give coupling groups a `type`. Relation endpoints refer to declared nodes.
+
+```json
+{"coupling": {
+  "entities": [{"name": "R1", "kind": "resource", "attrs": {}}],
+  "decisions": [{"name": "x", "kind": "production", "indexes": ["i", "t"]}],
+  "constraints": [{"id": "C1", "kind": "capacity", "expr": "sum(x) <= limit"}],
+  "relations": [{"source": "x", "target": "R1", "type": "uses_resource",
+                 "evidence": "semantic", "detail": "shared capacity"}],
+  "coupling_groups": []
+}}
+```
+
+Set relation evidence to `structural` for co-occurrence, `semantic` for a supported relationship, or `declared` for an agent assertion. Store scalar annotations in `annotations.coupling`.
+
+**Read** `result.profile`, `result.derivation` and `result.coupling.{health,modeling_guidance}`. Derivation uses CIR, structured `spec`, then annotations. A supplied model's coupling appears in `derivation.model_coupling`.
+
+**Fix input** For a `cir_format` error, read `result.error.hint` and correct the indicated field. Use `--allow-empty-cir` for an intentional empty CIR. See [CIR shape and strictness](modeling.md).
+
+## File input and isolation
+
+**Workspace** Keep the submitted script inside `--workspace`. Execution uses a
+fresh isolated `/work`, with declared files at `inputs/<path>`, read-only
+`solve.py`, writable `result.json` and `scratch/`. Existing host workspace
+files are not exposed. Only this attempt's `result.json` is exported to
+`--workspace/result.json`; scratch is temporary (64 MiB total). Use in-process
+solver APIs. Network and subprocess launches remain blocked; PuLP/CBC and
+Pyomo backends that launch a binary require an in-process alternative.
+`pathlib` and dynamic paths are supported. The script has a wall-clock limit
+in addition to its solver settings. Use labels `C1`, `C2` and so on for L2 checks.
+
+Declare explicit regular files in the same task used for plan-next and execute:
+
+```json
+{
+  "task_id":"network-example", "family":"routing",
+  "text":"Solve the network specified by the declared nodes and edges.",
+  "input_resources":[
+    {"source":"data/nodes.csv","path":"network/nodes.csv"},
+    {"source":"data/edges.csv","path":"network/edges.csv"},
+    {"source":"data/config.json","path":"config.json"}
+  ]
+}
+```
+
+`source` is relative to the CLI task JSON file, or to the caller's cwd in the
+Python API. Explicit absolute sources are also supported. `path` is a unique
+relative POSIX file name under `inputs/`, without `..`, symlinks or directory
+declarations. An optional full `sha256` pins expected content. The framework
+streams each file into the existing content-addressed artifact store and
+freezes its source, relative path, bytes and hash with the task/prediction.
+Execution rechecks content and exposes only the matching files. Changed input
+declarations require a new plan; missing/changed bytes at submission are saved
+as a failed bound attempt. No file contents enter the model prompt or script.
+The trusted Runner must supply the public-input list: no automatic attachment,
+workspace or benchmark-directory scan includes reference answers, checkers,
+other tasks or memory banks.
+
+```python
+from pathlib import Path
+import csv, json
+
+filename = "nodes.csv"
+path = Path("inputs") / "network" / filename
+with path.open() as f:
+    nodes = list(csv.DictReader(f))
+with open(Path("inputs") / "config.json") as f:
+    config = json.load(f)
+# Installed pandas.read_csv(path), numpy.loadtxt(path), and native solver
+# readers can use the same authorized files. Write results from THIS solve.
+```
+
+CSV, JSON, TXT and arbitrary regular instance formats use this same interface;
+the corresponding parser must be installed. Text-only tasks omit
+`input_resources`. The Python API is unchanged:
+`h.execute(task, prediction_id=P, code_path="ws/solve.py", workspace="ws")`.
+
+Linux user/mount/network namespaces, `unshare` and `libseccomp.so.2` are required.
+Inputs and runtime files are read-only mounts; the remaining jail is read-only
+except `result.json`, bounded `scratch/` and log descriptors. Python auditing
+adds path diagnostics, while mounts/chroot and syscall filters also constrain
+native readers, aliases and third-party libraries. Runtime library directories,
+the current process's maps/executable link and CPU metadata are exposed for
+numerical runtimes; host `/proc`, fd directories, credentials and cwd are not.
+Network, process launches, namespace changes and cross-process access are
+blocked. CPU/address-space/file limits and whole-process-group timeout cleanup
+remain active. Missing isolation fails closed; there is no AST-only fallback.
+The host kernel and installed runtime are trusted. This is not a VM or metadata
+secrecy guarantee, and concurrent host filesystem mutation is outside this
+boundary. Run under a dedicated account/container for hostile multi-tenant use.
+Keep task files, submission workspaces and Harness memory outside runtime
+library directories; detected overlaps are rejected before launch. The Runner
+must also keep other tasks' materials and secrets out of trusted distributions.
+
+One selected method can include reading, LP relaxation, feasible-bound
+construction, certified reduction and final MILP in the same execute. Keep
+real-instance solving and code trials in formal attempts. Before planning,
+inspect data/structure and use only tiny artificial API probes. See
+[self-check](self_check.md) for post-execution validation and its cost/evidence.

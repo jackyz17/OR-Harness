@@ -62,3 +62,37 @@ orx --home /work/bank-copy maintain-snapshots --apply --backup /work/backups/ban
 - `--vacuum` requests physical reclamation separately. Read the report's before/after payload bytes and SQLite page counts to judge logical and physical savings.
 
 Use a new backup path for another apply. To roll back, restore the backup and its matching sidecars in a separate home. See [maintenance validation](../docs/world_model/snapshot_lifecycle_implementation.md) for storage details.
+
+## Store corrections and maintenance
+
+### `orx exclude-execution --execution EXECUTION_ID --reason "..." [--superseded-by EXECUTION_ID]`
+
+Withdraw a stored execution with incorrect facts. This removes it from active evidence, retrieval and calibration while retaining the correction record. Use `--superseded-by` to link a corrected rerun. For a real failed solve, keep its record and check as failure evidence. Within-window calibration is republished.
+
+### `orx restore-execution --execution EXECUTION_ID --reason "..."`
+
+Restore an excluded execution to active evidence. Use `rebuild-index --layer execution` to restore text retrieval. Run relevant induction maintenance to refresh derived feedback.
+
+### `orx retire --entry NUMBER --reason "..."`
+
+Move a rule to the cold archive and remove it from recall. Inspect its status and use evidence before retiring it. Pass `--evidence-execution-id EX` (repeatable) for the facts the decision relies on; the cold-archive card keeps the stated reason, the cited executions and the read-time usage summary (the old forward-calibration numbers are labelled as calibration, never as proof of usefulness). Retirement is permanent and the archive retains its entry number.
+
+### `orx rebuild-index [--layer both|execution|strategic] [--dry-run]`
+
+Rebuild embedding indexes after setup, an embedding-model change, deferred indexing or restored evidence. Read `layers` for item counts, model, dimensions and `unindexable` items. `--dry-run` previews the work. Configure an embedding backend for a real rebuild.
+
+### `orx archive-calibration [--dry-run]`
+
+Archive out-of-window calibration detail under `<home>/archive/calibration/`. Close-out also runs archive maintenance. Read `pending_migration` in a preview and use `calibration --rebuild` or an archive pass when migration is needed. See [archive limits and late-check grace](episode_closeout.md#6-retention-three-separate-scopes).
+
+### `orx enforce-window [--window-episodes N] [--open-grace-days D] [--dry-run]`
+
+Enforce the whole-episode execution evidence window. Defaults are 800 episodes (`OR_EVIDENCE_WINDOW_EPISODES`) and 30 days of unclosed grace (`OR_EVIDENCE_OPEN_GRACE_DAYS`). Calibration-window episodes and episodes in late-check grace are protected. Use `--dry-run` to preview evictions. See [evidence retention](episode_closeout.md#the-evidence-window-bounding-the-raw-evidence-bank).
+
+### Input lifecycle and fixed-memory maintenance
+
+- `orx context --context-id CTX --audit` reads the saved input manifest, including after expiry.
+- `orx --home BASE fork-memory --destination NEW_HOME` creates one test-question copy. Use a fresh copy from BASE for each question and keep the same copy for its retries.
+- `orx --home COPY maintain-snapshots` previews compaction. Use `--apply --backup NEW_FILE` to apply it, `--vacuum` to reclaim file space, and `--expire-open-days N` to review inactive legacy views.
+
+See [snapshot lifecycle](snapshot_lifecycle.md) for protections and copy-first commands.
