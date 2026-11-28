@@ -79,6 +79,18 @@ class TestRiskReasoningPrompt(unittest.TestCase):
                     'Pure code/API failures and harness wall-clock interruption belong to R',
                     'do not also lower G for the same purely technical hazard',
                     'mathematical correctness alone does not imply G=1',
+                    'With sufficient historical evidence, use global_event_base_rates (known labels only)',
+                    "an empirical reference point, not the candidate's conditional probability",
+                    'requires matching observation-rule versions',
+                    'solver-interface experience, comparable implementation steps',
+                    'recorded defects and successful implementations',
+                    'genuinely reusable verified scripts',
+                    'With weak candidate-specific evidence, avoid large unsupported departures',
+                    'A measured reference rate is not an arbitrary fixed default',
+                    'Do not invent differences between candidates',
+                    'implementation_failure merely for solver name/reputation or mathematical difficulty',
+                    'explain it in existing basis/notes',
+                    'If neither source supports an estimate, omit probability',
                 ):
                     self.assertIn(policy, text)
                 for event_name in R_EVENTS:

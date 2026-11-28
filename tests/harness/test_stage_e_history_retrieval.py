@@ -708,6 +708,146 @@ class TestRHistoryEvidence(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestProviderBudget(unittest.TestCase):
+    def _gcr_blocks(self, count=14, padding=0):
+        """Use the real selectors, including a labelled-unknown observation."""
+        candidate = _candidate()
+        rows = []
+        for i in range(count):
+            evaluation = _g_evaluation(f'ev{i}', observed=None if i == 1 else i % 2)
+            evaluation.update(_c_evaluation(f'ev{i}', values={
+                'output_tokens': 100+i, 'remaining_latency_s': 10+i,
+                'tool_calls': i+1, 'retries': 0}))
+            evaluation.update(_r_evaluation(f'ev{i}', events={
+                'implementation_failure': None if i == 1 else i % 2,
+                'timeout': 0, 'environment_failure': None}))
+            rows.append(_pool_row(f'ex{i}', task_id=f'task{i}', evaluation=evaluation))
+        history = _history(rows, candidate=candidate,
+            g={'n_observed': count-1, 'mae': .2},
+            c={'dimensions': {'output_tokens': {'n': count, 'p90': 120}}},
+            r={'events': {'implementation_failure': {'occurred': 3,
+                'not_occurred': 6, 'unknown': 1, 'n_known_labels': 9,
+                'occurrence_rate': 1/3, 'n_scorable': 4, 'mean_brier': .2}}})
+        blocks = {
+            'g_candidate_evidence': select_g_history_evidence(history, candidate=candidate, task_id='current'),
+            'cost_evidence': select_c_history_evidence(history, context=_context(), candidate=candidate),
+            'implementation_r_evidence': select_r_history_evidence(history, context=_context(), candidate=candidate),
+        }
+        for block in blocks.values():
+            for case in block['cases']:
+                case['task_excerpt'] += ' recorded task conditions' * padding
+        return blocks
+
+    def _assert_coverage_and_globals(self, original, trimmed, kind):
+        self.assertEqual([c['execution_id'] for c in trimmed['cases']],
+                         [c['execution_id'] for c in original['cases'][:len(trimmed['cases'])]])
+        globals_by_kind = {'g_candidate_evidence': ('global_history',),
+            'cost_evidence': ('global_cost',),
+            'implementation_r_evidence': ('global_event_base_rates', 'global_prediction_performance')}
+        for key in globals_by_kind[kind]:
+            self.assertEqual(trimmed.get(key), original.get(key))
+        if kind == 'cost_evidence':
+            coverage = trimmed['reference_coverage']
+            self.assertEqual(coverage['n_cases_included'], len(trimmed['cases']))
+            for grade in ('strict', 'broader_reference'):
+                shown = sum(c['grade'] == grade for c in trimmed['cases'])
+                self.assertEqual(coverage[grade]['n_cases_included'], shown)
+                self.assertEqual(coverage[grade]['n_cases_omitted'],
+                                 coverage[grade]['n_cases_available']-shown)
+        else:
+            self.assertEqual(trimmed['selection']['n_cases_included'], len(trimmed['cases']))
+            self.assertEqual(trimmed['selection']['n_cases_omitted'],
+                             trimmed['selection']['n_condition_relevant']-len(trimmed['cases']))
+
+    def test_shared_default_is_60000_characters_and_override_still_works(self):
+        from unittest.mock import patch
+        from or_harness.strategy.evidence_views import (
+            DEFAULT_GCR_EVIDENCE_CHARS, gcr_evidence_budget_chars,
+        )
+        self.assertEqual(DEFAULT_GCR_EVIDENCE_CHARS, 60000)
+        with patch.dict('os.environ', {'OR_HARNESS_GCR_EVIDENCE_CHARS': ''}):
+            self.assertEqual(gcr_evidence_budget_chars(), 60000)
+        with patch.dict('os.environ', {'OR_HARNESS_GCR_EVIDENCE_CHARS': '45000'}):
+            self.assertEqual(gcr_evidence_budget_chars(), 45000)
+
+    def test_selectors_keep_ten_and_shared_budget_keeps_every_fitting_case(self):
+        from or_harness.world_model.request_budget import apply_provider_block_budgets, _size
+        self.assertEqual(history_config()['max_local_cases'], 10)
+        view = self._gcr_blocks(padding=50)
+        original = copy.deepcopy(view)
+        self.assertEqual([len(b['cases']) for b in view.values()], [10, 10, 10])
+        self.assertGreater(sum(_size(b) for b in view.values()), 24000)
+        apply_provider_block_budgets(view)
+        for kind, block in original.items():
+            self.assertEqual(view[kind], block)
+        self.assertEqual(view['budget_limits']['gcr_evidence']['budget_chars'], 60000)
+        self.assertFalse(view['budget_limits']['gcr_evidence']['trimmed'])
+
+    def test_entering_trimmer_preserves_ten_when_they_fit(self):
+        from or_harness.world_model.request_budget import trim_evidence_block
+        for kind, block in self._gcr_blocks(count=10).items():
+            with self.subTest(kind=kind):
+                trimmed, _info = trim_evidence_block(block, 60000, kind=kind)
+                self.assertEqual(trimmed['cases'], block['cases'])
+                self.assertEqual(len(trimmed['cases']), 10)
+                self._assert_coverage_and_globals(block, trimmed, kind)
+
+    def test_actual_size_trim_can_retain_nine_instead_of_capping_at_six(self):
+        from or_harness.world_model.request_budget import trim_evidence_block, _size
+        for kind, block in self._gcr_blocks(count=10, padding=150).items():
+            with self.subTest(kind=kind):
+                # Event definitions can be removed without dropping a case;
+                # omit that shared audit field to exercise actual case overflow.
+                block.pop('event_definitions', None)
+                budget = _size(block)-32
+                trimmed, info = trim_evidence_block(block, budget, kind=kind)
+                self.assertEqual(len(trimmed['cases']), 9)
+                self.assertLessEqual(_size(trimmed), budget)
+                self.assertTrue(info['removed'])
+                self._assert_coverage_and_globals(block, trimmed, kind)
+
+    def test_real_shared_overflow_trims_tail_and_keeps_global_facts(self):
+        from or_harness.world_model.request_budget import apply_provider_block_budgets
+        view = self._gcr_blocks(padding=150)
+        original = copy.deepcopy(view)
+        apply_provider_block_budgets(view)
+        info = view['budget_limits']['gcr_evidence']
+        self.assertTrue(info['trimmed'])
+        self.assertLessEqual(info['after_chars'], 60000)
+        self.assertTrue(any(len(view[k]['cases']) < 10 for k in original))
+        for kind, block in original.items():
+            if 'budget_trim' in view[kind]:
+                self._assert_coverage_and_globals(block, view[kind], kind)
+            self.assertEqual(view[kind]['cases'], block['cases'][:len(view[kind]['cases'])])
+
+    def test_80k_full_request_still_trims_evidence_and_protects_core(self):
+        from unittest.mock import patch
+        from tests.harness.test_history_feedback_budget import TestFullRequestBudget
+        from or_harness.world_model.request_budget import (
+            apply_provider_block_budgets, enforce_full_request_budget,
+        )
+        from or_harness.world_model.strategy_prediction import STRATEGY_OUTCOME_SYSTEM_PROMPT
+        blocks = self._gcr_blocks(padding=50)
+        request = TestFullRequestBudget()._request(0)
+        request['prediction_context'].update(copy.deepcopy(blocks))
+        request['prediction_context']['joint_problem']['text'] = 'CURRENT TASK BODY ' * 9000
+        core = {k: copy.deepcopy(v) for k, v in request.items() if k != 'prediction_context'}
+        task = copy.deepcopy(request['prediction_context']['joint_problem'])
+        constraints = copy.deepcopy(request['prediction_context']['execution_constraints'])
+        with patch.dict('os.environ', {'OR_HARNESS_INPUT_BUDGET_TOKENS': '80000',
+                                       'OR_HARNESS_HISTORY_POOL': '60'}):
+            self.assertEqual(history_config()['pool_size'], 60)
+            apply_provider_block_budgets(request['prediction_context'])
+            size = enforce_full_request_budget(request, STRATEGY_OUTCOME_SYSTEM_PROMPT)
+        self.assertTrue(size['sendable'])
+        self.assertLessEqual(size['tokens'], size['bound_tokens'])
+        self.assertLessEqual(size['bound_tokens'], 80000)
+        self.assertTrue(any(t['stage'].startswith('gcr_evidence:') for t in size['trimming']))
+        self.assertEqual({k: v for k, v in request.items() if k != 'prediction_context'}, core)
+        self.assertEqual(request['prediction_context']['joint_problem'], task)
+        self.assertEqual(request['prediction_context']['execution_constraints'], constraints)
+        for kind, block in blocks.items():
+            self._assert_coverage_and_globals(block, request['prediction_context'][kind], kind)
+
     def _c_block(self, count=12):
         cases = [{"execution_id": f"ex{i}", "grade": "strict",
                   "task_id": f"t{i}", "cost": {"tool_calls": i + 1},
@@ -727,7 +867,8 @@ class TestProviderBudget(unittest.TestCase):
         from or_harness.world_model.request_budget import trim_evidence_block
         trimmed, info = trim_evidence_block(self._c_block(12), 1200,
                                             kind="cost_evidence")
-        self.assertLessEqual(len(trimmed["cases"]), 6)
+        self.assertLess(len(trimmed["cases"]), 12)
+        self.assertEqual(trimmed['cases'], self._c_block(12)['cases'][:len(trimmed['cases'])])
         self.assertIn("budget_trim", trimmed)
         coverage = trimmed["reference_coverage"]
         self.assertEqual(coverage["strict"]["n_cases_included"],

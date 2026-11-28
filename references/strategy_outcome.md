@@ -73,6 +73,15 @@ R is omitted for everyone. An explicit zero is a supplied value; a duplicate eve
 or an illegal probability makes that event unknown. Other event probabilities
 remain diagnostics. `scoring_basis` reports the participating events, the per-
 candidate probabilities, the omitted events with reasons, and the maximum's source.
+
+Use a sufficiently supported historical event base rate under matching observation
+rules as an empirical reference, then adjust using concrete implementation
+requirements, comparable failures/successes, interface experience and verified
+reusable scripts. It is not the candidate's conditional probability or a fixed
+default. Weak candidate evidence does not justify a large unsupported departure
+or invented differences; when neither source supports an estimate, omit it with
+the existing reason fields. Probability estimation remains the LLM's judgment.
+
 C first intersects finite nonnegative predictions of the FOUR active
 remaining-task dimensions with identical measurement scopes, then removes
 dimensions without a reliable independent scale. The active C targets are

@@ -433,13 +433,10 @@ PAIR_MATERIAL_VERSION = "wm-pair-material/1"
 #: They are ceilings, not targets: a block is only as large as its material.
 #: The full history stays in the stored block and the evaluation store.
 DEFAULT_HISTORY_FEEDBACK_CHARS = 30000
-#: Stage E/1: the G/C/R blocks now carry up to 10 LOCAL cases each plus the
-#: small GLOBAL statistics. The old 16,000 ceiling assumed a handful of
-#: condition groups; a compact case is ~300-450 chars, so the three blocks
-#: need more room. This is still a CEILING (per-block trimming keeps the
-#: grades/global scalars and records every omission), not a target, and the
-#: WHOLE request bound remains the authority.
-DEFAULT_GCR_EVIDENCE_CHARS = 24000
+#: One shared CHARACTER ceiling for up to 10 local cases per signal plus
+#: global statistics. Cases are trimmed by actual size in relevance order;
+#: the whole-request token bound remains the authority.
+DEFAULT_GCR_EVIDENCE_CHARS = 60000
 DEFAULT_NONCORE_CHARS = 20000
 
 

@@ -352,22 +352,6 @@ def _cap_list(block: Dict[str, Any], path: Tuple[str, ...], limit: int,
         node[key] = value[:limit]
 
 
-def _cap_history_cases(block: Dict[str, Any], limit: int,
-                       removed: List[Dict[str, Any]]) -> None:
-    """Cap the local-case list of a unified-history evidence block.
-
-    Cases are already relevance-ordered, so the tail is dropped first. The
-    COVERAGE counters are refreshed by the block's own refresher afterwards:
-    a trimmed list must never leave a stale count that makes the shown set
-    look like the full population. The GLOBAL statistics are scalars and are
-    not part of this cap.
-    """
-    cases = block.get("cases")
-    if isinstance(cases, list) and len(cases) > limit:
-        removed.append({"field": "cases", "n_removed": len(cases) - limit})
-        block["cases"] = cases[:limit]
-
-
 def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
                         kind: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Reduce one G/C/R evidence block ceiling, keeping the applicable part.
@@ -390,7 +374,6 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
         from or_harness.world_model.history_retrieval import (
             refresh_g_history_coverage,
         )
-        _cap_history_cases(block, 6, removed)
         refresh_g_history_coverage(block)
     elif kind == "implementation_r_evidence":
         from or_harness.world_model.history_retrieval import (
@@ -401,7 +384,6 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
             node.pop("event_definitions", None)
             removed.append({"field": "event_definitions",
                             "ref": "request.risk_convention.event_definitions"})
-        _cap_history_cases(block, 6, removed)
         # The GLOBAL base rates are scalar counts: they are background the
         # model must keep even when local case bodies are reduced.
         for entry in (block.get("cases") or []):
@@ -417,7 +399,6 @@ def trim_evidence_block(block: Dict[str, Any], max_chars: int, *,
         from or_harness.world_model.history_retrieval import (
             refresh_c_history_coverage,
         )
-        _cap_history_cases(block, 6, removed)
         conditions = block.get("current_conditions")
         if isinstance(conditions, dict):
             _cap_list(conditions, ("reusable_artifacts",), 2, removed)
@@ -829,7 +810,7 @@ def enforce_full_request_budget(request: Dict[str, Any], system_prompt: str,
                     kind = ("capability" if key == "harness_capability"
                             else "retrieval_evidence" if key
                             == "retrieval_evidence" else key
-                            if key in ("cost_evidence",
+                            if key in ("g_candidate_evidence", "cost_evidence",
                                        "implementation_r_evidence")
                             else "generic")
                     target = max(120, int(before_chars * 0.6))
