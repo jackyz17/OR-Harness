@@ -33,6 +33,15 @@ global diagnostics enter the request. This calibration source updates separately
 from the two memory banks, including when those banks remain frozen; legacy
 publications and frozen inputs are read as saved, without filling missing facts.
 
+Detailed paired-feedback bodies are deterministically compacted before their
+existing publication budget, then selected by the existing relevance rules.
+Versioned bodies keep all recorded method steps, differences, failure
+assessments and comparison conditions; exact duplicates may use local links and
+audit details use the pair's Evaluation reference. Provider projection recognises
+this representation to avoid repeated compaction loss. Original predictions,
+evaluations and the independent `observation_facts` source remain unchanged;
+this step makes no semantic or learning judgement and calls no model.
+
 | Request block | What the model can use |
 |---|---|
 | `strategy_outcome_calibration.conditional_g` | Attributable passes, failures and unknowns on comparable tasks. Match the observation rule, metric, scope and known structure and execution settings |

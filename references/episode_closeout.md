@@ -180,6 +180,24 @@ detailed pairs. Their sample range can therefore grow when detailed feedback
 is truncated; the calibration window and observation eligibility stay the same.
 Unknowns and cost lower bounds remain distinct from complete observations.
 
+Detailed pairs use `material_version=wm-pair-material/1`. Before the existing
+publication budget is applied, deterministic field extraction removes declared
+audit scaffolding and shares exactly repeated values within each pair. Method
+steps, recorded differences/causes and cost-comparison conditions stay readable;
+the Harness does not summarise them or decide their importance. One `detail_ref`
+opens the original Evaluation; `#cost.observed_fact...` and similar references
+name its fields, while paths such as `method_actual.steps` refer within the pair.
+Unknown fields are retained. Selection metadata and same-task comparisons come
+from the pre-compaction material, and mixed-model windows retain row identities;
+only verified common model/rule values are shared at block level.
+
+`observation_facts` is generated before this representation step and is
+unchanged. New pairs are recognised during provider projection, preserving
+complete methods and recorded causes through repeated reads. Existing budgets
+can omit whole cases; they do not mechanically clip these core fields. Legacy
+pair/context reads retain their prior compatibility path without migration or
+read-time database rebuilding. No extra model call is involved.
+
 This is independent world-model calibration state, not Execution Evidence or
 Strategic Knowledge. Closeout can update it while recorded memory and retrieval
 indices remain frozen, using the actual execution/host facts retained for the

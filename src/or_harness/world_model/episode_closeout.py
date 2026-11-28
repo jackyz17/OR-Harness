@@ -4612,9 +4612,8 @@ def _filter_pairs_by_model(block: Dict[str, Any],
         facts["rows"] = [row for row in rows if isinstance(row, dict)
                          and str(row.get("model_identity") or "(unknown)") == str(model_identity)]
         facts["n_withheld"] = len(rows) - len(facts["rows"])
-    # r12: the model identity is now a BLOCK-level field (shared by every
-    # pair), so filtering checks the block first, then each pair for a
-    # legacy block that still carries it per row.
+    # Mixed windows keep identities per row; verified common declarations
+    # and old single-model publications may use the block-level identity.
     block_ident = block.get("model_identity")
     raw_pairs = [pair for pair in (block.get("pairs") or [])
                  if isinstance(pair, dict)]
@@ -4625,24 +4624,20 @@ def _filter_pairs_by_model(block: Dict[str, Any],
     unreadable = len(raw_pairs) - len(readable)
     kept: List[Dict[str, Any]] = []
     withheld = 0
-    if block_ident is not None:
-        if str(block_ident) == str(model_identity):
-            kept = list(readable)
+    for pair in readable:
+        # A row's own identity takes precedence; old single-model blocks
+        # without per-row identity still use their block-level declaration.
+        identity = pair.get("model_identity", block_ident) or "(unknown)"
+        if str(identity) == str(model_identity):
+            kept.append(pair)
         else:
-            withheld = len(readable)
-    else:
-        for pair in readable:
-            if str(pair.get("model_identity") or "(unknown)") == \
-                    str(model_identity):
-                kept.append(pair)
-            else:
-                withheld += 1
+            withheld += 1
     filtered["pairs"] = kept
     # The index must describe the SAME bodies: filtering by model may drop
     # rows, and an index left pointing at them would later resolve to a body
     # that is no longer here (or to the wrong position).
-    filtered["selection_meta"] = _selection_meta(list(enumerate(kept)))
-    filtered["same_task_comparisons"] = same_task_comparisons(kept)
+    filtered["selection_meta"] = _retained_selection_meta(block, kept)
+    filtered["same_task_comparisons"] = _retained_comparisons(block, kept)
     filtered["filtered"] = True
     filtered["model_identity"] = str(model_identity)
     filtered["n_pairs_included"] = len(kept)
@@ -5239,9 +5234,8 @@ def build_paired_feedback(
       rows (whose G label is unobserved) are shown last, then the most RECENT
       history — never a raw oldest-first scan that lets one early long record
       hold the budget forever, and never a crash ahead of labeled material;
-    - the model identity and the observation-rule version are stated ONCE
-      at the block level instead of on every row (they are the same for the
-      whole block), and each row carries only its ``evaluation_id``;
+    - each pair retains its own model identity and observation-rule version;
+      block-level values describe a common value only when one exists;
     - the risk label-basis sentences are SHORT CODES explained once in
       ``risk_reason_legend``.
 
@@ -5333,28 +5327,31 @@ def build_paired_feedback(
     indexed.sort(key=_sort_key)
 
     included: List[Dict[str, Any]] = []
+    included_originals: List[Dict[str, Any]] = []
     used = 0
     omitted = 0
-    ident = None
-    obs_rule = None
+    identities = {row.get("model_identity") for _, _, row in rows}
+    rules = {row.get("observation_rule_version") for _, _, row in rows}
+    ident = next(iter(identities)) if len(identities) == 1 else None
+    obs_rule = next(iter(rules)) if len(rules) == 1 else None
+    source_meta = {entry["pair_ref"]: entry for entry in
+                   _selection_meta([(i, row) for i, (_, _, row) in enumerate(rows)])}
+    from or_harness.strategy.evidence_views import provider_feedback_pair, PAIR_MATERIAL_VERSION
     for _index, (_stored, _evaluation, row) in indexed:
-        # Hoist the block-invariant identity OFF the row: it is the same for
-        # every pair, so repeating it per row is pure duplication.
-        row_ident = row.pop("model_identity", None)
-        row_rule = row.pop("observation_rule_version", None)
-        if ident is None:
-            ident = row_ident
-        if obs_rule is None:
-            obs_rule = row_rule
-        size = len(json.dumps(row, ensure_ascii=False, default=str))
+        material = provider_feedback_pair(row, for_publication=True)
+        # Share only values VERIFIED common to the whole source window.
+        # Mixed-model/rule windows keep each row's own declaration.
+        if len(identities) == 1:
+            material.pop("model_identity", None)
+        if len(rules) == 1:
+            material.pop("observation_rule_version", None)
+        size = len(json.dumps(material, ensure_ascii=False, default=str))
         if used + size > budget:
             omitted += 1
-            # The identity was popped for a row we cannot include: put it
-            # back is unnecessary (the row is dropped) — but its absence
-            # must not silently change the block identity.
             continue
         used += size
-        included.append(row)
+        included.append(material)
+        included_originals.append(row)
     # The rows the SELECTION may consider are exactly the rows whose bodies
     # this block carries. An index over the full window would name pairs the
     # block does not include (budget-trimmed rows), and a later lookup by
@@ -5363,11 +5360,11 @@ def build_paired_feedback(
     # is the identity a selection resolves, never the numeric position.
     out: Dict[str, Any] = {
         "feedback_version": PAIRED_FEEDBACK_VERSION,
+        "pair_material_version": PAIR_MATERIAL_VERSION,
         "model_identity": ident,
         "observation_rule_version": obs_rule,
-        "identity_note": ("these two fields are BLOCK-level: all pairs share "
-                          "one predicting model and one observation rule, so "
-                          "they are stated once rather than per row"),
+        "identity_note": ("each pair retains its own model and observation rule; "
+                          "block fields state a common value only when shared"),
         "n_pairs_total": n_total,
         "n_pairs_included": len(included),
         "n_pairs_omitted": omitted,
@@ -5386,14 +5383,15 @@ def build_paired_feedback(
         # The per-row SELECTION index is built from the SAME list this block
         # stores in ``pairs``: every directory entry has a body here, and its
         # ``pair_ref`` is the identity a selection resolves.
-        "selection_meta": _selection_meta(list(enumerate(included))),
+        "selection_meta": [dict(source_meta[_pair_ref(row)], index=i)
+                           for i, row in enumerate(included)],
         "pairs": included,
         "observation_facts": {
             "version": "wm-observation-facts/1",
             "available_at": facts_available_at,
             "rows": observation_rows,
         },
-        "same_task_comparisons": same_task_comparisons(included),
+        "same_task_comparisons": same_task_comparisons(included_originals),
     }
     if omitted:
         out["omission_note"] = (
@@ -5550,6 +5548,31 @@ def _method_signature_tokens(parts: Sequence[Any]) -> List[str]:
 def _strategy_tokens(strategy_id: Any) -> List[str]:
     """The comparable tokens of a strategy id (weak identity hint)."""
     return _method_signature_tokens([strategy_id])
+
+
+def _retained_selection_meta(block, rows):
+    """Retain the original method signature by body identity, never position."""
+    saved = {}
+    for entry in block.get("selection_meta") or []:
+        if isinstance(entry, dict):
+            saved.setdefault(str(entry.get("pair_ref") or entry.get("evaluation_id")), entry)
+    out = []
+    for index, row in enumerate(rows):
+        entry = saved.get(str(_pair_ref(row)))
+        if entry is None:
+            entry = _selection_meta([(index, row)])[0]  # legacy, no stored directory
+        out.append({**copy.deepcopy(entry), "index": index})
+    return out
+
+
+def _retained_comparisons(block, rows):
+    """Filter saved original comparison facts to bodies still in publication."""
+    if block.get("pair_material_version") or block.get("same_task_comparisons"):
+        ids = {_pair_ref(row) for row in rows}
+        return [copy.deepcopy(c) for c in block.get("same_task_comparisons") or []
+                if c.get("left", {}).get("evaluation_id") in ids
+                and c.get("right", {}).get("evaluation_id") in ids]
+    return same_task_comparisons(rows)
 
 
 def _stable_selection_digest(payload: Any) -> str:
@@ -5922,8 +5945,12 @@ def select_paired_feedback(
                 execution_errors_shown += 1
 
     out["pairs"] = selected
+    if block.get("pair_material_version"):
+        out["pair_material_version"] = block["pair_material_version"]
+    comparisons = (block.get("same_task_comparisons") or []) if block.get("pair_material_version") else (
+        block.get("same_task_comparisons") or same_task_comparisons(pairs))
     out.update(case_comparisons_for_rows(
-        block.get("same_task_comparisons") or same_task_comparisons(pairs), selected, cap))
+        comparisons, selected, cap))
     out["n_pairs_included"] = len(selected)
     # Every AVAILABLE pair is either shown or omitted: the two counts cannot
     # drift apart (an execution-error quota drop, a per-candidate cap, a

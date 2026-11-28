@@ -1146,8 +1146,19 @@ class R15Case(HarnessTestCase):
             self.assertNotIn("predicted_probability", entry)
             self.assertIn("predicted", entry)
         if row.get("risk_predicted"):
-            self.assertTrue(all("probability_ref" in e
-                                for e in row["risk_predicted"]))
+            if row.get("material_version") == "wm-pair-material/1":
+                # A forecast's pointer to its OWN value is redundant; the
+                # observation-to-forecast link remains explicit and valid.
+                by_event = {e['event']: e for e in row['risk_predicted']}
+                for event in row.get('risk_actual') or []:
+                    if event.get('predicted'):
+                        self.assertIn(event['event'], by_event)
+                        self.assertIn('probability', by_event[event['event']])
+                        self.assertEqual(event['probability_ref'],
+                            f"risk_predicted[{event['event']}].probability")
+            else:
+                self.assertTrue(all("probability_ref" in e
+                                    for e in row["risk_predicted"]))
 
     def test_selection_does_not_change_the_stored_evaluations(self):
         task = {"task_id": "t5", "family": "routing",

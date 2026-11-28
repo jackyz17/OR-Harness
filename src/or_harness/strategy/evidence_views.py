@@ -427,6 +427,7 @@ def compact_feedback_pair(value):
 
 #: Version of the PROVIDER-ONLY feedback projection.
 PROVIDER_FEEDBACK_VERSION = "wm-pairs-provider/1"
+PAIR_MATERIAL_VERSION = "wm-pair-material/1"
 
 #: Default character budgets of the three INDEPENDENT provider-only views.
 #: They are ceilings, not targets: a block is only as large as its material.
@@ -880,7 +881,7 @@ def _provider_execution(row, ref):
     return out
 
 
-def provider_feedback_pair(row):
+def provider_feedback_pair(row, *, for_publication=False):
     """ONE pair in the provider's compact history view (never stored).
 
     Kept: the conditions the decision was made under, the recorded
@@ -892,14 +893,23 @@ def provider_feedback_pair(row):
     """
     if not isinstance(row, dict):
         return {}
-    row = compact_feedback_pair(row)
+    preserve_core = for_publication or row.get("material_version") == PAIR_MATERIAL_VERSION
+    # Published material has already passed the original pair derivation.
+    # Repeating that compactor can lose values_not_scored and local links.
+    row = copy.deepcopy(row) if preserve_core else compact_feedback_pair(row)
     # Read old pairs as historical material, not numeric feedback for a
     # differently defined current target. The stored pair is untouched.
     from or_harness.world_model.contracts import R_OBSERVATION_VERSION, RETRIES_FUTURE_VERSION
     impl = row.get("implementation_observation") or {}
     impl_rule = impl.get("observation_rule_version") or next((e.get("observation_rule_version")
         for e in row.get("risk_actual") or [] if e.get("event") == "implementation_failure"), None)
-    if impl_rule != R_OBSERVATION_VERSION:
+    if impl_rule is None:
+        impl_event = next((e for e in row.get("risk_actual") or []
+                           if e.get("event") == "implementation_failure"), {})
+        impl_rule = row.get("risk_observation_rule_version") or next((version
+            for version, code in (row.get("risk_observation_rule_versions") or {}).items()
+            if code == impl_event.get("rule")), None)
+    if not for_publication and impl_rule != R_OBSERVATION_VERSION:
         impl.pop("predicted_probability_ref", None)
         impl.pop("predicted_probability", None)
         impl["comparable"] = False
@@ -912,7 +922,7 @@ def provider_feedback_pair(row):
                 event["label_basis"] = "historical_formal"
     fact = row.get("cost_observed_fact") or {}
     rule = (fact.get("dimension_observation_rule_versions") or {}).get("retries") or (fact.get("conditions") or {}).get("retry_observation_rule_version")
-    if rule != RETRIES_FUTURE_VERSION:
+    if not for_publication and rule != RETRIES_FUTURE_VERSION:
         for key in ("cost_measured", "cost_predicted", "cost_actual", "cost_log_ratio", "cost_observed_unpredicted"):
             if isinstance(row.get(key), dict):
                 row[key].pop("retries", None)
@@ -948,7 +958,167 @@ def provider_feedback_pair(row):
     out.update(_provider_cost(row, ref or "orx inspect"))
     out.update(_provider_risk(row, ref or "orx inspect"))
     out.update(_provider_execution(row, ref or "orx inspect"))
+    if preserve_core:
+        # These are source facts, not prose for the framework to summarise.
+        # In particular, keep EVERY method step, recorded difference/cause,
+        # missing value, lower bound and comparability condition.
+        for key in ("action_id", "model_identity", "observation_rule_version",
+                    "problem_identity_digest", "execution_ids", "method_planned",
+                    "method_actual", "method_deviation", "benefit", "g_observed_fact",
+                    "cost_observed_fact", "cost_measured", "cost_log_ratio",
+                    "cost_observed_unpredicted", "risk_predicted", "risk_actual",
+                    "risk_actual_omitted", "implementation_observation",
+                    "execution_conditions", "task_check", "blocked_dimensions",
+                    "exclusion_reasons", "note", "selected_reason_codes"):
+            if key in row:
+                out[key] = copy.deepcopy(row[key])
+        for key in ("risk_observation_rule_version", "risk_observation_rule_versions"):
+            if key in row:
+                out[key] = copy.deepcopy(row[key])
+            else:
+                out.pop(key, None)
+        # Future/legacy fields without a declared audit-removal rule stay
+        # visible. Absence from today's provider whitelist is not redundancy.
+        for key, value in row.items():
+            if key not in out and key != "selected_reason":
+                out[key] = copy.deepcopy(value)
+        out["material_version"] = PAIR_MATERIAL_VERSION
+        _publication_pair_fields(out)
     return out
+
+
+def _same_pair_value(left, right):
+    """Exact JSON content, including null/bool/number distinctions."""
+    try:
+        return json.dumps(left, sort_keys=True, allow_nan=False) == json.dumps(
+            right, sort_keys=True, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+
+
+def _publication_pair_fields(row):
+    """Only exact sharing and explicitly omitted audit fields, within ONE pair.
+
+    Original records remain behind detail_ref. No step selection, text clipping,
+    method-difference classification, cause inference or learning judgement.
+    """
+    deviation = row.get("method_deviation")
+    if isinstance(deviation, dict):
+        for side in ("planned", "actual"):
+            method = row.get("method_" + side) or {}
+            for field in ("name", "steps"):
+                key = side + "_" + field
+                if key in deviation and field in method and _same_pair_value(deviation[key], method[field]):
+                    deviation.pop(key)
+                    deviation[key + "_ref"] = "method_" + side + "." + field
+    predicted = {}
+    for event in row.get("risk_predicted") or []:
+        if not event.get("event"):
+            continue
+        predicted.setdefault(event.get("event"), []).append(event)
+        if event.get("probability_ref") == f"risk_predicted[{event.get('event')}].probability":
+            event.pop("probability_ref")  # a pointer to the value's own home
+    shared_probability = False
+    for event in row.get("risk_actual") or []:
+        if not event.get("event") or event.get("predicted") is False:
+            continue
+        matches = predicted.get(event.get("event")) or []
+        if len(matches) != 1:
+            continue
+        probability = matches[0].get("probability")
+        if (probability is not None and event.get("probability_ref") in (
+                None, f"risk_predicted[{event.get('event')}].probability") and
+                _same_pair_value(event.get("predicted_probability"), probability)):
+            event.pop("predicted_probability")
+            shared_probability = True
+    if shared_probability:
+        row["risk_probability_ref"] = "risk_predicted[event].probability"
+    events = row.get("risk_actual") or []
+    if events and all(e.get("observation_rule_version") for e in events):
+        # Reuse the existing provider's exact version dictionary, without
+        # its event-count cap or any other field extraction.
+        projection = _provider_risk(row, row.get("detail_ref"))
+        common = projection.get("risk_observation_rule_version")
+        codes = projection.get("risk_observation_rule_versions")
+        for event in events:
+            version = event.pop("observation_rule_version")
+            if codes:
+                event["rule"] = codes[version]
+        if common:
+            row["risk_observation_rule_version"] = common
+        elif codes:
+            row["risk_observation_rule_versions"] = codes
+    observation = row.get("implementation_observation")
+    if isinstance(observation, dict):
+        observation.pop("selection_action_id", None)  # binding audit, not technical cause
+        if observation.get("task_id") == row.get("task_id"):
+            observation.pop("task_id")
+    for key in ("benefit", "g_observed_fact"):
+        rule = (row.get(key) or {}).get("acceptance_rule")
+        if isinstance(rule, dict) and "spec" in rule:
+            rule.pop("spec")
+            rule["spec_ref"] = "#" + key + ".acceptance_rule.spec"
+    cost = row.get("cost_observed_fact")
+    if isinstance(cost, dict):
+        # Call logs and window audit scaffolding are not cost observations.
+        for key in ("window", "work_facts", "source_refs", "method_actual", "method_actual_ref"):
+            if key in cost:
+                cost.pop(key)
+                cost[key + "_ref"] = "#cost_observed_fact." + key
+        measured = row.get("cost_measured") or {}
+        shared = set(cost.get("values") or {}).intersection(measured)
+        if shared and all(isinstance(measured[d], dict) and
+                cost["values"][d] is not None and
+                _same_pair_value(cost["values"][d], measured[d].get("actual")) for d in shared):
+            _compact_pair_cost_values(row)
+        for bound in (cost.get("lower_bounds") or {}).values():
+            if isinstance(bound, dict) and "source_refs" in bound:
+                bound.pop("source_refs")  # receipt IDs, not the bound or its qualification
+                bound["source_refs_ref"] = "#cost_observed_fact.lower_bounds"
+        solver = (cost.get("conditions") or {}).get("solver_conditions")
+        comparison = (row.get("execution_conditions") or {}).get("comparison_key") or {}
+        if isinstance(solver, dict) and isinstance(comparison, dict):
+            for key in ("solver", "config", "constraints"):
+                if key in solver and key in comparison and _same_pair_value(solver[key], comparison[key]):
+                    solver.pop(key)
+                    solver[key + "_ref"] = "execution_conditions.comparison_key." + key
+            constraints = solver.get("constraints")
+            executor = constraints.get("executor") if isinstance(constraints, dict) else None
+            if isinstance(executor, dict):
+                # Fixed Harness usage-contract documentation, not resource
+                # limits, observed settings, availability or a recorded cause.
+                removed = [key for key in ("inputs", "outputs", "imports", "workspace_policy")
+                           if key in executor]
+                for key in removed:
+                    executor.pop(key)
+                if removed:
+                    executor["contract_ref"] = "#cost_observed_fact.conditions.solver_conditions.constraints.executor"
+    root = row.get("detail_ref")
+    def relative(value, *, top=False):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if not (top and key == "detail_ref") and key.endswith("_ref") and isinstance(child, str):
+                    if root and child.startswith(root):
+                        suffix = child[len(root):].lstrip()
+                        child = suffix if suffix.startswith("#") else "#" + suffix
+                    if child.startswith("#."):
+                        child = "#" + child[2:]
+                    # Pair aliases resolve to the original Evaluation fields.
+                    for alias, original in (("cost_observed_fact", "cost.observed_fact"),
+                                            ("implementation_observation", "risk.implementation_observation"),
+                                            ("execution_conditions", "benefit.execution_conditions"),
+                                            ("task_check", "benefit.task_check")):
+                        prefix = "#" + alias
+                        if child == prefix or child.startswith(prefix + "."):
+                            child = "#" + original + child[len(prefix):]
+                            break
+                    value[key] = child
+                else:
+                    relative(child)
+        elif isinstance(value, list):
+            for child in value:
+                relative(child)
+    relative(row, top=True)
 
 
 #: Optional parts of a provider pair, dropped first when the history block is
@@ -974,6 +1144,10 @@ def _lean_provider_pair(row):
     scaffolding, not before.
     """
     row = copy.deepcopy(row)
+    if row.get("material_version") == PAIR_MATERIAL_VERSION:
+        # The publication already removed declared audit scaffolding. Keep
+        # the remaining core whole; the existing budget can omit whole cases.
+        return row, []
     dropped = []
     for key in _PROVIDER_OPTIONAL_KEYS:
         if key in row:
@@ -1109,7 +1283,7 @@ def provider_paired_feedback(block, *, budget_chars=None):
         used_selection_codes.update(row.get("selected_reason_codes") or [])
     base = {key: copy.deepcopy(value) for key, value in block.items()
             if key not in ("pairs", "same_task_comparisons",
-                           "risk_reason_legend")}
+                           "risk_reason_legend", "observation_facts", "selection_meta")}
     base["provider_view_version"] = PROVIDER_FEEDBACK_VERSION
     base["provider_budget_chars"] = budget
     legend = {code: text for code, text in
@@ -1221,7 +1395,7 @@ def provider_paired_feedback(block, *, budget_chars=None):
         displayed = [row for row, _dropped in leaned]
         reduced_fields = sorted({field for _row, dropped in leaned
                                  for field in dropped})
-        reduced = True
+        reduced = bool(reduced_fields)
         out = assemble()
     while chars(out) > budget and displayed:
         # Stage 2: drop the LOWEST-VALUE rows first. The selection order is
