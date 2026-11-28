@@ -73,8 +73,8 @@ DOCUMENTED_FLAGS = [
                 "--note", "--verify", "--relation", "--review", "--submission",
                 "--induction-id", "--attribute-effect"]),
     ("plan-next", ["--task", "--episode", "--candidates", "--horizon",
-                   "--max-calls", "--time-budget", "--delta",
-                   "--prediction-mode", "--benefit-kind", "--benefit-metric",
+                   "--max-calls", "--time-budget",
+                   "--benefit-kind", "--benefit-metric",
                    "--benefit-unit", "--cost-scales"]),
     ("induction-material", ["--induction-id", "--strategy", "--task", "--limit", "--cursor",
                             "--related-top-k", "--purpose", "--query", "--executions", "--view", "--episode"]),
@@ -104,7 +104,7 @@ DOCUMENTED_FLAGS = [
 #: Global flags the docs promise.
 DOCUMENTED_GLOBAL_FLAGS = ["--home", "--world-model", "--wm-timeout",
                            "--wm-max-tokens",
-                           "--prediction-mode", "--delta", "--alpha",
+                           "--alpha",
                            "--beta", "--gamma", "--cost-weights"]
 
 #: Python imports the docs use.
@@ -119,7 +119,7 @@ DOCUMENTED_IMPORTS = [
         "VerificationCondition", "CONTRACT_VERSION",
         "LEGACY_CONTRACT_VERSION", "detect_payload_version",
         "legacy_prediction_view", "load_contract_payload",
-        "prediction_kinds_for_mode", "validate_strategy_outcome",
+        "validate_strategy_outcome",
         "StrategyExecutionWindow",
         "build_execution_window", "window_id_for",
         "PredictionServiceStatus", "SERVICE_IMPLEMENTED_KINDS",
@@ -131,10 +131,10 @@ DOCUMENTED_IMPORTS = [
         "MATH_ATTRIBUTE_ORIGINS", "EVIDENCE_CLASSES",
         "build_context", "build_joint_representation", "build_retrieval_view",
         "capability_evidence_with_sources", "capability_version",
-        "cell_evidence_from_stats", "classify_evidence",
+        "classify_evidence",
         "context_identity_problems", "dedupe_evidence",
         "evidence_identity", "frozen_knowledge_available",
-        "frozen_knowledge_view", "knowledge_targets_from_context",
+        "frozen_knowledge_view",
         "math_attributes", "memory_content_digest", "resolve_effective_cir",
         "retrieval_reuse_problems", "snapshot_conditions",
         "snapshot_from_context", "structure_problems",

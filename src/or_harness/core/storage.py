@@ -493,18 +493,6 @@ class Store:
 
     # -- outcome predictions (M2, legacy protocol) -----------------------------
 
-    def put_world_model_prediction(self, prediction_id: str, task_id: str,
-                                   episode_id: Optional[str], payload: str,
-                                   created_at: Optional[float] = None) -> None:
-        """Persist one outcome prediction (a frozen hypothesis)."""
-        with self.transaction() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO world_model_predictions "
-                "(prediction_id, task_id, episode_id, created_at, payload) "
-                "VALUES (?,?,?,?,?)",
-                (str(prediction_id), str(task_id), episode_id,
-                 float(created_at if created_at is not None else time.time()),
-                 str(payload)))
 
     def get_world_model_prediction(self, prediction_id: str
                                    ) -> Optional[str]:

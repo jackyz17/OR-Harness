@@ -1,0 +1,322 @@
+{
+  "baseline_commit": "b356a89d779fbe3b28b0e50e2736f5abe17f98a5",
+  "branch": "refactor/retire-legacy-runtime",
+  "metrics": {
+    "before": {
+      "src_bytes": 3126465,
+      "python_files": 69,
+      "src_lines": 61479,
+      "api_lines": 7859,
+      "cli_commands": 30,
+      "commands": [
+        "profile",
+        "recall",
+        "predict-cost",
+        "execute",
+        "record",
+        "check-task",
+        "amend-cost",
+        "induce",
+        "inspect",
+        "snapshot",
+        "action",
+        "budget",
+        "bind-strategy",
+        "close-episode",
+        "calibration",
+        "archive-calibration",
+        "enforce-window",
+        "plan-next",
+        "choose-next",
+        "induction-material",
+        "induction-status",
+        "retire",
+        "exclude-execution",
+        "restore-execution",
+        "rebuild-index",
+        "doctor",
+        "contract",
+        "context",
+        "maintain-snapshots",
+        "fork-memory"
+      ]
+    },
+    "after": {
+      "src_bytes": 2955439,
+      "python_files": 65,
+      "src_lines": 58031,
+      "api_lines": 7142,
+      "cli_commands": 30,
+      "commands": [
+        "profile",
+        "recall",
+        "predict-cost",
+        "execute",
+        "record",
+        "check-task",
+        "amend-cost",
+        "induce",
+        "inspect",
+        "snapshot",
+        "action",
+        "budget",
+        "bind-strategy",
+        "close-episode",
+        "calibration",
+        "archive-calibration",
+        "enforce-window",
+        "plan-next",
+        "choose-next",
+        "induction-material",
+        "induction-status",
+        "retire",
+        "exclude-execution",
+        "restore-execution",
+        "rebuild-index",
+        "doctor",
+        "contract",
+        "context",
+        "maintain-snapshots",
+        "fork-memory"
+      ]
+    },
+    "delta": {
+      "src_bytes": -171026,
+      "python_files": -4,
+      "src_lines": -3448,
+      "api_lines": -717,
+      "cli_commands": 0
+    }
+  },
+  "removed_public_runtime_apis": [
+    "predict_outcome",
+    "bind_outcome",
+    "compare_prediction",
+    "knowledge_targets",
+    "prediction_reliability_table",
+    "evaluate_knowledge_execution",
+    "evaluate_knowledge_consolidation"
+  ],
+  "removed_cli_flags": [
+    "--delta (global and plan-next)",
+    "--prediction-mode (global and plan-next)"
+  ],
+  "removed_symbols_by_file": {
+    "src/or_harness/api.py": [
+      "ORHarness._budget_override_view",
+      "ORHarness._call_cost_dims",
+      "ORHarness._charge_call_cost",
+      "ORHarness._claim_change",
+      "ORHarness._induction_transition",
+      "ORHarness._match_target",
+      "ORHarness._prediction_targets",
+      "ORHarness._record_knowledge_verdict",
+      "ORHarness.bind_outcome",
+      "ORHarness.compare_prediction",
+      "ORHarness.evaluate_knowledge_consolidation",
+      "ORHarness.evaluate_knowledge_execution",
+      "ORHarness.knowledge_targets",
+      "ORHarness.predict_outcome",
+      "ORHarness.prediction_reliability_table"
+    ],
+    "src/or_harness/core/storage.py": [
+      "Store.put_world_model_prediction"
+    ],
+    "src/or_harness/world_model/context.py": [
+      "cell_evidence_from_stats",
+      "knowledge_targets_from_context"
+    ],
+    "src/or_harness/world_model/contracts.py": [
+      "prediction_kinds_for_mode"
+    ],
+    "src/or_harness/world_model/knowledge.py": [
+      "KnowledgeTarget",
+      "KnowledgeTarget.from_dict",
+      "KnowledgeTarget.to_dict",
+      "_cell_token_from_snapshot",
+      "_clamp",
+      "_knowledge_entries",
+      "_lookup_target",
+      "_target_index",
+      "_targets_by_key",
+      "distinct_task_count",
+      "knowledge_value",
+      "learning_needs",
+      "precondition_realizability",
+      "structural_need",
+      "validate_knowledge_changes"
+    ],
+    "src/or_harness/world_model/knowledge_track.py": [
+      "_claim_interval",
+      "_dedupe_resolved",
+      "_is_contrast_evidence",
+      "_observation_satisfied",
+      "_observed_quality",
+      "_preconditions_unmet",
+      "_record_cell",
+      "_target_value",
+      "class_reliability",
+      "collect_verdicts",
+      "dedupe_attribution",
+      "evaluate_consolidation",
+      "evaluate_execution",
+      "knowledge_feedback",
+      "proposition_key",
+      "record_stage_verdict",
+      "reliability_lookup",
+      "stage_verdict",
+      "unresolved_stages"
+    ],
+    "src/or_harness/world_model/planner.py": [
+      "CandidatePath",
+      "CandidatePath.from_dict",
+      "CandidatePath.to_dict",
+      "PathStep",
+      "PathStep.from_dict",
+      "PathStep.to_dict"
+    ],
+    "src/or_harness/world_model/prediction.py": [
+      "OutcomePrediction.new_id",
+      "validate_prediction_payload"
+    ],
+    "src/or_harness/world_model/service.py": [
+      "PredictionService",
+      "PredictionService.__init__",
+      "PredictionService._call_cost",
+      "PredictionService._model_info",
+      "PredictionService._save",
+      "PredictionService._snapshot_task_digest",
+      "PredictionService.bind_outcome",
+      "PredictionService.compare_prediction",
+      "PredictionService.get",
+      "PredictionService.predict_outcome",
+      "PredictionService.query",
+      "_provider_state_view",
+      "harness_condition"
+    ]
+  },
+  "moved_readers_and_live_types": {
+    "from": "world_model/prediction.py",
+    "to": "world_model/contracts.py",
+    "symbols": [
+      "ActionSpec",
+      "ActionSpec.__post_init__",
+      "ActionSpec.from_dict",
+      "ActionSpec.to_dict",
+      "OutcomePrediction",
+      "OutcomePrediction.from_dict",
+      "OutcomePrediction.to_dict"
+    ]
+  },
+  "static_audit": {
+    "protected_file_sha256": {
+      "src/or_harness/world_model/g_signal.py": "658ca7e2d40663395fb262699cc7b92f02ac759dbbbfcaabf9324ea783dcce52",
+      "src/or_harness/world_model/cost_signal.py": "8598c8354a0d809c8b58297bd83fce07a7173464bbe55cd1c496047c688e8f6e",
+      "src/or_harness/world_model/r_signal.py": "b5ab931ee92bb508b8c17bf1948e27c8172a27449778a248648ab6a38c9bb7dd",
+      "src/or_harness/world_model/episode_closeout.py": "7f0f0e7c355958b97c87d0a474b655e601c3c415ee1aeaab4cbfb3f67fd6dc18",
+      "src/or_harness/world_model/implementation_facts.py": "5e918c24063fba8e163c48dc6847868c92c4e3cb7020b95188ac086c4a9ca178",
+      "src/or_harness/world_model/history_retrieval.py": "4c3ce74656d8eecf7f5fd025264367dadbbe744ac1bab2e0b00f6d69f0b63285",
+      "src/or_harness/world_model/request_budget.py": "e3af8559cab869d782b4366eeec422190fa3870b072e5328596c0d8966ebba4c",
+      "src/or_harness/world_model/hplus.py": "03a10b5124a73230e26fd70fc96d6d3b86cda3d1e6cef46e9155f536f510bf38",
+      "src/or_harness/world_model/maintenance.py": "0ef15665d6c94c98336985045e3b0f3a1fbd84b957ed6c4995e4f48e4c931d58",
+      "src/or_harness/world_model/induction_material.py": "c1d91ec53f8681350b0d9a3ca6cc634223bd459e97ddd532d87125bacf0a79b2",
+      "src/or_harness/world_model/induction_submission.py": "f0aa1deee032aaf77918350219f6152a30203ecae32ea78b521d3f963ac5c948",
+      "src/or_harness/world_model/induction_gate.py": "4bb1be858e1960bed715730f501c83ef37c64441908c6144fbbc893dbd0e7e57",
+      "src/or_harness/strategy/induction.py": "3426837a1f2f3e99e958df246bff029889520d5dd7ed97126d87111a4a6b621b",
+      "src/or_harness/strategy/selector.py": "fc1710c128953419ec099141a54310f20f831ca76d6ba65dcad96917ff92b9cd",
+      "src/or_harness/strategy/stats.py": "dfb4141c08c05eed282eb7ba82b6f172a9430c37333ac31c4d187793d89287b0",
+      "src/or_harness/strategy/rule_versions.py": "dbb84050537f207d1ba86186dddb6ea93554a77922510173bc553a91d3fcf196",
+      "src/or_harness/experiments/__init__.py": "4f5175d9aeab20d729ec0829945e1d8f7d40efdfd3e1d938da3aa4141a1b5fdb",
+      "src/or_harness/experiments/hplus.py": "602fffc6ec5ab02be15909f757164c489b59f2cd093a0605c99271f24e5f6cb0",
+      "src/or_harness/experiments/runner.py": "f45b108f73587ae65a765b107fbbbd6a9672c7df3abd2444765517add0ce4889"
+    },
+    "current_prompt_sha256": "2613510fe6499ce7774e2a5e0ef8a5e9a2f27d69dc4f58c971a5e25bbe9d6d5d",
+    "unchanged_planner_functions": [
+      "score_strategy_outcome_predictions",
+      "resolve_benefit_convention",
+      "normalize_benefit_convention"
+    ],
+    "retired_imports": []
+  },
+  "behavior_comparison": {
+    "effective_requests_equal": true,
+    "scores_equal": true,
+    "model_calls": 2,
+    "selected_strategy": "S04",
+    "g": {
+      "label_eligibility": "attributable",
+      "metric": "task_check_passed_given_faithful_execution",
+      "observation_rule_version": "wm-g-faithful/2",
+      "observed": 1.0
+    },
+    "induction": {
+      "outcome": "insufficient_material",
+      "scheduled": 1,
+      "source_execution": true
+    },
+    "retired_calls_before": {
+      "evaluate_knowledge_consolidation": 0,
+      "evaluate_knowledge_execution": 1,
+      "knowledge_targets": 2,
+      "prediction_reliability_table": 1
+    },
+    "retired_calls_after": {
+      "evaluate_knowledge_consolidation": 0,
+      "evaluate_knowledge_execution": 0,
+      "knowledge_targets": 0,
+      "prediction_reliability_table": 0
+    }
+  },
+  "probe_artifact_sha256": {
+    "before": "56e1b9da79708383a6268d74f2f3de887a0e55364e66eaa7a69b69ede20fdace",
+    "before-repeat": "56e1b9da79708383a6268d74f2f3de887a0e55364e66eaa7a69b69ede20fdace",
+    "after-final": "aa914f7c0673519dbf23c2b4737d5179ff625bca4a9ecdb06ceec2670168e185"
+  },
+  "tests": {
+    "representative_baseline": {
+      "total": 159,
+      "passed": 156,
+      "preexisting_failures": 2,
+      "preexisting_errors": 1
+    },
+    "targeted_final": {
+      "total": 422,
+      "passed": 422,
+      "failures": 0,
+      "errors": 0,
+      "seconds": 83.603,
+      "counts": {
+        "test_cleanup_audit": 14,
+        "test_command_surface": 79,
+        "test_strategy_outcome.TestUnifiedSolving": 14,
+        "test_prediction_context": 102,
+        "test_g_observation_v2": 10,
+        "test_g_feedback_chain": 14,
+        "test_c_signal_review": 18,
+        "test_r_technical.TestTechnicalRLabels": 11,
+        "test_r_technical.TestCommonMaxRScoring": 17,
+        "test_episode_closeout.TestCloseoutBoundaries": 7,
+        "test_wm_calibration_loop.TestNoDoubleCounting": 1,
+        "test_hplus_binary": 14,
+        "test_induction_submission": 19,
+        "test_stage_e_history_retrieval.TestEndToEndHistory": 2,
+        "test_stage_f_selfcheck_induction.TestReviewFlows": 5,
+        "test_world_model_m3.TestPlanning": 13,
+        "test_world_model_contract": 82
+      }
+    },
+    "final_cleanup_guards": {
+      "total": 14,
+      "passed": 14,
+      "failures": 0,
+      "errors": 0
+    }
+  },
+  "external_dependencies": {
+    "predict_cost": "Retained: src/or_harness/experiments/runner.py:310 and external consumers not ruled out.",
+    "retired_apis": "External Python consumers are not discoverable from this repository; removal stays on the isolated branch."
+  },
+  "removed_unused_constants": [
+    "api.CAPABILITY_EXECUTABLE_OPERATIONS"
+  ]
+}

@@ -401,8 +401,6 @@ def persist_context(store, context):
                 raw[field]={'$shared':header['feedback_versions'][name]}
         raw['retrieval']['hits']=[{'$shared':row['value_ref']} for row in header['evidence_versions']]
         raw=share_values(store,raw)
-        header["target_versions"] = [put_value(conn, store, "knowledge_target", target)
-                                     for target in context.knowledge_targets]
         conn.execute("INSERT OR IGNORE INTO prediction_contexts VALUES (?,?,?,?,?)",
                      (context.context_id, context.task_id, context.episode_id,
                       context.created_at, store.dumps(header)))

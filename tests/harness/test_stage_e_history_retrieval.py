@@ -21,6 +21,7 @@ import unittest
 from types import SimpleNamespace
 
 from g_fixtures import COUPLED, SPLIT, GCase
+from c_fixtures import CCase
 
 from or_harness.core.schema import ExecutionRecord, ProblemProfile
 from or_harness.world_model.contracts import (
@@ -799,7 +800,7 @@ class TestEndToEndHistory(GCase):
         self.assertEqual(audit["r"], r_block["selection"])
 
     def test_prediction_time_cutoff_excludes_later_executions(self):
-        from or_harness.world_model.prediction import ActionSpec
+        from or_harness.world_model.contracts import ActionSpec
         first = self.predict_g(COUPLED, episode="ep1")
         execution = self.run_g(first)
         self.check_g(execution)
@@ -1219,6 +1220,225 @@ class TestCFourDimensionContract(unittest.TestCase):
         self.assertIsNone(restored.cost.prediction_contract)
         self.assertEqual(restored.cost.expected.solver_runtime_s, 2.0)
         self.assertEqual(validate_strategy_outcome(restored), [])
+
+
+class TestPublishedObservationJoin(unittest.TestCase):
+    """A full published window survives a tiny detailed-pair display budget."""
+
+    def setUp(self):
+        import tempfile
+        from or_harness.api import ORHarness
+        from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.h = ORHarness(home=self.directory.name, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(self.h.close)
+        self.rows = []
+        for i in range(20):
+            row = _pair(f'ev{i}', task_id=f'task{i}', episode_id=f'ep{i}',
+                observed=i % 2, cost_values={'output_tokens': 100 + i,
+                    'remaining_latency_s': 10 + i, 'tool_calls': i, 'retries': 0},
+                risk={'implementation_failure': (.2, 1)})
+            row.update(prediction_id=f'p{i}', execution_ids=[f'ex{i}'],
+                       scope='attempt', model_identity='(unknown)',
+                       execution_conditions={'execution_id': f'ex{i}'},
+                       implementation_observation={'execution_id': f'ex{i}',
+                           'observation_rule_version': R_OBSERVATION_VERSION},
+                       method_planned={'name': 'large detailed method', 'steps': ['detail ' * 1000]})
+            self.rows.append(row)
+
+    def publish(self, budget=14000, indexes=None):
+        from unittest.mock import patch
+        from or_harness.world_model.episode_closeout import build_paired_feedback, publish_paired_feedback
+        rows = [self.rows[i] for i in (range(len(self.rows)) if indexes is None else indexes)]
+        evaluations = [SimpleNamespace(evaluation_id=r['evaluation_id'], prediction_id=r['prediction_id'],
+            task_id=r['task_id'], episode_id=r['episode_id'], created_at=1., state='evaluated') for r in rows]
+        window = [{'task_id': r['task_id'], 'episode_id': r['episode_id'], 'closed_at': 1.} for r in rows]
+        derived = {'window': window, 'evaluations': evaluations,
+                   'by_id': {e.evaluation_id: (e, None) for e in evaluations}}
+        by_id = {r['evaluation_id']: r for r in rows}
+        prediction = SimpleNamespace(trace=SimpleNamespace(model_info={'benefit_convention': {
+            'metric': FAITHFUL_G_METRIC, 'observation_rule_version': FAITHFUL_G_OBSERVATION_VERSION}}))
+        with patch('or_harness.world_model.episode_closeout.calibration_window', return_value=window), \
+             patch.object(self.h.strategy_predictions, 'get', return_value=prediction), \
+             patch('or_harness.world_model.episode_closeout._paired_feedback_row',
+                   side_effect=lambda e, p: copy.deepcopy(by_id[e.evaluation_id])):
+            block = build_paired_feedback(self.h, budget_chars=budget, derived=derived)
+        publish_paired_feedback(self.h, block)
+        return block
+
+    def read(self):
+        from or_harness.world_model.episode_closeout import paired_feedback_for_context
+        return paired_feedback_for_context(self.h, model_identity='(unknown)')
+
+    def history(self, block, cutoff=None):
+        from unittest.mock import patch
+        def resolve(h, recalled, **kwargs):
+            eid = recalled['execution_id']
+            return _pool_row(eid, task_id='task' + eid[2:]), None
+        hits = [{'execution_id': f'ex{i}', 'similarity': 1.} for i in range(20)]
+        with patch.object(self.h.embedding_index, 'status', return_value={'usable': True, 'count': 20}), \
+             patch.object(self.h.embedding_index, 'items', return_value=[]), \
+             patch('or_harness.world_model.history_retrieval._retrieve_view', return_value=(hits, None)), \
+             patch('or_harness.world_model.history_retrieval._pool_row', side_effect=resolve):
+            return build_history_retrieval(self.h, task={'task_id': 'new', 'text': 'joint factory'},
+                profile=ProblemProfile(problem_id='new', family='assignment'),
+                candidates=[_candidate()], cutoff=cutoff, paired_feedback=block)
+
+    def test_omitted_pairs_join_all_signals_and_keep_case_and_request_caps(self):
+        import json
+        from or_harness.world_model.episode_closeout import paired_feedback_selection_from_block
+        block = self.publish()
+        self.assertLess(block['n_pairs_included'], 5)
+        self.assertEqual(len(block['observation_facts']['rows']), 20)
+        self.assertLess(len(json.dumps(block['observation_facts'])), 40000)
+        history = self.history(self.read())
+        self.assertEqual(history['accounting']['n_with_closed_evaluation'], 20)
+        displayed = {p['evaluation_id'] for p in block['pairs']}
+        joined = {r['evaluation']['evaluation_id'] for r in history['pool']}
+        self.assertEqual(joined, {f'ev{i}' for i in range(20)})
+        self.assertTrue(joined - displayed)
+        c = select_c_history_evidence(history, context=_context(), candidate=_candidate())
+        g = select_g_history_evidence(history, candidate=_candidate(), task_id='new')
+        r = select_r_history_evidence(history, context=_context(), candidate=_candidate())
+        self.assertEqual(len(c['cases']), 10)
+        self.assertEqual(len(g['cases']), 10)
+        self.assertEqual(len(r['cases']), 10)
+        self.assertTrue(all(p['g']['observed'] in (0, 1) for p in g['cases']))
+        self.assertTrue(all(p['events']['implementation_failure']['label'] == 1 for p in r['cases']))
+        self.assertEqual(history['global']['c']['dimensions']['output_tokens']['n'], 20)
+        selection = paired_feedback_selection_from_block(self.read())
+        self.assertNotIn('observation_facts', selection)
+        self.assertNotIn('observation_facts', history)
+        self.assertTrue(all('observation_facts' not in row for row in history['pool']))
+        from or_harness.strategy.evidence_views import provider_paired_feedback
+        from or_harness.world_model.request_budget import apply_provider_block_budgets, enforce_full_request_budget
+        from or_harness.world_model.strategy_prediction import STRATEGY_OUTCOME_SYSTEM_PROMPT
+        from unittest.mock import patch
+        view = {'g_candidate_evidence': g, 'cost_evidence': c, 'implementation_r_evidence': r,
+                'prediction_execution_pairs': provider_paired_feedback(selection)}
+        apply_provider_block_budgets(view)
+        request = {'prediction_context': view, 'candidate': {'strategy_id': 'S04'}}
+        with patch.dict('os.environ', {'OR_HARNESS_INPUT_BUDGET_TOKENS': '80000'}):
+            size = enforce_full_request_budget(request, STRATEGY_OUTCOME_SYSTEM_PROMPT)
+        self.assertTrue(size['sendable'])
+        self.assertLessEqual(size['tokens'], size['bound_tokens'])
+        self.assertLessEqual(size['bound_tokens'], 80000)
+        self.assertNotIn('observation_facts', view)
+
+    def test_budget_changes_display_but_not_joins_or_global_population(self):
+        small = self.publish(0)
+        a = self.history(self.read())
+        large = self.publish(1000000)
+        b = self.history(self.read())
+        self.assertEqual(small['pairs'], [])
+        self.assertEqual(large['n_pairs_included'], 20)
+        self.assertEqual(a['pool'], b['pool'])
+        self.assertEqual(a['global'], b['global'])
+        self.assertEqual(a['global']['g']['n_observed'], 20)
+
+    def test_window_model_and_availability_boundaries(self):
+        self.rows[0]['model_identity'] = 'other-model'
+        self.publish(indexes=range(6))
+        block = self.read()
+        self.assertEqual(len(block['observation_facts']['rows']), 5)
+        history = self.history(block)
+        labels = {r['evaluation']['evaluation_id'] for r in history['pool'] if r.get('evaluation')}
+        self.assertEqual(labels, {f'ev{i}' for i in range(1, 6)})
+        before = self.history(block, cutoff=0.)
+        self.assertEqual(before['accounting']['n_with_closed_evaluation'], 0)
+        self.assertEqual(before['global']['g']['n_observed'], 0)
+        future = copy.deepcopy(block)
+        future['observation_facts']['rows'][0]['available_at'] = 10**20
+        self.assertEqual(self.history(future, cutoff=10**10)['observation_source']['n_available'], 4)
+        future['published_at'] = 10**20
+        self.assertEqual(self.history(future, cutoff=10**10)['observation_source']['n_available'], 0)
+        from or_harness.world_model.history_retrieval import _pairs_of
+        unidentified = copy.deepcopy(block)
+        unidentified['model_identity'] = 'predictor'
+        for row in unidentified['observation_facts']['rows']:
+            row.pop('model_identity')
+        self.assertEqual(_pairs_of(unidentified, model_identity='predictor'), [])
+
+    def test_carrier_miss_never_moves_cost_to_another_execution(self):
+        from or_harness.world_model.history_retrieval import _pairs_of
+        self.rows[0]['execution_ids'] = ['outside-pool', 'ex0']
+        self.rows[0]['execution_conditions']['execution_id'] = 'outside-pool'
+        self.rows[0]['implementation_observation']['execution_id'] = 'outside-pool'
+        self.publish()
+        pairs = _pairs_of(self.read())
+        row = _pool_row('ex0')
+        counts = _attach_evaluation_facts([row], pairs)
+        self.assertNotIn('evaluation', row)
+        self.assertEqual(counts['cost_rows'], 0)
+        self.assertEqual(counts['cost_carriers_not_recalled'], 1)
+        carrier = _pool_row('outside-pool')
+        counts = _attach_evaluation_facts([carrier, row], pairs)
+        self.assertEqual(counts['cost_rows'], 1)
+        self.assertNotIn('evaluation', row)
+
+    def test_unknown_and_lower_bounds_do_not_become_observed_zero(self):
+        self.rows[0]['benefit']['observed'] = None
+        self.rows[0]['benefit']['reason'] = 'no evaluation opportunity'
+        cost = self.rows[0]['cost_observed_fact']
+        cost['values'] = {}
+        cost['conditions']['window_coverage'] = 'partial'
+        cost['lower_bounds'] = {'output_tokens': {'value': 99999}}
+        self.publish(indexes=[0])
+        history = self.history(self.read())
+        self.assertNotIn('observed', history['pool'][0]['evaluation']['g'])
+        self.assertEqual(history['global']['c'].get('dimensions', {}).get('output_tokens', {}).get('n', 0), 0)
+        self.assertEqual(select_c_history_evidence(history, context=_context(), candidate=_candidate())['cases'], [])
+
+    def test_cold_legacy_and_unknown_projection_are_read_only(self):
+        from or_harness.world_model.history_retrieval import _pairs_of
+        before = list(self.h.store.conn.iterdump())
+        self.assertEqual(_pairs_of(self.read()), [])
+        self.assertEqual(list(self.h.store.conn.iterdump()), before)
+        block = self.publish()
+        legacy = copy.deepcopy(block)
+        legacy.pop('observation_facts')
+        self.assertEqual(len(_pairs_of(legacy)), block['n_pairs_included'])
+        legacy['observation_facts'] = {'version': 'unsupported', 'rows': self.rows}
+        self.assertEqual(_pairs_of(legacy), [])
+
+
+class TestIndependentFrozenCalibration(CCase):
+    def test_closeout_updates_feedback_without_recording_execution_evidence(self):
+        import json
+        from or_harness.world_model.episode_closeout import paired_feedback_for_context
+        from or_harness.world_model.hplus import configure
+        configure(self.h, 'frozen')
+        frozen = self.h.build_prediction_context(self.task, 'old-input')
+        saved = json.dumps(frozen.to_dict(), sort_keys=True)
+        library = self.h.sbank.list(include_dormant=True)
+        count = self.h.bank.count()
+        prediction = self.predict_c(cost={'output_tokens': 500, 'tool_calls': 8})
+        execution = self.run_g(prediction, record=False)
+        self.check_g(execution)
+        self.finish_c(prediction)
+        self.assertEqual(self.h.bank.count(), count)
+        self.assertEqual(self.h.sbank.list(include_dormant=True), library)
+        block = paired_feedback_for_context(self.h)
+        self.assertEqual(len(block['observation_facts']['rows']), 1)
+        self.assertEqual(self.h.calibration_summary()['n_evaluations_total'], 1)
+        fact = block['observation_facts']['rows'][0]
+        self.assertEqual(fact['benefit']['observed'], 1)
+        self.assertEqual(_evaluation_fact(fact)['cost']['values']['output_tokens'], 100)
+        self.assertEqual(json.dumps(frozen.to_dict(), sort_keys=True), saved)
+        rebuilt = self.h.build_prediction_context(self.task, 'historic', snapshot=self.h.snapshot(self.task, 'historic'))
+        self.assertEqual(rebuilt.history_retrieval['status'], 'not_reconstructed')
+        self.assertEqual(rebuilt.history_retrieval['global'], {})
+        self.assertEqual(rebuilt.history_retrieval['pool'], [])
+        self.assertEqual(rebuilt.paired_feedback, {})
+        # No embedding hit was added, yet independent global calibration updates.
+        fresh = self.h.build_prediction_context(self.task, 'next')
+        self.assertEqual(fresh.history_retrieval['pool'], [])
+        self.assertEqual(fresh.paired_feedback['n_pairs_included'], 1)
+        self.assertEqual(fresh.history_retrieval['global']['g']['n_observed'], 1)
+        self.assertEqual(fresh.history_retrieval['global']['c']['dimensions']['output_tokens']['n'], 1)
+        view = fresh.provider_view()
+        self.assertNotIn('observation_facts', json.dumps(view))
 
 
 if __name__ == "__main__":

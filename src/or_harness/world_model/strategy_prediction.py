@@ -25,9 +25,8 @@ Design boundaries (the reason this is a separate module):
   unknown is never free, and never a default success.
 - **No retries, no defaults.** One call per prediction. A failed prediction
   is a recorded failure, not a retry loop.
-- **Legacy untouched.** The old ``OutcomePrediction`` path
-  (``predict_outcome``) keeps its own protocol and prompt; nothing here
-  wraps an old payload and calls it the new protocol.
+- **Historical audit.** Archived predictions are read without invoking a
+  service; an old payload is never passed off as a new prediction.
 """
 
 from __future__ import annotations

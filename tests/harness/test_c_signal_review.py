@@ -76,7 +76,12 @@ class TestFirstProposal(CCase):
         self.assertNotIn("execution_host", e["current_conditions"])
         self.assertNotIn("execution_host", view["solving_context"])
         actions = self.h.actions.query(task_id=task["task_id"])
+        self.assertEqual(len(actions), 2)
+        choices = [a for a in actions if (a.outcome or {}).get("kind") == "plan_next_choice"]
+        actions = [a for a in actions if (a.params or {}).get("kind") == "plan_next"]
         self.assertEqual(len(actions), 1)
+        self.assertEqual(len(choices), 1)
+        self.assertEqual(choices[0].parent_action_id, actions[0].action_id)
         self.assertEqual(actions[0].action_type, "select_strategy")
         self.assertEqual(actions[0].params["kind"], "plan_next")
         self.assertEqual(actions[0].status, "completed")

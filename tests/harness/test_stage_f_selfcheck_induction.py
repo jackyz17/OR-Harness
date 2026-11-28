@@ -273,20 +273,27 @@ class TestHplusPrompt(unittest.TestCase):
         cls.prompt = _flat(STRATEGY_OUTCOME_SYSTEM_PROMPT)
 
     def test_plain_translation_without_a_specific_learning_mechanism_is_zero(self):
-        self.assertIn("Use 0 for mere task translation without a specific "
-                      "transferable mechanism", self.prompt)
-        self.assertIn("routine feasibility or objective recomputation without "
-                      "a transferable finding", self.prompt)
+        self.assertIn("Use 0 for mere task translation, ordinary solver use or routine "
+                      "checking when no specific transferable mechanism or finding is identified", self.prompt)
+        self.assertIn("A consequential, testable interpretation or repair is not mere translation", self.prompt)
+        self.assertIn("These are examples of reuse value, not automatic positives", self.prompt)
         self.assertNotIn("STANDARD TASK TRANSLATION IS NOT AN INCREMENT", self.prompt)
 
     def test_hplus_is_not_a_difficulty_or_success_judgement(self):
-        for term in ("task novelty or complexity alone", "a successful solver call alone",
-                     "no concrete reasonable learning hypothesis"):
+        for term in ("binary H+ induction switch, separate from G/C/R utility",
+                     "Return 1 when the rule could improve a concrete future decision and this run offers "
+                     "a reasonable evidence opportunity not already satisfied by the library",
+                     "ordinary solver use or routine checking when no specific transferable mechanism or finding is identified",
+                     "Return 0 if no concrete reasonable learning hypothesis exists",
+                     "NOT the model's pretrained knowledge or novelty to OR research"):
             self.assertIn(term, self.prompt)
 
     def test_classical_mechanisms_and_independent_validation_are_eligible(self):
-        self.assertIn("Distinguish domain familiarity", self.prompt)
-        self.assertIn("classical or mature method is not disqualified", self.prompt)
+        self.assertIn("The comparison is against the current Harness's explicit strategy library, "
+                      "NOT the model's pretrained knowledge or novelty to OR research", self.prompt)
+        self.assertIn("A known technique is not by itself a reason for 0", self.prompt)
+        self.assertIn("A familiar method can improve future decisions if its conditions, use or checks "
+                      "are made explicit; an unfamiliar method need not do so", self.prompt)
         self.assertIn("meaningful independent validation of an existing weakly "
                       "supported mechanism", self.prompt)
 
@@ -296,22 +303,27 @@ class TestHplusPrompt(unittest.TestCase):
         self.assertIn("not a guarantee of publishable knowledge", self.prompt)
 
     def test_cold_start_is_not_automatic(self):
-        self.assertIn("COLD START", self.prompt)
-        self.assertIn("NEVER sufficient", self.prompt)
+        self.assertIn("an empty library or missing review history is NEVER sufficient for 1 "
+                      "and is not itself a reason for 0", self.prompt)
+        self.assertIn("When relevant executions exist", self.prompt)
+        self.assertIn("Do not require advance proof of the mechanism or transferability, "
+                      "multiple independent executions, or prior failure", self.prompt)
+        self.assertIn("This is prospective generalization, not completed induction", self.prompt)
 
     def test_verification_condition_allows_affordable_checks(self):
         for term in ("minimum feasible check",
                      "no default full re-solve",
-                     "small-scale full enumeration",
+                     "Affordable enumeration",
                      "original-versus-reduced",
                      "targeted reproduction"):
             self.assertIn(term, self.prompt)
         self.assertNotIn("second complete solve of the task", self.prompt)
 
     def test_contract_terms_and_review_semantics_are_kept(self):
-        for term in ("decision", "claim", "basis",
-                     "verification_conditions", "A 1 requests review",
-                     "ALWAYS causes one review"):
+        for term in ("Set decision to JSON number 0 or 1", "claim", "basis",
+                     "verification_conditions", "A 1 ALWAYS causes one review after a bound real attempt",
+                     "including failures or unfinished checks; 0 skips induction",
+                     "factual receipt without changing the frozen switch"):
             self.assertIn(term, self.prompt)
 
 
@@ -337,7 +349,11 @@ class TestInductionGuidance(unittest.TestCase):
                 "empty library or missing historical reviews"), 1)
 
     def test_standard_translation_is_not_a_knowledge_increment(self):
-        for term in ("NECESSARY SOLVING WORK", "profit-maximisation",
+        self.assertIn("Literal translation of an unambiguous statement into a model is necessary "
+                      "solving work, not a knowledge increment by itself", self.text)
+        self.assertIn("A transferable method of interpreting ambiguous or consequential business "
+                      "semantics is eligible", self.text)
+        for term in ("profit-maximisation",
                      "capacity constraint", "integer", "time index"):
             self.assertIn(term, self.text)
         self.assertIn("required solving work, not a reusable increment",

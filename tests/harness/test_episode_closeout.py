@@ -41,7 +41,7 @@ from or_harness.api import ORHarness  # noqa: E402
 from or_harness.strategy.embedding_index import (  # noqa: E402
     LocalHashEmbeddingBackend,
 )
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec  # noqa: E402
 from or_harness.world_model.provider import WorldModelProvider  # noqa: E402
 
 from or_harness.world_model.contracts import R_OBSERVATION_VERSION, R_SCORING_VERSION, RETRIES_FUTURE_VERSION

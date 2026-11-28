@@ -338,16 +338,6 @@ LEGACY_UNMAPPABLE_SCOPES: Dict[str, str] = {
 #: The two legacy contract generations this module knows how to identify.
 PAYLOAD_VERSION_UNKNOWN_PREFIX = "unknown/"
 
-#: Explicit mapping from the legacy experiment/prediction modes onto the
-#: unified contract kinds. The legacy mode names are NOT renamed — they are
-#: still the ablation switches of the experiment runner — but they are no
-#: longer the primary vocabulary a caller must learn.
-LEGACY_MODE_TO_KIND: Dict[str, Tuple[str, ...]] = {
-    "x-b-only": ("strategy_outcome",),
-    "h-x-b": ("strategy_outcome",),
-    "h-x-b-value": ("strategy_outcome",),
-}
-
 #: Legacy field -> new-contract field, for the migration table in the docs
 #: and for :func:`legacy_prediction_view`. Only MECHANICAL mappings appear
 #: here; anything requiring a measurement nobody made is in
@@ -2629,13 +2619,188 @@ def legacy_prediction_view(payload: Dict[str, Any]) -> Dict[str, Any]:
     return view
 
 
-def prediction_kinds_for_mode(mode: str) -> Tuple[str, ...]:
-    """Which contract kinds a legacy prediction mode covers.
+# Candidate actions and read-only historical M2 records.
+LEGACY_OUTCOME_STATUSES = ("valid", "invalid_output", "provider_error",
+                           "not_configured", "unsupported_action")
 
-    The legacy mode names remain the experiment ablation switches; this maps
-    them onto the unified vocabulary so a reader does not need both.
-    """
-    if mode not in LEGACY_MODE_TO_KIND:
-        raise ValueError(f"unknown prediction mode {mode!r}; expected one of "
-                         f"{sorted(LEGACY_MODE_TO_KIND)}")
-    return LEGACY_MODE_TO_KIND[mode]
+
+@dataclass
+class ActionSpec:
+    """A CANDIDATE action to be evaluated (not yet executed).
+
+    Carries the action type, the strategy/solver and key configuration, the
+    task/episode it belongs to, and the measurement scope the prediction
+    should be compared under. Unknown implementation details (e.g. the code
+    version that does not exist yet) stay unknown — the spec never
+    fabricates them."""
+
+    action_type: str
+    task_id: str
+    episode_id: Optional[str] = None
+    strategy_id: Optional[str] = None
+    solver: Optional[str] = None
+    params: Dict[str, Any] = field(default_factory=dict)
+    measurement_scope: str = "attempt"
+    budget_hint: Optional[Dict[str, float]] = None
+    #: What the METHOD is, in the caller's words: ``{"name": str,
+    #: "steps": [str, ...], "why": str?, "fallback": str?}``. Supplied by
+    #: the caller — never looked up in memory, because a cold start has no
+    #: history and the agent must be free to propose a method the framework
+    #: has never seen. The solver/params stay their own fields: a method
+    #: description is about the approach, not the tooling.
+    method: Dict[str, Any] = field(default_factory=dict)
+    window_id: Optional[str] = None
+    preconditions: List[str] = field(default_factory=list)
+    expected_scope: List[str] = field(default_factory=list)
+    stop_conditions: List[str] = field(default_factory=list)
+    normalization_notes: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        from or_harness.world_model.actions import ACTION_TYPES
+        if self.action_type not in ACTION_TYPES:
+            raise ValueError(
+                f"action_type must be one of {ACTION_TYPES}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action_type": self.action_type,
+            "task_id": self.task_id,
+            "episode_id": self.episode_id,
+            "strategy_id": self.strategy_id,
+            "solver": self.solver,
+            "params": copy.deepcopy(self.params),
+            "measurement_scope": self.measurement_scope,
+            "budget_hint": (dict(self.budget_hint)
+                            if self.budget_hint is not None else None),
+            "method": copy.deepcopy(self.method),
+            **({'window_id':self.window_id} if self.window_id else {}),
+            **{k:list(getattr(self,k)) for k in ('preconditions','expected_scope','stop_conditions') if getattr(self,k)},
+            **({'normalization_notes':list(self.normalization_notes)} if self.normalization_notes else {}),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ActionSpec":
+        if not isinstance(data, dict):
+            raise ValueError("ActionSpec must be a JSON object")
+        if not data.get("action_type"):
+            raise ValueError("ActionSpec.action_type is required")
+        if data.get('params') is not None and data.get('config') is not None and data['params']!=data['config']:
+            raise ValueError('candidate params and config contradict each other')
+        return cls(
+            action_type=str(data["action_type"]),
+            task_id=str(data.get("task_id", "")),
+            episode_id=data.get("episode_id"),
+            strategy_id=data.get("strategy_id"),
+            solver=data.get("solver"),
+            params=copy.deepcopy(dict(data.get("params") if data.get('params') is not None else data.get('config') or {})),
+            measurement_scope=str(data.get("measurement_scope", data.get('scope',"attempt"))),
+            budget_hint=(dict(data["budget_hint"])
+                         if data.get("budget_hint") else None),
+            method=copy.deepcopy(dict(data.get("method") or {})),
+            window_id=data.get('window_id'),
+            preconditions=list(data.get('preconditions') or []),
+            expected_scope=list(data.get('expected_scope') or []),
+            stop_conditions=list(data.get('stop_conditions') or []),
+            normalization_notes=list(data.get('normalization_notes') or []),
+        )
+
+
+@dataclass
+class OutcomePrediction:
+    """Read-only structure for archived M2 predictions and their saved feedback."""
+
+    prediction_id: str
+    input_snapshot_id: str
+    action_spec: ActionSpec
+    status: str = "valid"
+    #: What the model predicted. Every field is optional-by-design: a field
+    #: the model did not (or could not) predict stays absent and is listed
+    #: in ``unsupported_fields`` — an all-empty object with status=valid is
+    #: rejected by validation.
+    predicted: Dict[str, Any] = field(default_factory=dict)
+    #: Fields explicitly not predicted / not applicable, with reasons.
+    unsupported_fields: Dict[str, str] = field(default_factory=dict)
+    #: Model self-reported confidence (NOT a calibrated probability).
+    confidence: Optional[float] = None
+    #: Evidence the model claims to rely on (entry ids, statistics refs).
+    evidence_basis: List[str] = field(default_factory=list)
+    #: Model identity, prompt template version, non-sensitive config
+    #: summary, generation time.
+    model_info: Dict[str, Any] = field(default_factory=dict)
+    #: The ACTUAL cost of the model call itself (usage from the provider
+    #: when available; unknown dimensions stay unmeasured, never zero).
+    call_cost: Optional[CostVector] = None
+    #: Which input-view keys were actually provided to the model.
+    input_view_keys: List[str] = field(default_factory=list)
+    #: Provider error detail when status is provider_error / invalid_output.
+    error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+    #: Binding + feedback (APPENDED after the real action; never part of
+    #: the frozen prediction itself).
+    bound_action_id: Optional[str] = None
+    binding_mismatch: Optional[Dict[str, Any]] = None
+    feedback: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "prediction_id": self.prediction_id,
+            "input_snapshot_id": self.input_snapshot_id,
+            "action_spec": self.action_spec.to_dict(),
+            "status": self.status,
+            "predicted": copy.deepcopy(self.predicted),
+            "unsupported_fields": dict(self.unsupported_fields),
+            "confidence": self.confidence,
+            "evidence_basis": list(self.evidence_basis),
+            "model_info": copy.deepcopy(self.model_info),
+            "call_cost": (self.call_cost.to_dict()
+                          if self.call_cost is not None else None),
+            "call_cost_measured": (sorted(self.call_cost.measured)
+                                    if self.call_cost is not None
+                                    and self.call_cost.measured is not None
+                                    else None),
+            "input_view_keys": list(self.input_view_keys),
+            "error": self.error,
+            "created_at": self.created_at,
+            "bound_action_id": self.bound_action_id,
+            "binding_mismatch": self.binding_mismatch,
+            "feedback": copy.deepcopy(self.feedback),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OutcomePrediction":
+        if not isinstance(data, dict) or not data.get("prediction_id"):
+            raise ValueError("OutcomePrediction.prediction_id is required")
+        status = str(data.get("status", "valid"))
+        if status not in LEGACY_OUTCOME_STATUSES:
+            raise ValueError(
+                f"status must be one of {LEGACY_OUTCOME_STATUSES}")
+        raw_cost = data.get("call_cost")
+        call_cost = (CostVector.from_dict(raw_cost)
+                     if isinstance(raw_cost, dict) else None)
+        raw_measured = data.get("call_cost_measured")
+        if call_cost is not None and isinstance(raw_measured, list):
+            call_cost.measured = {str(d) for d in raw_measured
+                                  if d in COST_DIMENSIONS}
+        confidence = data.get("confidence")
+        return cls(
+            prediction_id=str(data["prediction_id"]),
+            input_snapshot_id=str(data.get("input_snapshot_id", "")),
+            action_spec=ActionSpec.from_dict(
+                data.get("action_spec") or {}),
+            status=status,
+            predicted=copy.deepcopy(dict(data.get("predicted") or {})),
+            unsupported_fields=dict(data.get("unsupported_fields") or {}),
+            confidence=(float(confidence)
+                        if confidence is not None else None),
+            evidence_basis=[str(e) for e in (data.get("evidence_basis") or [])],
+            model_info=copy.deepcopy(dict(data.get("model_info") or {})),
+            call_cost=call_cost,
+            input_view_keys=[str(k) for k in
+                             (data.get("input_view_keys") or [])],
+            error=data.get("error"),
+            created_at=float(data.get("created_at", time.time())),
+            bound_action_id=data.get("bound_action_id"),
+            binding_mismatch=data.get("binding_mismatch"),
+            feedback=copy.deepcopy(dict(data.get("feedback"))
+                                   if data.get("feedback") else None),
+        )

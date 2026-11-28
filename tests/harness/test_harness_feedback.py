@@ -596,14 +596,6 @@ class TestRetentionMarking(HarnessTestCase):
         self.assertNotIn("retention_reason", loaded.to_dict())
         self.assertFalse(hasattr(loaded, "retention_reason"))
 
-    def test_contrast_evidence_is_declared_in_features(self):
-        """Contrast intent is an explicit execution feature now (the
-        channel knowledge_track reads), not a retention mark."""
-        from or_harness.world_model.knowledge_track import _is_contrast_evidence
-        rec = self.make_record(execution_id="ex_rt2", task_id="trt2")
-        self.assertFalse(_is_contrast_evidence(rec))
-        rec.execution_features["contrast"] = True
-        self.assertTrue(_is_contrast_evidence(rec))
 
 
 if __name__ == "__main__":

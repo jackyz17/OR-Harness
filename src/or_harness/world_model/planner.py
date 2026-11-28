@@ -5,9 +5,7 @@ context with comparable G and common available C/R. Resource scales come from
 configuration or applicable prior facts; H+ schedules later review independently.
 Planning-call spend is real and charged separately from candidate utility.
 
-PathStep, CandidatePath and the legacy PlanResult fields remain serialization
-records for inspecting saved two-step experiments. The retired hypothetical
-successor and knowledge-bonus calculations are not a live planning mode.
+Archived path dictionaries remain readable without rollout classes or scoring.
 """
 
 from __future__ import annotations
@@ -27,7 +25,7 @@ from or_harness.core.schema import chargeable_dimensions
 from or_harness.world_model.contracts import (
     FAITHFUL_G_CONVENTION, FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
 )
-from or_harness.world_model.prediction import ActionSpec
+from or_harness.world_model.contracts import ActionSpec
 
 @dataclass
 class PlanLimits:
@@ -55,9 +53,6 @@ class PlanLimits:
     #: Candidate-independent resource peaks; absent dimensions need applicable
     #: pre-decision measured history. No candidate maximum is a scale.
     cost_scales: Optional[Dict[str, Any]] = None
-    #: Legacy experiment setting retained for saved-plan compatibility.
-    #: Current strategy U uses only G/C/R regardless of this field.
-    delta: Optional[float] = None
     #: The benefit CONVENTION this ONE decision compares under. ``None`` on
     #: both = the candidates' own agreement is used when they share one, else
     #: the build's default. Declaring it lets a decision compare completion
@@ -77,7 +72,6 @@ class PlanLimits:
             "alpha": self.alpha,
             "beta": self.beta,
             "gamma": self.gamma,
-            "delta": self.delta,
             "benefit_kind": self.benefit_kind,
             "benefit_metric": self.benefit_metric,
             "benefit_unit": self.benefit_unit,
@@ -101,8 +95,6 @@ class PlanLimits:
                   else float(data["beta"])),
             gamma=(None if data.get("gamma") is None
                    else float(data["gamma"])),
-            delta=(None if data.get("delta") is None
-                   else float(data["delta"])),
             benefit_kind=(str(data["benefit_kind"])
                           if data.get("benefit_kind") else None),
             benefit_metric=(str(data["benefit_metric"])
@@ -116,95 +108,13 @@ class PlanLimits:
 
 
 @dataclass
-class PathStep:
-    """A serialized step from a historical candidate path."""
-
-    action_spec: ActionSpec
-    prediction_id: Optional[str] = None
-    #: "valid" | prediction failure status | "not_planned" (budget cut)
-    status: str = "not_planned"
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "action_spec": self.action_spec.to_dict(),
-            "prediction_id": self.prediction_id,
-            "status": self.status,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PathStep":
-        return cls(
-            action_spec=ActionSpec.from_dict(data["action_spec"]),
-            prediction_id=data.get("prediction_id"),
-            status=str(data.get("status", "not_planned")),
-        )
-
-
-@dataclass
-class CandidatePath:
-    """Historical candidate/path decomposition, retained for inspection."""
-
-    steps: List[PathStep]
-    #: Utility decomposition for THIS comparison's yardstick.
-    utility: Optional[float] = None
-    q_terminal: Optional[float] = None
-    c_path: Optional[float] = None
-    r_terminal: Optional[float] = None
-    #: Which fields could not be compared and why (unknown never
-    #: auto-scores better than known).
-    incomparable: Dict[str, str] = field(default_factory=dict)
-    #: Truncation/fallback notes for this path (e.g. second step
-    #: conditional_unsupported, prediction invalid_output).
-    notes: List[str] = field(default_factory=list)
-    #: Snapshot id of the hypothetical successor this path's second step
-    #: was conditioned on (horizon=2 only).
-    hypothetical_snapshot_id: Optional[str] = None
-    #: Knowledge term of this path: the value actually added to the utility
-    #: and an honest label of what it is. ``delta_knowledge`` is 0.0 when no
-    #: justified value existed (unknown upside is NEVER rewarded) — the
-    #: ``knowledge_detail`` says whether that zero means "computed as zero"
-    #: or "no justified value was claimable".
-    delta_knowledge: float = 0.0
-    knowledge_detail: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "steps": [s.to_dict() for s in self.steps],
-            "utility": self.utility,
-            "q_terminal": self.q_terminal,
-            "c_path": self.c_path,
-            "r_terminal": self.r_terminal,
-            "incomparable": dict(self.incomparable),
-            "notes": list(self.notes),
-            "hypothetical_snapshot_id": self.hypothetical_snapshot_id,
-            "delta_knowledge": self.delta_knowledge,
-            "knowledge_detail": copy.deepcopy(self.knowledge_detail),
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CandidatePath":
-        return cls(
-            steps=[PathStep.from_dict(s) for s in data.get("steps") or []],
-            utility=data.get("utility"),
-            q_terminal=data.get("q_terminal"),
-            c_path=data.get("c_path"),
-            r_terminal=data.get("r_terminal"),
-            incomparable=dict(data.get("incomparable") or {}),
-            notes=[str(n) for n in data.get("notes") or []],
-            hypothetical_snapshot_id=data.get("hypothetical_snapshot_id"),
-            delta_knowledge=float(data.get("delta_knowledge") or 0.0),
-            knowledge_detail=dict(data.get("knowledge_detail") or {}),
-        )
-
-
-@dataclass
 class PlanResult:
     """The auditable record of one planning decision.
 
     Small on purpose: references (snapshot/prediction/action ids) rather
     than copies of predictions — the predictions themselves live in the
     prediction log. The planning spend recorded here is REAL (the model
-    calls that happened); per-path predicted costs stay hypothetical."""
+    calls that happened)."""
 
     plan_id: str
     root_snapshot_id: str
@@ -212,7 +122,8 @@ class PlanResult:
     task_id: str
     episode_id: Optional[str]
     limits: PlanLimits
-    paths: List[CandidatePath] = field(default_factory=list)
+    # Read-only paths from archived plans; new plans leave this empty.
+    paths: List[Dict[str, Any]] = field(default_factory=list)
     #: The recommended FIRST step (an ActionSpec), or None when no
     #: recommendation could be made (see ``status``/``truncation_reason``).
     suggested: Optional[ActionSpec] = None
@@ -248,7 +159,7 @@ class PlanResult:
             "task_id": self.task_id,
             "episode_id": self.episode_id,
             "limits": self.limits.to_dict(),
-            "paths": [p.to_dict() for p in self.paths],
+            **({"paths": copy.deepcopy(self.paths)} if self.paths else {}),
             "suggested": (self.suggested.to_dict()
                           if self.suggested is not None else None),
             "suggestion_basis": self.suggestion_basis,
@@ -272,8 +183,7 @@ class PlanResult:
             task_id=str(data.get("task_id", "")),
             episode_id=data.get("episode_id"),
             limits=PlanLimits.from_dict(data.get("limits")),
-            paths=[CandidatePath.from_dict(p)
-                   for p in data.get("paths") or []],
+            paths=copy.deepcopy(data.get("paths") or []),
             suggested=(ActionSpec.from_dict(data["suggested"])
                        if data.get("suggested") else None),
             suggestion_basis=str(data.get("suggestion_basis", "")),
@@ -316,9 +226,7 @@ class StrategyOutcomeScore:
       ``implementation_failure`` probability and ``risk_reported`` every
       original prediction;
     - ``utility``: ``alpha*G - beta*C - gamma*R`` with the SAME weights the
-      harness scores everything else with. The knowledge term is OFF for
-      this protocol (delta=0): an old knowledge-gain score is not an H
-      improvement and must not leak into the new comparison.
+      harness scores everything else with. H+ remains separate from utility.
     """
 
     prediction_id: Optional[str] = None

@@ -1061,7 +1061,7 @@ class R15Case(HarnessTestCase):
             self.assertIn(eid, sem["full_text_ref"])
 
     def test_selection_is_shared_and_frozen_across_candidates(self):
-        from or_harness.world_model.prediction import ActionSpec
+        from or_harness.world_model.contracts import ActionSpec
         task = {"task_id": "t2", "family": "routing",
                 "description": "allocate budget across channels exactly",
                 "spec": {"n_vars": 10, "n_constraints": 5, "n_int_vars": 10},

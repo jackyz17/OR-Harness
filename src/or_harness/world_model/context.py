@@ -1897,19 +1897,10 @@ class PredictionContext:
     capability_version: Dict[str, Any] = field(default_factory=dict)
     #: External execution constraints (declared budget, consumption, tools).
     execution_constraints: Dict[str, Any] = field(default_factory=dict)
-    #: The framework's structural knowledge-target proposal set, frozen at
-    #: build time. A reused context must send THESE targets: re-deriving them
-    #: would read banks that may have moved since, so the prediction would
-    #: mix a frozen input with a current proposal.
+    #: Read-only fields on archived contexts; current builders never populate them.
     knowledge_targets: List[Dict[str, Any]] = field(default_factory=list)
-    #: Measured reliability of past predictions, frozen at build time (it
-    #: comes from the prediction LOG, so a later call would change it).
     reliability: Dict[str, Any] = field(default_factory=dict)
-    #: The published EXPERIENCE calibration of the strategy-outcome
-    #: service (M4), frozen at build time. Closed episodes only: an active
-    #: episode never reads its own not-yet-closed feedback. Kept SEPARATE
-    #: from ``reliability`` (the legacy knowledge-prediction table): a
-    #: knowledge hit rate never proves OR prediction accuracy.
+    #: Published closed-episode experience calibration, distinct from archived M6 data.
     strategy_calibration: Dict[str, Any] = field(default_factory=dict)
     #: COMPACT prediction-execution PAIRS of closed episodes (M5), frozen at
     #: build time. Distinct from ``strategy_calibration``: that block is the
@@ -1942,10 +1933,7 @@ class PredictionContext:
     #: snapshot that is BYTE-EQUIVALENT to the frozen one instead of taking a
     #: fresh one (which would carry later progress).
     snapshot: Dict[str, Any] = field(default_factory=dict)
-    #: Per strategy, the DISTINCT tasks whose executions supported that
-    #: cell's statistics at build time. ``learning_needs`` counts independent
-    #: tasks to decide whether a claim could form, so a reused context must
-    #: read that count from here rather than recounting today's bank.
+    #: Read-only independent-task support stored by historical M6 contexts.
     cell_evidence: Dict[str, Any] = field(default_factory=dict)
     sources: Dict[str, str] = field(default_factory=dict)
     degraded: List[Dict[str, str]] = field(default_factory=list)
@@ -2195,8 +2183,8 @@ class PredictionContext:
             "capability": copy.deepcopy(self.capability),
             "capability_version": copy.deepcopy(self.capability_version),
             "execution_constraints": copy.deepcopy(self.execution_constraints),
-            "knowledge_targets": copy.deepcopy(self.knowledge_targets),
-            "reliability": copy.deepcopy(self.reliability),
+            **({"knowledge_targets": copy.deepcopy(self.knowledge_targets)} if self.knowledge_targets else {}),
+            **({"reliability": copy.deepcopy(self.reliability)} if self.reliability else {}),
             "strategy_calibration": copy.deepcopy(self.strategy_calibration),
             "paired_feedback": copy.deepcopy(self.paired_feedback),
             "history_retrieval": copy.deepcopy(self.history_retrieval),
@@ -2205,7 +2193,7 @@ class PredictionContext:
             "hplus_feedback": copy.deepcopy(self.hplus_feedback),
             ("snapshot" if self.version == "wm-context/3" else "conditions"):
                 copy.deepcopy(self.snapshot),
-            "cell_evidence": copy.deepcopy(self.cell_evidence),
+            **({"cell_evidence": copy.deepcopy(self.cell_evidence)} if self.cell_evidence else {}),
             "sources": dict(self.sources),
             "degraded": [dict(d) for d in self.degraded],
             "missing": list(self.missing),
@@ -2372,14 +2360,11 @@ def build_context(
         capability_version_block: Optional[Dict[str, Any]] = None,
         execution_constraints: Optional[Dict[str, Any]] = None,
         structural_recommendations: Optional[Sequence[Dict[str, Any]]] = None,
-        knowledge_targets: Optional[Sequence[Any]] = None,
-        reliability: Optional[Dict[str, Any]] = None,
         strategy_calibration: Optional[Dict[str, Any]] = None,
         paired_feedback: Optional[Dict[str, Any]] = None,
         history_retrieval: Optional[Dict[str, Any]] = None,
         prediction_reminders: Optional[Sequence[Dict[str, Any]]] = None,
         hplus_feedback: Optional[Dict[str, Any]] = None,
-        cell_evidence: Optional[Dict[str, Any]] = None,
         cir_source: Optional[str] = None,
         retrieval_bounding: Optional[Dict[str, Any]] = None,
         top_k: int = 5, include_unverified: bool = False,
@@ -2389,15 +2374,12 @@ def build_context(
 
     A pure assembly step: every input is something the caller already has
     (a frozen snapshot, one recall result, the profile and its derivation
-    report, the phase-1 capability evidence, the structural knowledge
-    targets and the measured reliability). Nothing is executed, called or
+    report and capability evidence). Nothing is executed, called or
     induced here — that separation is what makes "the context build performs
     no model call" checkable.
 
-    The knowledge targets and the reliability table are frozen INTO the
-    context on purpose: both come from live banks/logs, and a reused context
-    must send the values as they stood at build time rather than re-deriving
-    them from banks that may have moved since.
+    Retrieval, capability facts and current feedback stay frozen rather than
+    being re-derived from banks that may have moved since.
     """
     from or_harness.world_model.state import task_text_digest
     from or_harness.world_model.conditions import calibration_projection
@@ -2456,8 +2438,6 @@ def build_context(
 
     evidence = capability or HarnessCapabilityEvidence()
     version_block = capability_version_block or capability_version()
-    frozen_targets = [t.to_dict() if hasattr(t, "to_dict") else dict(t)
-                      for t in (knowledge_targets or [])]
     ctx = PredictionContext(
         context_id=context_id or PredictionContext.new_id(),
         task_id=str(task.get("task_id", "")),
@@ -2471,15 +2451,12 @@ def build_context(
         capability=evidence.to_dict(),
         capability_version=version_block,
         execution_constraints=copy.deepcopy(execution_constraints or {}),
-        knowledge_targets=frozen_targets,
-        reliability=copy.deepcopy(reliability or {}),
         strategy_calibration=calibration_projection(strategy_calibration or {}),
         paired_feedback=copy.deepcopy(paired_feedback or {}),
         history_retrieval=copy.deepcopy(history_retrieval or {}),
         prediction_reminders=copy.deepcopy(list(prediction_reminders or [])),
         hplus_feedback=copy.deepcopy(hplus_feedback or {}),
         snapshot=snapshot_conditions(snapshot),
-        cell_evidence=copy.deepcopy(cell_evidence or {}),
         sources={
             "snapshot": snapshot_id or "none",
             "task_version": digest,
@@ -2497,11 +2474,6 @@ def build_context(
         ctx.missing.append(
             "snapshot: the context was built without a frozen snapshot, so "
             "X and B are absent rather than empty")
-    if not frozen_targets:
-        ctx.notes.append(
-            "no structural knowledge target was proposed for this context: "
-            "the frozen proposal set is empty (a first-class answer, not an "
-            "error)")
     ctx.freeze()
     return ctx
 
@@ -2571,7 +2543,6 @@ def capability_evidence_with_sources(
         experience: Optional[Dict[str, Any]],
         tools: Optional[Dict[str, Any]],
         retrieval_view: Optional[RetrievalView] = None,
-        reliability: Optional[Dict[str, Any]] = None,
         recorded_choices: Optional[Dict[str, Any]] = None
         ) -> HarnessCapabilityEvidence:
     """Phase-1 capability evidence, plus what THIS phase can really observe.
@@ -2584,9 +2555,6 @@ def capability_evidence_with_sources(
     - ``R`` — the retrieval channels that actually ran, with their
       applicability labels. Indirect: running a channel and labelling
       applicability is not evidence that a transfer succeeded;
-    - ``W_OR`` — the measured reliability of past predictions, when the
-      prediction log has resolved samples. Indirect: a track record is not a
-      claim of accuracy;
     - ``Pi`` — recorded strategy choices and their outcomes. Indirect: a
       recorded choice is not evidence that the choice was optimal.
 
@@ -2621,18 +2589,6 @@ def capability_evidence_with_sources(
             "labels; a hit count or a similarity is not evidence that a "
             "transfer succeeded")
 
-    if reliability:
-        resolved = {k: v for k, v in reliability.items()
-                    if isinstance(v, dict) and v.get("value") is not None}
-        if resolved:
-            w = evidence.source("w_or")
-            w.status = "indirect_evidence"
-            w.detail = {"reliability_classes": copy.deepcopy(reliability)}
-            w.notes.append(
-                "measured reliability of PAST predictions: a track record is "
-                "not a claim of present accuracy, and a class with too few "
-                "resolved samples reports no value at all")
-
     if recorded_choices and recorded_choices.get("n_recorded"):
         pi = evidence.source("pi")
         pi.status = "indirect_evidence"
@@ -2661,66 +2617,6 @@ def capability_evidence_with_sources(
 # ---------------------------------------------------------------------------
 # frozen per-strategy evidence (what a reused context must not re-count)
 # ---------------------------------------------------------------------------
-
-
-def cell_evidence_from_stats(stats: Any, profile: Optional[ProblemProfile],
-                             strategies: Sequence[str]) -> Dict[str, Any]:
-    """The supporting evidence per strategy, frozen at build time.
-
-    ``learning_needs`` counts DISTINCT TASKS behind a cell to decide whether
-    a claim could form, and it reads the cell's real records to do so. A
-    reused context must use the count as it stood when the context was
-    built — recounting today's bank would let evidence that arrived after the
-    snapshot change a frozen prediction condition.
-
-    Bounded on purpose: only the distinct-task count and the task ids are
-    kept per strategy, not the records themselves. The count is the quantity
-    the heuristic consumes; the ids make it checkable.
-    """
-    out: Dict[str, Any] = {}
-    for strategy_id in strategies or []:
-        if not strategy_id or profile is None:
-            continue
-        try:
-            records = stats.evidence(profile, strategy_id)
-        except Exception:
-            out[strategy_id] = {"distinct_tasks": None,
-                                "task_ids": [],
-                                "note": "cell evidence unavailable at build "
-                                        "time (unknown, never zero)"}
-            continue
-        task_ids = sorted({str(getattr(r, "task_id", "")) for r in records})
-        out[str(strategy_id)] = {
-            "distinct_tasks": len(task_ids),
-            "executions": len(records),
-        }
-    return out
-
-
-def knowledge_targets_from_context(context: "PredictionContext",
-                                   action_spec: Any) -> List[Any]:
-    """The FROZEN knowledge targets for one candidate strategy.
-
-    Reused contexts must send the proposal set as it stood at build time.
-    When the strategy's targets were not frozen (the strategy was not in the
-    context's candidate set), an empty list is returned with the reason
-    recorded in ``context.missing`` — an honest "not proposed", never a
-    silent re-derivation from today's banks.
-    """
-    from or_harness.world_model.knowledge import KnowledgeTarget
-
-    strategy_id = str(getattr(action_spec, "strategy_id", None) or "")
-    targets = [KnowledgeTarget.from_dict(t) for t in
-               (context.knowledge_targets or [])
-               if str((t or {}).get("strategy_id") or "") == strategy_id]
-    if not targets:
-        note = (f"frozen knowledge targets: none were proposed for strategy "
-                f"{strategy_id or '(unnamed)'} when this context was built, "
-                "so none are sent (the proposal is not re-derived from the "
-                "current bank)")
-        if note not in context.missing:
-            context.missing.append(note)
-    return targets
 
 
 #: Fields of ``joint_problem`` that merely repeat what the joint block

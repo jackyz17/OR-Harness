@@ -12,9 +12,8 @@ Layer split (the deployment owns the model, the library owns the contract):
 
 The default provider is :class:`NotConfiguredProvider` — with it, every
 prediction request returns ``not_configured`` and NO network activity ever
-happens. The existing recall / predict_cost / execute / record paths never
-invoke a provider at all; a model call happens only through the explicit
-``predict_outcome`` entry point.
+happens. Prediction calls use only the explicit ``wm-so/1`` strategy-outcome
+service. Recall, cost diagnostics, execution and recording make no model call.
 
 :class:`HttpChatProvider` is the one minimal adapter (OpenAI-compatible
 chat/completions over stdlib urllib). No multi-vendor routing, no model
@@ -35,125 +34,6 @@ from typing import Any, Dict, Optional
 #: Version of the request schema this module builds (mirrored into the
 #: prediction's model_info so stored records stay interpretable).
 PROTOCOL_VERSION = "openai-chat/1"
-
-#: The system prompt sent to the model. The model is asked for STRUCTURED
-#: JSON only; the framework validates everything. Field omissions are
-#: preferred over placeholder values — an absent field stays unknown.
-SYSTEM_PROMPT = (
-    "You are a world model for an operations-research harness. Given the "
-    "current information state (belief snapshot view) and ONE candidate "
-    "action, predict the consequences of executing that action.\n"
-    "OUTPUT RULES (read first, follow strictly):\n"
-    "1. Respond with EXACTLY ONE raw JSON object and NOTHING else. No "
-    "markdown, no code fences, no explanation before or after the JSON.\n"
-    "2. Every field below is OPTIONAL. If you lack evidence for a field, "
-    "OMIT it entirely — never write \"unknown\", null, -1, or a guess as a "
-    "placeholder value.\n"
-    "3. All numbers must be valid JSON numbers (not strings).\n"
-    "4. You predict WHAT HAPPENS IF the action is executed. You have NOT "
-    "executed it. Do NOT solve the problem: do not output an objective "
-    "value, an optimal solution, or any concrete answer number. The only "
-    "legitimate numeric predictions are quality, failure_prob, the cost "
-    "dimensions, confidence, and uncertainty.\n"
-    "Fields (all optional):\n"
-    "- outcome_status: one of optimal|feasible|infeasible|unbounded|"
-    "timeout|error (omit if you cannot judge)\n"
-    "- feasible: boolean\n"
-    "- quality: number in [0,1] — the expected quality of THIS "
-    "execution's result, where 1.0 = the result matches the task's own "
-    "optimum, 0.7-0.9 = good feasible, 0.4-0.6 = marginal/uncertain, "
-    "below 0.4 = poor. Do NOT default to 0.5; omit the field when you "
-    "have no quality-relevant evidence\n"
-    "- failure_prob: number in [0,1]\n"
-    "- cost: object containing only the dimensions you have evidence for, "
-    "each a non-negative JSON number: {llm_tokens, tool_calls, "
-    "solver_runtime_s, retries, latency_s}\n"
-    "- expected_error_kinds: list of error categories you expect\n"
-    "- state_changes: object describing the SHAPE of the successor task "
-    "state you expect — which fields will change and in what category "
-    "(e.g. \"an incumbent solution will exist\", \"the model artifact "
-    "will be rewritten\", \"verification evidence will be added\"). "
-    "Describe categories and shapes, NOT solved values: never put an "
-    "objective value, an optimal solution, or a concrete answer inside "
-    "this object\n"
-    "- knowledge_changes: list of changes this action is expected to make "
-    "to the harness's ACCUMULATED KNOWLEDGE (not to the task's solution). "
-    "Omit the field entirely when you see no such change. Each item is an "
-    "object:\n"
-    "    {\n"
-    "      \"target\": the knowledge it bears on. Either\n"
-    "          {\"kind\": \"existing_entry\", \"entry_id\": \"<id from "
-    "candidate_knowledge_targets>\", \"strategy_id\": \"<sid>\"} to say "
-    "something about a claim that already exists (the entry_id MUST come "
-    "from the targets you were given), or\n"
-    "          {\"kind\": \"hypothesis\", \"strategy_id\": \"<sid>\"} to "
-    "propose a claim that does not exist yet. A hypothesis is allowed even "
-    "with no targets offered, but it THEN MUST also carry the two fields "
-    "below,\n"
-    "      \"change\": one of adds_evidence | supports | revises | refutes "
-    "| candidate_forms | narrows,\n"
-    "      \"horizon\": \"after_execution\" when the change is visible as "
-    "soon as the action's evidence is recorded, or "
-    "\"after_consolidation\" when it can only happen later, during offline "
-    "consolidation,\n"
-    "      \"expected_observation\": REQUIRED for a hypothesis - an object "
-    "of the concrete fields you would expect to see in the recorded result "
-    "(e.g. {\"feasible\": true}). Use only keys that appear on an execution "
-    "record: status, feasible, objective, gap, optimality, or a named cost "
-    "dimension such as llm_tokens. This is what the claim will be judged "
-    "against, so a vague expectation cannot be confirmed,\n"
-    "      \"check_condition\": REQUIRED for a hypothesis - one sentence "
-    "stating how that observation would settle the claim,\n"
-    "      \"preconditions\": optional list of what must happen for the "
-    "change to be observable at all: independent_replication (evidence "
-    "from a different task), contrast_execution (a companion run to "
-    "compare against), verification_check (an admission verdict), or "
-    "additional_measurement:<dimension>,\n"
-    "      \"expected_extra_cost\": when the change requires extra spend "
-    "beyond this action (a contrast run, a consolidation), the cost "
-    "dimensions that spend will consume,\n"
-    "      \"prediction_basis\": list of the evidence keys you relied on,\n"
-    "      \"uncertainty\": number in [0,1]\n"
-    "    }\n"
-    "- confidence: number in [0,1] — your self-reported confidence "
-    "(uncalibrated)\n"
-    "- evidence_basis: list of the evidence keys you relied on\n"
-    "- unsupported_fields: object of {field: reason} for fields you "
-    "cannot or will not predict\n"
-    "Do NOT fabricate evidence. If the provided state contains no relevant "
-    "experience or knowledge for the action, say so in unsupported_fields "
-    "and give low confidence. Output the JSON object only."
-)
-
-#: The system prompt for offline knowledge induction (M4).
-SYSTEM_PROMPT_INDUCE = (
-    "You are a world model for an operations-research knowledge bank. "
-    "Given the current strategic knowledge state and a proposed evidence "
-    "bundle for an induction or revision action, predict the consequences "
-    "and long-term value of performing this induction.\n"
-    "OUTPUT RULES (read first, follow strictly):\n"
-    "1. Respond with EXACTLY ONE raw JSON object and NOTHING else. No "
-    "markdown, no code fences, no explanation before or after the JSON.\n"
-    "2. Every field below is OPTIONAL. Omit any field you lack evidence "
-    "for — never write \"unknown\", null, or placeholders.\n"
-    "3. All numbers must be valid JSON numbers.\n"
-    "Fields (all optional):\n"
-    "- candidate_formation_prob: number in [0,1] (probability a valid claim "
-    "forms)\n"
-    "- expected_reuse_benefit: number in [0,1] (expected incremental benefit "
-    "per future matching task relative to current knowledge)\n"
-    "- generalization_risk: number in [0,1] (risk the induced claim fails on "
-    "future matching problems)\n"
-    "- quality: number in [0,1] (expected quality level of the induced claim)\n"
-    "- failure_prob: number in [0,1] (expected failure rate under the claim)\n"
-    "- cost: object of {llm_tokens, tool_calls, solver_runtime_s, retries, "
-    "latency_s} — expected per-task execution cost under this strategy\n"
-    "- confidence: number in [0,1]\n"
-    "- evidence_basis: list of evidence keys you relied on\n"
-    "- unsupported_fields: object of {field: reason}\n"
-    "Do NOT fabricate evidence. Output the JSON object only."
-)
-
 
 class ProviderError(Exception):
     """A provider call failed (timeout, HTTP error, bad payload).
@@ -338,7 +218,7 @@ class HttpChatProvider(WorldModelProvider):
         if timeout_s is not None:
             effective_timeout = max(0.001, min(float(timeout_s),
                                                self.timeout_s))
-        # Current requests use wm-so/1; unversioned calls keep the legacy prompt.
+        # Archived predictions are inspected without invoking a provider.
         from or_harness.world_model.strategy_prediction import (
             STRATEGY_OUTCOME_PROTOCOL_VERSION,
             STRATEGY_OUTCOME_SYSTEM_PROMPT,
@@ -350,15 +230,9 @@ class HttpChatProvider(WorldModelProvider):
         # wire, whatever caller assembled the request.
         request = strip_request_diagnostics(request)
         protocol = request.get("prediction_protocol")
-        if protocol not in (None, STRATEGY_OUTCOME_PROTOCOL_VERSION):
-            raise ValueError("unsupported prediction protocol")
-        if protocol == STRATEGY_OUTCOME_PROTOCOL_VERSION:
-            prompt = STRATEGY_OUTCOME_SYSTEM_PROMPT
-        else:
-            action_type = (request.get("action_spec") or {}).get(
-                "action_type")
-            prompt = (SYSTEM_PROMPT_INDUCE if action_type == "induce"
-                      else SYSTEM_PROMPT)
+        if protocol != STRATEGY_OUTCOME_PROTOCOL_VERSION:
+            raise ValueError("unsupported prediction protocol: only prediction_protocol=wm-so/1 is supported")
+        prompt = STRATEGY_OUTCOME_SYSTEM_PROMPT
         body = {
             "model": self.model,
             "messages": [

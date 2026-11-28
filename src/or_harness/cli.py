@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from or_harness.api import ORHarness, PREDICTION_MODES
+from or_harness.api import ORHarness
 from or_harness.core.coupling import CIRFormatError
 from or_harness.core.schema import ExecutionRecord
 from or_harness.core.storage import BudgetExhausted, StorageError
@@ -189,9 +189,6 @@ def _harness(args) -> ORHarness:
             max_output_tokens=_wm_max_tokens(args))
     return ORHarness(home=args.home, alpha=args.alpha, beta=args.beta,
                      gamma=args.gamma, cost_weights=weights,
-                     delta=getattr(args, "delta", 0.0),
-                     prediction_mode=getattr(args, "prediction_mode",
-                                            "h-x-b-value"),
                      execution_context=(_load_json_arg(args.execution_context)
                                         if getattr(args, "execution_context", None) else None),
                      induction_mode=getattr(args, 'induction_mode', None),
@@ -1864,8 +1861,6 @@ def cmd_plan_next(args) -> int:
                   "max_model_calls": args.max_calls,
                   "time_budget_s": getattr(args, "time_budget", None)}
         limits = {k: v for k, v in limits.items() if v is not None}
-        if getattr(args, "delta", None) is not None:
-            limits["delta"] = args.delta
         if getattr(args, "benefit_kind", None):
             limits["benefit_kind"] = args.benefit_kind
         if getattr(args, "benefit_metric", None):
@@ -1942,7 +1937,7 @@ def cmd_plan_next(args) -> int:
 def cmd_choose_next(args) -> int:
     h = _harness(args)
     try:
-        from or_harness.world_model.prediction import ActionSpec
+        from or_harness.world_model.contracts import ActionSpec
         chosen = None
         if args.chosen:
             chosen = ActionSpec.from_dict(_load_json_arg(args.chosen))
@@ -2314,7 +2309,7 @@ def _candidate_from_spec(spec: Dict[str, Any]):
     """
     from or_harness.world_model.contracts import (
         CandidateRef, normalize_candidate_payload)
-    from or_harness.world_model.prediction import ActionSpec
+    from or_harness.world_model.contracts import ActionSpec
     if "measurement_scope" in spec or "budget_hint" in spec:
         return CandidateRef.from_action_spec(ActionSpec.from_dict(spec))
     spec = normalize_candidate_payload(spec)
@@ -2339,16 +2334,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cost-weights", default=None,
                         help="per-dimension cost weights, e.g. "
                              "'remaining_latency_s=1,output_tokens=1,tool_calls=0.5,retries=0.5'")
-    parser.add_argument("--delta", type=float, default=0.0,
-                        help="legacy compatibility setting; formal strategy U uses G/C/R, "
-                             "with H+ scheduling induction independently")
-    parser.add_argument("--prediction-mode", default="h-x-b-value",
-                        choices=list(PREDICTION_MODES),
-                        help="what the world model predicts: 'x-b-only' "
-                             "X/B only, 'h-x-b' also H (recorded, not "
-                             "scored), 'h-x-b-value' also H with the "
-                             "knowledge term live. Default h-x-b-value, "
-                             "whose delta is still 0 unless set")
     parser.add_argument("--world-model", default=None, metavar="URL::MODEL",
                         help="world-model provider for outcome predictions: "
                              "OpenAI-compatible base URL and model name "
@@ -2962,16 +2947,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "timeout, and after the last call the elapsed time "
                         "is re-checked. Exhaustion returns a truncation "
                         "reason and KEEPS the calls already paid for")
-    p.add_argument("--delta", type=float, default=argparse.SUPPRESS,
-                   help="compatibility parameter; strategy-outcome U uses only G/C/R, "
-                        "and H+ independently schedules induction")
-    p.add_argument("--prediction-mode", default=argparse.SUPPRESS,
-                   choices=["x-b-only", "h-x-b", "h-x-b-value"],
-                   help="what the world model predicts: 'x-b-only' predicts "
-                        "X/B only (no knowledge targets, knowledge term "
-                        "off), 'h-x-b' predicts H as well but keeps the "
-                        "knowledge value out of the decision, "
-                        "'h-x-b-value' lets it influence the choice")
     p.add_argument("--benefit-kind", default=None, metavar="KIND",
                    help="the benefit CONVENTION this decision compares under: "
                         "'solution_quality' (how well the solver solved the "

@@ -87,7 +87,7 @@ Use `strategy_id` for a recorded method. Without one, the method receives a `can
 
 `orx inspect --bank predictions --prediction P` returns the forecast at `result.prediction.prediction` and the kind at `result.prediction.kind`. If no candidate has eligible U, read the refusal, `failure.kind` and notes; repair the input/provider settings before planning again. See [forecast diagnostics](world_model_contract.md#stored-forecasts-and-their-conventions).
 
-### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode E] --candidates specs.json [--cost-scales JSON_OR_FILE] [--horizon 1] [--max-calls N] [--prediction-mode M] [--time-budget S]`
+### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode E] --candidates specs.json [--cost-scales JSON_OR_FILE] [--horizon 1] [--max-calls N] [--time-budget S]`
 
 Predict G/C/R/H+ once per candidate using a shared context; select highest eligible U. One candidate is valid. Read `result.decision_action_id`, `result.selected_prediction_id`, `result.selected_score` and `result.plan.candidates[]`, including the selected `capability_gain.verification_conditions`.
 

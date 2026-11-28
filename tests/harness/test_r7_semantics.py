@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 from tests.harness.helpers import HarnessTestCase  # noqa: E402
 
 from or_harness.api import ORHarness  # noqa: E402
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec  # noqa: E402
 from or_harness.world_model.strategy_prediction import (  # noqa: E402
     parse_strategy_outcome_payload,
 )

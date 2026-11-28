@@ -8,6 +8,24 @@ from pathlib import Path
 from or_harness.world_model.provider import WorldModelProvider
 
 
+def seed_legacy_prediction(harness, task, episode_id=None, *, predicted=None, call_cost=None):
+    """Import an archived fixture directly; never revive M2 generation."""
+    import time
+    import uuid
+    payload = {'prediction_id': 'wp_' + uuid.uuid4().hex[:12],
+        'input_snapshot_id': 'bs_archived',
+        'action_spec': {'action_type': 'execute_strategy', 'task_id': str(task['task_id']),
+                        'episode_id': episode_id, 'strategy_id': 'S01'},
+        'status': 'valid', 'predicted': predicted or {'outcome_status': 'feasible', 'quality': .5},
+        'created_at': time.time(), 'call_cost': call_cost,
+        'call_cost_measured': list(call_cost or {})}
+    with harness.store.transaction() as conn:
+        conn.execute('INSERT INTO world_model_predictions VALUES (?,?,?,?,?)',
+            (payload['prediction_id'], str(task['task_id']), episode_id,
+             payload['created_at'], harness.store.dumps(payload)))
+    return harness.get_prediction(payload['prediction_id'])
+
+
 def planned_prediction(h,task,candidate,episode_id=None,*,benefit_convention=None,limits=None,**kwargs):
     options=dict(limits or {})
     if benefit_convention:

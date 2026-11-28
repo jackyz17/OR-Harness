@@ -55,7 +55,7 @@ from or_harness.world_model.context import (  # noqa: E402
     math_attributes,
     retrieval_reuse_problems,
 )
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec  # noqa: E402
 from or_harness.world_model.provider import WorldModelProvider  # noqa: E402
 from or_harness.world_model.state import task_text_digest  # noqa: E402
 
@@ -104,8 +104,10 @@ class RecordingProvider(WorldModelProvider):
 
     def predict(self, request, timeout_s=None):
         self.requests.append(request)
-        return {"payload": {"outcome_status": "feasible", "feasible": True,
-                            "quality": self.quality, "failure_prob": 0.1},
+        return {"payload": {"benefit": {"kind": "effective_completion",
+                            "metric": "task_check_passed_given_faithful_execution", "unit": "probability",
+                            "value": self.quality, "baseline": {"kind": "unknown"}},
+                            "capability_gain": {"decision": 0, "basis": ["Context transport fixture."]}},
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5},
                 "error": None, "latency_s": 0.01}
 
@@ -506,7 +508,7 @@ class TestContextIsFrozen(ContextCase):
         other = _task("t1", description="a different requirement entirely")
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         with self.assertRaises(ValueError) as caught:
-            self.h.predict_outcome(other, spec, "ep1", context=ctx)
+            self.h.predict_strategy_outcome(other, spec, "ep1", context=ctx)
         self.assertIn("does not describe", str(caught.exception))
 
 
@@ -543,10 +545,10 @@ class TestOneContextSharedByCandidates(ContextCase):
                             params={"time_limit": 60}),
                  ActionSpec("execute_strategy", "t1", strategy_id="S02")]
         for spec in specs:
-            h.predict_outcome(_task("t1"), spec, "ep1")
-        ids = [r["action_spec"]["strategy_id"] for r in provider.requests]
+            h.predict_strategy_outcome(_task("t1"), spec, "ep1")
+        ids = [r["candidate"]["strategy_id"] for r in provider.requests]
         self.assertEqual(ids, ["S01", "S02"])
-        self.assertEqual(provider.requests[0]["action_spec"]["params"],
+        self.assertEqual(provider.requests[0]["candidate"]["config"],
                          {"time_limit": 60})
 
     def test_the_provider_receives_the_new_joint_evidence(self):
@@ -555,7 +557,7 @@ class TestOneContextSharedByCandidates(ContextCase):
                       embedding=self.backend)
         self.addCleanup(h.close)
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        h.predict_outcome(dict(_task("t1"), coupling=_cir()), spec, "ep1")
+        h.predict_strategy_outcome(dict(_task("t1"), coupling=_cir()), spec, "ep1")
         request = provider.requests[0]
         self.assertIn("prediction_context", request)
         block = request["prediction_context"]
@@ -577,26 +579,22 @@ class TestOneContextSharedByCandidates(ContextCase):
                       embedding=self.backend)
         self.addCleanup(h.close)
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        prediction = h.predict_outcome(_task("t1"), spec, "ep1")
-        ctx_id = prediction.model_info["prediction_context_id"]
+        prediction = h.predict_strategy_outcome(_task("t1"), spec, "ep1")
+        ctx_id = prediction.trace.model_info["prediction_context_id"]
         self.assertTrue(ctx_id)
         self.assertIsNotNone(h.get_prediction_context(ctx_id))
 
-    def test_no_context_keeps_the_request_shape_unchanged(self):
+    def test_current_protocol_always_carries_the_frozen_context(self):
         provider = RecordingProvider()
-        h = ORHarness(home=self.home, world_model=provider,
-                      embedding=self.backend)
+        h = ORHarness(home=self.home, world_model=provider, embedding=self.backend)
         self.addCleanup(h.close)
-        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        h.predict_outcome(_task("t1"), spec, "ep1", context=False)
+        h.predict_strategy_outcome(_task("t1"), ActionSpec("execute_strategy", "t1", strategy_id="S01"), "ep1")
         request = provider.requests[0]
-        self.assertNotIn("prediction_context", request)
-        self.assertNotIn("prediction_context", request["state"])
-        # The request carries exactly what it carried before this phase:
-        # the action spec, the snapshot-derived state, and the pre-existing
-        # M6 reliability block.
-        self.assertEqual(sorted(request.keys()),
-                         ["action_spec", "prediction_reliability", "state"])
+        self.assertEqual(request["prediction_protocol"], "wm-so/1")
+        self.assertIn("prediction_context", request)
+        self.assertNotIn("state", request)
+        self.assertNotIn("prediction_reliability", request)
+        self.assertNotIn("candidate_knowledge_targets", request)
 
     def test_reused_context_is_identical_for_both_candidates(self):
         provider = RecordingProvider()
@@ -605,7 +603,7 @@ class TestOneContextSharedByCandidates(ContextCase):
         self.addCleanup(h.close)
         ctx = h.build_prediction_context(_task("t1"), "ep1")
         for sid in ("S01", "S02"):
-            h.predict_outcome(
+            h.predict_strategy_outcome(
                 _task("t1"),
                 ActionSpec("execute_strategy", "t1", strategy_id=sid),
                 "ep1", context=ctx)
@@ -839,7 +837,7 @@ class TestBuildHasNoSideEffects(ContextCase):
         self.addCleanup(h.close)
         h.build_prediction_context(_task("t1"), "ep1")
         self.assertEqual(provider.requests, [])
-        h.predict_outcome(
+        h.predict_strategy_outcome(
             _task("t1"),
             ActionSpec("execute_strategy", "t1", strategy_id="S01"), "ep1")
         self.assertEqual(len(provider.requests), 1)
@@ -875,10 +873,8 @@ class TestBuildHasNoSideEffects(ContextCase):
 class TestFrozenContextFreezesTheWholeRequest(ContextCase):
     """P1: reusing a context must reuse EVERY prediction condition.
 
-    The defect: `predict_outcome(..., context=ctx)` took a FRESH snapshot and
-    re-read the current knowledge targets and reliability, so one request
-    mixed a frozen `prediction_context` with a current `state`, and the
-    recorded snapshot id disagreed with the context's.
+    A reused context supplies the whole frozen request; later progress,
+    knowledge or feedback must not change its prediction conditions.
     """
 
     def _provider(self):
@@ -902,8 +898,8 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         self.assertEqual(ctx.solving_context["task_progress"], {})
         self._advance_state(h, task)          # state moves on
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        h.predict_outcome(task, spec, "ep1", context=ctx)
-        sent = provider.requests[0]["state"].get("task_progress")
+        h.predict_strategy_outcome(task, spec, "ep1", context=ctx)
+        sent = provider.requests[0]["prediction_context"]["solving_context"].get("task_progress")
         self.assertIn(sent, (None, {}),
                       "the frozen X must not pick up later progress")
         self.assertEqual(ctx.solving_context["task_progress"], {},
@@ -915,10 +911,9 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         ctx = h.build_prediction_context(task, "ep1")
         self._advance_state(h, task)
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        prediction = h.predict_outcome(task, spec, "ep1", context=ctx)
-        self.assertEqual(prediction.input_snapshot_id, ctx.snapshot_id)
-        self.assertEqual(prediction.model_info["conditions_source"],
-                         "frozen_context")
+        prediction = h.predict_strategy_outcome(task, spec, "ep1", context=ctx)
+        self.assertEqual(prediction.trace.input_snapshot_id, ctx.snapshot_id)
+        self.assertEqual(prediction.trace.model_info["prediction_context_id"], ctx.context_id)
 
     def test_reused_context_replays_the_frozen_progress_it_was_built_with(self):
         h, provider = self._provider()
@@ -930,62 +925,19 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         ctx = h.build_prediction_context(task, "ep1", snapshot=snap)
         self._advance_state(h, task)          # progress moves on
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        h.predict_outcome(task, spec, "ep1", context=ctx)
+        h.predict_strategy_outcome(task, spec, "ep1", context=ctx)
         # The FROZEN progress is replayed through the frozen context's own
         # solving_context (the snapshot's duplicate copy is dropped, so the
         # fact is sent exactly once).
         request = provider.requests[0]
-        self.assertNotIn("task_progress", request["state"],
-                         "the duplicated X is not sent twice")
+        self.assertNotIn("state", request, "the duplicated X is not sent twice")
         sent = request["prediction_context"]["solving_context"]["task_progress"]
         self.assertEqual(sent["selected_plan"]["value"]["strategy_id"], "S01")
         self.assertNotIn("current_solution", sent,
                          "progress established later must not appear")
 
-    def test_reused_context_sends_the_frozen_knowledge_targets(self):
-        h, provider = self._provider()
-        task = _task("t1")
-        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        # Seed a cell so the heuristic has a reason to propose a target.
-        self.solve(_task("t1"), strategy="S01")
-        ctx = h.build_prediction_context(task, "ep1", context_spec=spec)
-        self.assertTrue(ctx.knowledge_targets,
-                        "the proposal set is frozen into the context")
-        # More evidence arrives, which WOULD change a re-derived proposal.
-        self.solve(_task("t3"), strategy="S01")
-        h.predict_outcome(task, spec, "ep1", context=ctx)
-        sent = provider.requests[0].get("candidate_knowledge_targets") or []
-        frozen = [t for t in ctx.knowledge_targets
-                  if t.get("strategy_id") == "S01"]
-        self.assertEqual(len(sent), len(frozen))
-        self.assertEqual([t["strategy_id"] for t in sent],
-                         [t["strategy_id"] for t in frozen])
 
-    def test_reused_context_sends_the_frozen_reliability(self):
-        h, provider = self._provider()
-        task = _task("t1")
-        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        ctx = h.build_prediction_context(task, "ep1", context_spec=spec)
-        h.predict_outcome(task, spec, "ep1", context=ctx)
-        self.assertEqual(provider.requests[0]["prediction_reliability"],
-                         ctx.reliability)
 
-    def test_targets_for_an_unproposed_strategy_are_empty_and_explained(self):
-        from or_harness.world_model.context import (
-            knowledge_targets_from_context,
-        )
-        h, _ = self._provider()
-        task = _task("t1")
-        ctx = h.build_prediction_context(
-            task, "ep1",
-            context_spec=ActionSpec("execute_strategy", "t1",
-                                    strategy_id="S01"))
-        other = ActionSpec("execute_strategy", "t1", strategy_id="S07")
-        targets = knowledge_targets_from_context(ctx, other)
-        self.assertEqual(targets, [],
-                         "no target is re-derived from today's bank")
-        self.assertTrue(any("not re-derived" in m for m in ctx.missing),
-                        "the omission is stated, not silent")
 
     def test_a_budget_move_is_reported_not_silently_substituted(self):
         h, provider = self._provider()
@@ -995,15 +947,14 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         frozen_budget = ctx.execution_constraints["declared_budget"]
         h.declare_budget("b1", {"llm_tokens": 9999}, "ep1")
         spec = ActionSpec("execute_strategy", "b1", strategy_id="S01")
-        prediction = h.predict_outcome(task, spec, "ep1", context=ctx)
+        prediction = h.predict_strategy_outcome(task, spec, "ep1", context=ctx)
         # The frozen constraint is untouched ...
         self.assertEqual(ctx.execution_constraints["declared_budget"],
                          frozen_budget)
         # ... and the difference is recorded as a reported override.
-        override = prediction.model_info["budget_checked_at_call_time"]
-        self.assertEqual(override["current_declared_budget"],
-                         {"llm_tokens": 9999.0})
-        self.assertEqual(override["frozen_declared_budget"], frozen_budget)
+        sent = provider.requests[0]["prediction_context"]["execution_constraints"]
+        self.assertEqual(sent["declared_budget"], frozen_budget)
+        self.assertEqual(h._load_budget("b1", "ep1"), {"llm_tokens": 9999.0})
 
     def test_a_supplied_current_result_is_bounded_too(self):
         """A supplied result does not get to smuggle later evidence in.
@@ -1041,16 +992,16 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         bounding = ctx.execution_constraints["retrieval_bounding"]
         self.assertGreaterEqual(bounding["dropped"], 1)
         # And the context is a CURRENT gathering, not a reconstruction:
-        # the knowledge view and reliability were read and frozen.
+        # the knowledge view and current feedback were read and frozen.
         self.assertNotIn("HISTORICAL reconstruction", " ".join(ctx.notes))
 
     def test_a_current_gathering_around_a_supplied_snapshot_reads_the_bank(
             self):
         """historical=False around a caller snapshot is CURRENT gathering.
 
-        This is the plan_next / predict_outcome pattern: the caller freezes
+        This is the plan_next / predict_strategy_outcome pattern: the caller freezes
         the X/B snapshot, and the context gathers the retrieval, knowledge
-        view, reliability and cell evidence NOW and freezes them. The
+        view, current feedback and cell statistics NOW and freezes them. The
         presence of a snapshot alone must NOT flip the build into a
         historical reconstruction. The retrieval IS still bounded to the
         snapshot's moment (the snapshot is the X/B this decision froze), so
@@ -1152,8 +1103,9 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         snap = self.h.snapshot(task, "ep1")
         ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
         joined = " ".join(ctx.missing)
-        self.assertIn("measured prediction reliability was not saved", joined)
-        self.assertIn("per-cell evidence counts were not saved", joined)
+        self.assertNotIn("prediction reliability", joined)
+        self.assertNotIn("reliability", ctx.to_dict())
+        self.assertNotIn("cell_evidence", ctx.to_dict())
         # And the reliability genuinely is empty rather than today's table.
         self.assertEqual(ctx.reliability, {})
         self.assertEqual(ctx.cell_evidence, {})
@@ -1576,7 +1528,7 @@ class TestStructureConsistencyIsChecked(ContextCase):
         strong_task = task_with_effective_cir(task, self.STRONG)
         spec = ActionSpec("execute_strategy", "t2", strategy_id="S01")
         with self.assertRaises(ValueError) as caught:
-            self.h.predict_outcome(strong_task, spec, "ep1", context=ctx)
+            self.h.predict_strategy_outcome(strong_task, spec, "ep1", context=ctx)
         self.assertIn("does not describe", str(caught.exception))
 
     def test_the_effective_input_is_resolved_before_the_check(self):
@@ -1757,18 +1709,16 @@ class TestCirIsInternal(ContextCase):
         origins = math.get("origins") or {}
         self.assertEqual(origins.get("constraint_kinds"), "cir")
 
-    def test_legacy_single_step_request_has_no_cir_snapshot(self):
-        """The M2 path (``predict_outcome``) sent a second, unbounded CIR
-        copy under ``state.problem_state.cir_snapshot``; that is removed
-        too, and its duplicated X/B are not sent beside the context."""
+    def test_current_request_has_no_second_cir_snapshot(self):
+        """CIR and X/B are supplied once through the frozen context."""
         provider = RecordingProvider()
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = dict(_task("t1"), coupling=_cir())
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        h.predict_outcome(task, spec, "ep1")
-        state = provider.requests[0]["state"]
+        h.predict_strategy_outcome(task, spec, "ep1")
+        state = provider.requests[0].get("state", {})
         problem_state = state.get("problem_state") or {}
         self.assertNotIn("cir_snapshot", problem_state)
         self.assertNotIn("cir_snapshot", json.dumps(state))
@@ -1781,8 +1731,8 @@ class TestCirIsInternal(ContextCase):
         task = _task("t1")
         ctx = h.build_prediction_context(task, "ep1")
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        h.predict_outcome(task, spec, "ep1", context=ctx)
-        state = provider.requests[0]["state"]
+        h.predict_strategy_outcome(task, spec, "ep1", context=ctx)
+        state = provider.requests[0].get("state", {})
         # X/B travel in the frozen context's solving_context, once.
         self.assertNotIn("task_progress", state)
         self.assertNotIn("budget_state", state)

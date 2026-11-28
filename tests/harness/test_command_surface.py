@@ -3,7 +3,7 @@
 Scripted providers exercise orchestration; they do not measure model quality.
 """
 
-from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+from decision_fixtures import seed_legacy_prediction, bind_legacy, execute_scored, planned_prediction
 
 import io
 import json
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 from tests.harness.helpers import HarnessTestCase  # noqa: E402
 
 from or_harness.api import ORHarness  # noqa: E402
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec, FAITHFUL_G_CONVENTION, FAITHFUL_G_METRIC  # noqa: E402
 from or_harness.world_model.provider import WorldModelProvider  # noqa: E402
 
 TASK = {"task_id": "t1", "family": "routing", "description": "toy"}
@@ -61,23 +61,6 @@ class CountingProvider(WorldModelProvider):
         quality = 0.9 if sid == "S01" else self.quality
         return {"payload": _payload(quality=quality, cost=self.cost),
                 "usage": dict(self.usage),
-                "error": None, "latency_s": 0.01}
-
-
-class LegacyReaderProvider(WorldModelProvider):
-    """A legacy (M2 shape) stub: it answers the OLD request contract.
-
-    Used ONLY to write a record in the pre-wm-so/1 format, so the reader
-    path can be exercised against real stored data.
-    """
-
-    name = "legacy-stub"
-
-    def predict(self, request, timeout_s=None):
-        return {"payload": {"outcome_status": "feasible", "feasible": True,
-                            "quality": 0.5, "failure_prob": 0.1,
-                            "cost": {"llm_tokens": 10.0}},
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
                 "error": None, "latency_s": 0.01}
 
 
@@ -201,10 +184,10 @@ class TestLegacyRecordsStayReadable(Base):
     def test_legacy_payload_is_readable_and_separate(self):
         """An old unversioned payload is still READABLE, and it never enters
         the wm-so/1 calibration: two logs, two questions."""
-        provider = LegacyReaderProvider()
+        provider = CountingProvider()
         h = self.make_harness(provider)
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
-        legacy = h.predict_outcome(TASK, spec, "ep1")
+        legacy = seed_legacy_prediction(h, TASK, "ep1")
         self.assertTrue(legacy.prediction_id.startswith("wp_"))
 
         # Readable through the contracts reader (the old payload shape).
@@ -226,15 +209,12 @@ class TestLegacyRecordsStayReadable(Base):
         """A legacy prediction and a wm-so/1 prediction of the same task
         appear in DIFFERENT keys: a reader can never mistake one for the
         other, and the calibration reads only the wm-so/1 channel."""
-        legacy_provider = LegacyReaderProvider()
+        legacy_provider = CountingProvider()
         h = self.make_harness(legacy_provider)
-        h.predict_outcome(TASK,
-                          ActionSpec("execute_strategy", "t1",
-                                     strategy_id="S01"), "ep1")
+        seed_legacy_prediction(h, TASK, "ep1")
         # Swap in a wm-so/1 provider and predict under the new protocol.
         provider = CountingProvider()
         h.world_model = provider
-        h.predictions.provider = provider
         h.strategy_predictions.provider = provider
         planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
@@ -250,11 +230,9 @@ class TestLegacyRecordsStayReadable(Base):
                          "no episode has closed: neither log contributes")
 
     def test_a_single_prediction_read_names_its_generation(self):
-        legacy_provider = LegacyReaderProvider()
+        legacy_provider = CountingProvider()
         h = self.make_harness(legacy_provider)
-        legacy = h.predict_outcome(
-            TASK, ActionSpec("execute_strategy", "t1", strategy_id="S01"),
-            "ep1")
+        legacy = seed_legacy_prediction(h, TASK, "ep1")
         read = h.read_prediction(legacy.prediction_id)
         self.assertEqual(read["kind"], "legacy_outcome")
         code, out = self.run_cli([
@@ -342,8 +320,7 @@ class TestAutomaticBindingIsSafe(Base):
 
 class TestQuerySurfaceIsComplete(Base):
     def test_every_removed_query_is_reachable_through_inspect(self):
-        """Each capability the four removed commands offered is asserted
-        here, so the merge is verifiable rather than asserted."""
+        """Current evaluation, retention and prediction reads share inspect."""
         provider = CountingProvider()
         h = self.make_harness(provider)
         from decision_fixtures import import_legacy_execution
@@ -384,12 +361,19 @@ class TestQuerySurfaceIsComplete(Base):
         self.assertIn("n_window_episodes", retention["online"])
         self.assertIn("total_bytes", retention["archive"])
 
-        # -- capability (summary + single prediction full state) --------
-        code, out = self.run_cli(["inspect", "--bank", "capability"])
+        # -- predictions (list + generation-labelled full record) -------
+        code, out = self.run_cli(["inspect", "--bank", "predictions", "--task", "t1"])
         self.assertEqual(code, 0)
-        summary = json.loads(out)["result"]
-        for key in ("n_predictions", "n_fact_bound", "n_effect_verified"):
-            self.assertIn(key, summary)
+        listed = json.loads(out)["result"]
+        self.assertEqual([p["prediction_id"] for p in listed["strategy_predictions"]],
+                         [prediction.prediction_id])
+        code, out = self.run_cli(["inspect", "--bank", "predictions",
+                                  "--prediction", prediction.prediction_id])
+        self.assertEqual(code, 0)
+        read = json.loads(out)["result"]["prediction"]
+        self.assertEqual(read["kind"], "strategy_outcome")
+        self.assertEqual(read["prediction"]["prediction_id"], prediction.prediction_id)
+        self.assertEqual(read["prediction"]["trace"]["model_info"]["bound_action_id"], record.action_id)
 
 
     def test_retirement_candidates_are_a_query_not_a_collector(self):
@@ -517,8 +501,6 @@ class TestRemovedCommandsAreGone(Base):
         self.run_cli(["predict-cost", "--task", json.dumps(TASK),
                       "--strategy", "S01"])
         self.assertEqual(provider.requests, [])
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -761,7 +743,7 @@ class TestTheCandidateCarriesItsMethod(Base):
     no memory to read it from — and it must survive into the request."""
 
     def test_action_spec_method_reaches_the_request(self):
-        from or_harness.world_model.prediction import ActionSpec
+        from or_harness.world_model.contracts import ActionSpec
 
         class Capture(WorldModelProvider):
             name = "capture"
@@ -1122,7 +1104,7 @@ class TestTheTimeoutReachesTheProvider(Base):
 
         urllib.request.urlopen = fake
         try:
-            result = provider.predict({"x": 1}, timeout_s=7.0)
+            result = provider.predict({"prediction_protocol": "wm-so/1", "x": 1}, timeout_s=7.0)
         finally:
             urllib.request.urlopen = original
         self.assertEqual(_posted_body_with.get("timeout"), 7.0)
@@ -1791,11 +1773,9 @@ class TestSameConventionCompletionCompares(Base):
 
     def _completion(self, value):
         return {
-            "benefit": {"kind": "effective_completion",
-                        "metric": "task_result_check_passed",
-                        "unit": "boolean", "value": value,
+            "benefit": {**FAITHFUL_G_CONVENTION, "value": value,
                         "baseline": {"kind": "declared", "value": 0.5}},
-            "cost": {"llm_tokens": 100},
+            "cost": {"output_tokens": 100},
         }
 
     def _provider(self, values_by_strategy):
@@ -1829,12 +1809,12 @@ class TestSameConventionCompletionCompares(Base):
                                    strategy_id="S01", solver="highs"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02", solver="highs")],
-            limits={"horizon": 1, 'benefit_kind': 'effective_completion', 'benefit_metric': 'task_result_check_passed', 'benefit_unit': 'boolean'})
+            limits={"horizon": 1, 'benefit_kind': 'effective_completion', 'benefit_metric': FAITHFUL_G_METRIC, 'benefit_unit': 'probability'})
         self.assertEqual(plan["status"], "ok")
         self.assertEqual(plan["suggested"]["strategy_id"], "S01")
         convention = plan["benefit_convention"]
         self.assertEqual(convention["kind"], "effective_completion")
-        self.assertEqual(convention["metric"], "task_result_check_passed")
+        self.assertEqual(convention["metric"], FAITHFUL_G_METRIC)
         self.assertEqual(convention["source"], "declared")
 
     def test_a_declared_convention_reaches_every_request(self):
@@ -1846,7 +1826,7 @@ class TestSameConventionCompletionCompares(Base):
                                    strategy_id="S01", solver="highs")],
             limits={"horizon": 1,
                     "benefit_kind": "effective_completion",
-                    "benefit_metric": "task_result_check_passed"})
+                    "benefit_metric": FAITHFUL_G_METRIC})
         self.assertEqual(plan["benefit_convention"]["source"], "declared")
         sent = provider.requests[0]["benefit_convention"]
         self.assertEqual(sent["kind"], "effective_completion")
@@ -1864,26 +1844,26 @@ class TestSameConventionCompletionCompares(Base):
         h = self.make_harness(provider)
         prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
+                   "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': FAITHFUL_G_METRIC, 'unit': 'probability'})
         scores = score_strategy_outcome_predictions(
             [prediction],
             PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
                        benefit_kind="effective_completion",
-                       benefit_metric="task_result_check_passed"))
+                       benefit_metric=FAITHFUL_G_METRIC))
         # The candidate IS on the declared convention: it ranks.
         self.assertIsNotNone(scores[0].utility)
         # A DIFFERENT convention on the same decision does not.
         provider.payload = self._completion(0.5)
         quality = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
-                   "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
+                   "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': FAITHFUL_G_METRIC, 'unit': 'probability'})
         quality.benefit.kind = "solution_quality"
         quality.benefit.metric = "normalized_objective_gap"
         scores2 = score_strategy_outcome_predictions(
             [quality],
             PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
                        benefit_kind="effective_completion",
-                       benefit_metric="task_result_check_passed"))
+                       benefit_metric=FAITHFUL_G_METRIC))
         self.assertIsNone(scores2[0].utility)
         self.assertIn("benefit", scores2[0].incomparable)
 

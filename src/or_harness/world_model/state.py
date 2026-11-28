@@ -347,7 +347,7 @@ class BeliefSnapshot:
     #: Conditional capability evidence view, layered by admission state.
     coverage: Dict[str, Any] = field(default_factory=dict)
     frozen: bool = False
-    #: A hypothetical rollout's successor state (M2 preview). Hypothetical
+    #: Provenance flag on archived hypothetical snapshots. Hypothetical
     #: snapshots are excluded from real-state queries and from episode
     #: progress inheritance — an imagined outcome never contaminates the
     #: real state chain, the budget, or knowledge views.

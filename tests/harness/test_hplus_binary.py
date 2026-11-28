@@ -12,7 +12,7 @@ from test_rule_versions import RuleCase, SHORT_RULE, METHOD
 from or_harness.api import ORHarness
 from or_harness.cli import main
 from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
-from or_harness.world_model.conditions import get_value
+from or_harness.world_model.conditions import ContextExpired, get_value
 from or_harness.world_model.hplus import jobs, receipt_observation, signal_from_payload
 from or_harness.world_model.provider import WorldModelProvider
 
@@ -371,8 +371,14 @@ class TestBinaryHplus(BinaryCase):
         self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],1)
         # Freeze a prediction before the later independent checks exist.
         frozen,_=self.predict('before-validation',0)
-        context=self.h.get_prediction_context(frozen.trace.model_info['prediction_context_id'])
-        old_feedback=copy.deepcopy(context.hplus_feedback)
+        input_ref=frozen.trace.model_info['hplus']['input_ref']
+        frozen_input=copy.deepcopy(get_value(self.h.store,input_ref))
+        old_feedback=copy.deepcopy(frozen_input['hplus_feedback'])
+        self.assertEqual(old_feedback,self.provider.requests[-1]['prediction_context']['hplus_feedback'])
+        # Planning releases the runtime context; H+ keeps the actual input
+        # as immutable evidence for review and historical feedback.
+        with self.assertRaises(ContextExpired):
+            self.h.get_prediction_context(frozen.trace.model_info['prediction_context_id'])
         p,_=self.predict('independent',0)
         _,independent=self.solve('independent',use=entry_id,version=2,prediction_id=p.prediction_id)
         self.h.close_episode('independent','independent')
@@ -387,7 +393,8 @@ class TestBinaryHplus(BinaryCase):
         _,wrong=self.solve('independent-upper',lower=False,performed_method=upper_method)
         self.assertEqual(wrong.quality['objective'],92)
         self.assertEqual(wrong.execution_features['task_check']['state'],'failed')
-        self.assertEqual(context.provider_view()['hplus_feedback'],old_feedback)
+        self.assertEqual(get_value(self.h.store,input_ref),frozen_input)
+        self.assertEqual(get_value(self.h.store,input_ref)['hplus_feedback'],old_feedback)
         self.predict('covered-next',0)
         feedback=self.provider.requests[-1]['prediction_context']['hplus_feedback']
         row=next(e for e in feedback['settled_examples'] if e['prediction_id']==result['induction_receipt']['prediction_id'])

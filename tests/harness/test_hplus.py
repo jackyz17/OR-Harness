@@ -181,7 +181,7 @@ class TestSameCallAndShape(HPlusCase):
 class TestGainIsNotUtility(HPlusCase):
 
     def test_the_plan_carries_the_gain_as_read_only_info(self):
-        from or_harness.world_model.prediction import ActionSpec
+        from or_harness.world_model.contracts import ActionSpec
         plan = self.h.plan_next(
             TASK, "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
@@ -216,7 +216,7 @@ class TestGainIsNotUtility(HPlusCase):
         h = ORHarness(home=self.home, world_model=TwoCandidateProvider(),
                       embedding=self.backend)
         self.addCleanup(h.close)
-        from or_harness.world_model.prediction import ActionSpec
+        from or_harness.world_model.contracts import ActionSpec
         plan = h.plan_next(
             TASK, "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",

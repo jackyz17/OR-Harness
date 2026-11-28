@@ -38,6 +38,8 @@ from or_harness.world_model.actions import (
 )
 from or_harness.world_model.budget import BUDGET_STATUSES, BudgetLedger
 from or_harness.world_model.contracts import (
+    ActionSpec,
+    OutcomePrediction,
     BASELINE_KINDS,
     BENEFIT_KINDS,
     CAPABILITY_EVIDENCE_STATUSES,
@@ -46,7 +48,6 @@ from or_harness.world_model.contracts import (
     CONTRACT_VERSION,
     LEGACY_CONTRACT_VERSION,
     LEGACY_FIELD_MIGRATION,
-    LEGACY_MODE_TO_KIND,
     LEGACY_STATUS_TO_CONTRACT_STATUS,
     LEGACY_UNMAPPABLE,
     LEGACY_UNMAPPABLE_SCOPES,
@@ -75,7 +76,6 @@ from or_harness.world_model.contracts import (
     detect_payload_version,
     legacy_prediction_view,
     load_contract_payload,
-    prediction_kinds_for_mode,
     validate_capability_evidence,
     validate_strategy_outcome,
 )
@@ -107,7 +107,6 @@ from or_harness.world_model.context import (
     build_retrieval_view,
     capability_evidence_with_sources,
     capability_version,
-    cell_evidence_from_stats,
     classify_evidence,
     context_identity_problems,
     dedupe_evidence,
@@ -115,7 +114,6 @@ from or_harness.world_model.context import (
     evidence_identity,
     frozen_knowledge_available,
     frozen_knowledge_view,
-    knowledge_targets_from_context,
     math_attributes,
     memory_content_digest,
     resolve_effective_cir,
@@ -168,6 +166,8 @@ from or_harness.world_model.episode_closeout import (
 )
 
 __all__ = [
+    "ActionSpec",
+    "OutcomePrediction",
     # state / actions / budget substrate
     "ACTION_TYPES",
     "LEGACY_ACTION_TYPES",
@@ -239,7 +239,6 @@ __all__ = [
     "build_retrieval_view",
     "capability_evidence_with_sources",
     "capability_version",
-    "cell_evidence_from_stats",
     "classify_evidence",
     "context_identity_problems",
     "dedupe_evidence",
@@ -247,7 +246,6 @@ __all__ = [
     "evidence_identity",
     "frozen_knowledge_available",
     "frozen_knowledge_view",
-    "knowledge_targets_from_context",
     "math_attributes",
     "memory_content_digest",
     "resolve_effective_cir",
@@ -269,7 +267,6 @@ __all__ = [
     "CAPABILITY_SOURCES",
     "CAPABILITY_EVIDENCE_STATUSES",
     "LEGACY_FIELD_MIGRATION",
-    "LEGACY_MODE_TO_KIND",
     "LEGACY_STATUS_TO_CONTRACT_STATUS",
     "LEGACY_UNMAPPABLE",
     "LEGACY_UNMAPPABLE_SCOPES",
@@ -296,6 +293,5 @@ __all__ = [
     "legacy_prediction_view",
     "capability_evidence_from_legacy_harness_state",
     "contract_status_from_legacy_status",
-    "prediction_kinds_for_mode",
 ]
 

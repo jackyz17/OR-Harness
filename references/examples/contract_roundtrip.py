@@ -51,7 +51,7 @@ from or_harness.world_model.execution_window import (  # noqa: E402
     build_execution_window,
     window_identity_problems,
 )
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec  # noqa: E402
 
 # A task with NO 'model' field: a normal state, not a defect.
 TASK = {

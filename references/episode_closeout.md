@@ -163,6 +163,31 @@ For `wm-c-window/1`, supply `or-host-usage/1` at attempt scope or declare `scope
 
 New prediction contexts carry the selected publication under `strategy_outcome_calibration`. Read `reminders` for risk and interval diagnostics and `groups` for global benefit and cost errors. See [provider feedback](world_model_contract.md#2-published-prediction-feedback) for request filtering.
 
+The paired-feedback publication also stores an internal `observation_facts`
+projection (`wm-observation-facts/1`) for all eligible evaluations in the same
+closed-episode calibration window. Its facts retain their predicting model and
+availability time. The shared history pool joins these facts by execution ID;
+the detailed `pairs` list keeps its existing character budget and display
+limits. The full projection is not sent to the predictor: G/C/R still rerank
+only the existing shared pool and show at most ten cases each, under the normal
+request and material budgets.
+
+G/R labels stay with the bound execution. A remaining-task C observation has
+one canonical carrier; recalling another execution from that window does not
+move the cost onto it. Global G/C diagnostics use the eligible, model-filtered,
+pre-cutoff facts across the calibration window, rather than the budget-selected
+detailed pairs. Their sample range can therefore grow when detailed feedback
+is truncated; the calibration window and observation eligibility stay the same.
+Unknowns and cost lower bounds remain distinct from complete observations.
+
+This is independent world-model calibration state, not Execution Evidence or
+Strategic Knowledge. Closeout can update it while recorded memory and retrieval
+indices remain frozen, using the actual execution/host facts retained for the
+task. Older publications without the projection can supply only their saved
+pairs until a later publication; reads do not rebuild history. Saved prediction
+inputs keep their frozen facts, and historical reconstruction never fills them
+from today's publication.
+
 The paired history a request actually sends is a provider-only compact view (`provider_view_version: wm-pairs-provider/1`) derived from the stored block on read. It keeps each pair's conditions, recorded plan/actual difference, original prediction, real observation, error, recorded attribution and every G/C/R metric/rule/eligibility/unknown fact, and names a `detail_ref` for reduced or dropped detail. The stored block, `same_task_comparisons` selection and the calibration population are unchanged. History feedback has its own ceiling (`OR_HARNESS_HISTORY_FEEDBACK_CHARS`); it is reduced per row before any case is dropped, and dropped cases are listed under `dropped_pair_refs`. See [the stage-1 plan](../docs/world_model/r16_feedback_budget_plan.md) for the measured before/after sizes and the whole-request budget rules.
 
 `conditional_g` groups sourced observations by metric, rule, scope, structure, model, observed solving conditions, and declared budget. Real execution facts can contribute pass/fail/unknown counts when G was omitted. Each execution unit uses the earliest attributable prediction. Its Brier score and probability bin require both a numeric G and a known label. The global calibration remains a diagnostic of past error, never a candidate correction coefficient.

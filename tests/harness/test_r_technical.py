@@ -11,7 +11,7 @@ from or_harness.api import ORHarness
 from or_harness.execution.executor import SafePythonExecutor
 from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
 from or_harness.world_model.contracts import R_OBSERVATION_VERSION
-from or_harness.world_model.prediction import ActionSpec
+from or_harness.world_model.contracts import ActionSpec
 from tests.harness.g_fixtures import GCase, GProvider, G_PAYLOAD, COUPLED
 
 

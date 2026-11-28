@@ -28,7 +28,7 @@ from tests.harness.helpers import HarnessTestCase  # noqa: E402
 
 from or_harness.api import ORHarness  # noqa: E402
 from or_harness.core.storage import StorageError  # noqa: E402
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec  # noqa: E402
 from or_harness.world_model.provider import WorldModelProvider  # noqa: E402
 
 TASK = {"task_id": "t1", "family": "routing", "description": "toy"}
@@ -109,99 +109,20 @@ class ScriptableProvider(WorldModelProvider):
                 "error": None, "latency_s": 0.01}
 
 
-class TestM2Closeout(HarnessTestCase):
-    """F1-F3 regressions: identity, replay, strict binding."""
-
-    def setUp(self):
-        super().setUp()
-        # The legacy M2 API is exercised THROUGH its Python entry points:
-        # the CLI/agent surface is the wm-so/1 channel, but the stored-payload
-        # reader and the knowledge-channel verdicts still go through the
-        # legacy objects, so their identity discipline is still tested.
-        self.h = ORHarness(home=self.home,
-                           world_model=ScriptableProvider(
-                               per_strategy={"S01": {"quality": 0.8}}))
-        self.addCleanup(self.h.close)
-
-    def test_prediction_episode_identity_no_budget_leak(self):
-        """F1: a prediction made under ep1 must not appear in ep2's budget."""
-        spec = _spec("S01", episode_id=None)  # caller forgot the episode
-        prediction = self.h.predict_outcome(TASK, spec, "ep1")
-        # Identity reconciled: the spec now carries ep1.
-        self.assertEqual(prediction.action_spec.episode_id, "ep1")
-        self.assertEqual(prediction.action_spec.task_id, "t1")
-        ep2 = self.h.budget_view("t1", "ep2")
-        self.assertEqual(ep2["consumption"]["prediction_call_costs"], [])
-        ep1 = self.h.budget_view("t1", "ep1")
-        self.assertEqual(len(ep1["consumption"]["prediction_call_costs"]), 1)
-
-    def test_unattributable_prediction_reported_not_charged(self):
-        """F1: a legacy prediction with episode=None is reported separately,
-        never wildcard-charged to every episode."""
-        spec = _spec("S01", episode_id=None)
-        prediction = self.h.predictions.predict_outcome(
-            TASK, spec, self.h.snapshot(TASK, None))  # episode-less call
-        self.assertIsNone(prediction.action_spec.episode_id)
-        view = self.h.budget_view("t1", "ep1")
-        self.assertEqual(view["consumption"]["prediction_call_costs"], [])
-        unattributed = view["consumption"]["unattributed_prediction_costs"]
-        self.assertEqual(len(unattributed), 1)
-        self.assertEqual(unattributed[0]["prediction_id"],
-                         prediction.prediction_id)
-
-    def test_end_action_replay_preserves_amended_cost(self):
-        """F2: begin -> predict(parent) -> end(None) -> end(None) replays
-        idempotently instead of conflicting on the amended cost."""
-        begun = self.h.begin_action("select_strategy", TASK, "ep1")
-        action_id = begun["action_id"]
-        self.h.predict_outcome(TASK, _spec("S01"), "ep1",
-                               parent_action_id=action_id)
-        first = self.h.end_action(action_id, outcome={"note": "done"})
-        second = self.h.end_action(action_id, outcome={"note": "done"})
-        self.assertEqual(first["action_id"], second["action_id"])
-        record = self.h.actions.get(action_id)
-        self.assertGreater(record.cost.llm_tokens, 0)  # amended cost kept
-        # A DIFFERENT outcome still conflicts.
-        with self.assertRaises(StorageError):
-            self.h.end_action(action_id, outcome={"note": "changed"})
-
-    def test_bind_scope_both_directions(self):
-        """F3: an attempt-scope prediction is never scored against a
-        task-scope record, and vice versa (both directions)."""
-        spec = _spec("S01")
-        spec.measurement_scope = "task"
-        prediction = self.h.predict_outcome(TASK, spec, "ep1")
-        record = self.make_record(task_id="t1")
-        record.measurement_scope = "attempt"
-        self.h.bank.append(record)
-        action = self.h.actions.begin_action(
-            "execute_strategy", "t1", "ep1",
-            pre_snapshot=self.h.snapshot(TASK, "ep1"),
-            params={"strategy_id": "S01"})
-        self.h.actions.end_action(
-            action.action_id, status="completed",
-            outcome={"execution_status": "optimal"},
-            cost=record.cost, linked_execution_id=record.execution_id,
-            rollup="reference")
-        bound = self.h.bind_outcome(prediction.prediction_id,
-                                    action.action_id)
-        self.assertIn("measurement_scope", bound.binding_mismatch)
-
-
 class TestPlanning(HarnessTestCase):
     """Candidates, one shared context, conservative comparison, the
     suggestion/choice split, and honest failure reporting."""
 
     def test_suggestion_and_cost_attribution(self):
         provider = ScriptableProvider(per_strategy={
-            "S01": {"quality": 0.9, "cost": {"solver_runtime_s": 10.0}},
-            "S02": {"quality": 0.6, "cost": {"solver_runtime_s": 1.0}},
+            "S01": {"quality": 0.9, "cost": {"remaining_latency_s": 10.0}},
+            "S02": {"quality": 0.6, "cost": {"remaining_latency_s": 1.0}},
         })
         h = ORHarness(home=self.home, world_model=provider)
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"remaining_latency_s":100.0,"output_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "ok")
         self.assertEqual(plan["model_calls_made"], 2)
         self.assertIsNotNone(plan["suggested"])
@@ -278,7 +199,7 @@ class TestPlanning(HarnessTestCase):
         decoded=plan.to_dict()["paths"][0]
         for key,value in raw["paths"][0].items():
             self.assertEqual(decoded[key],value)
-        self.assertEqual(plan.paths[0].steps[0].prediction_id,"pr_old")
+        self.assertEqual(plan.paths[0]["steps"][0]["prediction_id"],"pr_old")
 
     def test_choice_deviation_and_rejection(self):
         provider = ScriptableProvider(per_strategy={
@@ -298,10 +219,9 @@ class TestPlanning(HarnessTestCase):
         self.assertTrue(rejected["rejected"])
 
     def test_rejection_preserves_earlier_selection(self):
-        """R3 regression: choosing S01, then receiving an S04 suggestion
-        and REJECTING it must leave X.selected_plan = S01. The rejection
-        is recorded as its own queryable event, never as a selection
-        overwrite."""
+        """Rejecting a decision preserves its already-recorded selection
+        fact and records the rejection as a separate event. A new plan has
+        its own automatic selection anchor before optional rejection."""
         provider = ScriptableProvider(per_strategy={
             "S01": {"quality": 0.9}, "S04": {"quality": 0.85}})
         h = ORHarness(home=self.home, world_model=provider)
@@ -320,7 +240,8 @@ class TestPlanning(HarnessTestCase):
         snap2 = h.snapshot(TASK, "ep1")
         selected_after = (snap2.task_progress.get("selected_plan") or {}) \
             .get("value", {}).get("selected", {})
-        self.assertEqual(selected_after.get("strategy_id"), "S01")
+        self.assertEqual(selected_after.get("strategy_id"), "S04")
+        self.assertTrue(h.actions.get(plan2["decision_action_id"]).outcome['selection_rejected'])
         rejection = (snap2.task_progress.get("last_rejected_suggestion")
                      or {})
         self.assertEqual(rejection.get("provenance"), "agent_reported")

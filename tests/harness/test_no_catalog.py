@@ -32,7 +32,7 @@ from helpers import HarnessTestCase
 from or_harness.api import ORHarness
 from or_harness.core.schema import CostVector
 from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
-from or_harness.world_model.prediction import ActionSpec
+from or_harness.world_model.contracts import ActionSpec
 
 REPO = Path(__file__).resolve().parents[2]
 

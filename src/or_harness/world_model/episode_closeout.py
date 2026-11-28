@@ -4544,10 +4544,10 @@ def paired_feedback_for_context(harness, *,
                                 ) -> Dict[str, Any]:
     """The paired-feedback block a NEW prediction context reads.
 
-    A SINGLE-ROW read of the last published block — no window scan, no
-    history rebuild. This mirrors :func:`calibration_summary_for_context`:
-    the DERIVATION is O(window) and happens at publish time, so a prediction
-    read is O(1) however long the history is. When nothing has been
+    A SINGLE-ROW lookup of the last published block — no database window scan,
+    no history rebuild. This mirrors :func:`calibration_summary_for_context`:
+    derivation happens at publish time; parsing and joining the compact facts
+    is bounded by that publication's calibration window. When nothing has been
     published the block is EMPTY with a note recording the gap, rather than
     scanning the window to fill it (which would make a read path write).
 
@@ -4556,6 +4556,9 @@ def paired_feedback_for_context(harness, *,
     predictions are not evidence about this one. ``None`` means no filter
     was applied (and the block says so). The withheld count is reported, so
     a withheld pair is distinguishable from an absent one.
+
+    The internal observation projection is filtered by each fact's own model
+    identity as well. Its window-wide rows are not detailed display cases.
     """
     row = harness.store.conn.execute(
         "SELECT value FROM meta WHERE key=?",
@@ -4603,6 +4606,12 @@ def _filter_pairs_by_model(block: Dict[str, Any],
     current identity is itself unknown.
     """
     filtered = copy.deepcopy(block)
+    facts = filtered.get("observation_facts")
+    if isinstance(facts, dict):
+        rows = facts.get("rows") or []
+        facts["rows"] = [row for row in rows if isinstance(row, dict)
+                         and str(row.get("model_identity") or "(unknown)") == str(model_identity)]
+        facts["n_withheld"] = len(rows) - len(facts["rows"])
     # r12: the model identity is now a BLOCK-level field (shared by every
     # pair), so filtering checks the block first, then each pair for a
     # legacy block that still carries it per row.
@@ -5238,6 +5247,10 @@ def build_paired_feedback(
 
     It returns a block with an empty ``pairs`` list and a note when there is
     nothing to show (no closed episodes).
+
+    ``observation_facts`` preserves a compact internal projection of every
+    eligible row before the detailed display budget is applied. It shares this
+    publication's window and live derivation, not a separate retrieval channel.
     """
     budget = budget_chars if budget_chars is not None else \
         _paired_feedback_budget()
@@ -5255,6 +5268,13 @@ def build_paired_feedback(
     derived = derived or _derive_window_evaluations(harness, evaluations,
                                                     window)
     rows: List[Dict[str, Any]] = []
+    observation_rows: List[Dict[str, Any]] = []
+    # Publication-scoped facts, independent of the detailed display budget.
+    # The timestamp also bounds live rederivations: today's corrected facts
+    # must never be used to fill an older prediction's input.
+    facts_available_at = time.time()
+    closed_at = {(str(w["task_id"]), str(w.get("episode_id") or "")):
+                 float(w["closed_at"]) for w in window}
     n_total = 0
     for stored_evaluation in evaluations:
         evaluation, _ = derived["by_id"][stored_evaluation.evaluation_id]
@@ -5286,6 +5306,10 @@ def build_paired_feedback(
                     row["g_observed_fact"]["label_eligibility"] = "attributable"
                     row["g_observed_fact"]["note"] = "real execution fact; the historical prediction/error retains its original metric"
         n_total += 1
+        observation_rows.append(_observation_fact_row(row, available_at=max(
+            facts_available_at,
+            closed_at[(str(evaluation.task_id), str(evaluation.episode_id or ""))],
+            float(stored_evaluation.created_at or 0.0))))
         rows.append((stored_evaluation, evaluation, row))
 
     # LABELS-FIRST ordering. A pair with an OBSERVED G label (a real failure
@@ -5364,6 +5388,11 @@ def build_paired_feedback(
         # ``pair_ref`` is the identity a selection resolves.
         "selection_meta": _selection_meta(list(enumerate(included))),
         "pairs": included,
+        "observation_facts": {
+            "version": "wm-observation-facts/1",
+            "available_at": facts_available_at,
+            "rows": observation_rows,
+        },
         "same_task_comparisons": same_task_comparisons(included),
     }
     if omitted:
@@ -5378,6 +5407,44 @@ def build_paired_feedback(
                        "in the window yet: a cold start carries no paired "
                        "feedback (this is absent, not 'nothing matched')")
     return out
+
+
+def _observation_fact_row(row: Dict[str, Any], *, available_at: float
+                          ) -> Dict[str, Any]:
+    """Window-wide G/C/R facts in the existing pair vocabulary, without prose.
+
+    These internal rows feed the shared execution join and global statistics;
+    they are never a display list or a new memory bank. Keep the qualification,
+    conditions and attribution fields consumed by the existing signal rules.
+    """
+    keys = ("evaluation_id", "prediction_id", "task_id", "episode_id", "scope",
+            "model_identity", "observation_rule_version", "execution_ids",
+            "execution_conditions", "benefit", "g_observed_fact", "task_check",
+            "cost_observed_fact", "cost_measured", "risk_actual", "risk_predicted",
+            "failure_classes")
+    fact = {k: copy.deepcopy(row[k]) for k in keys if k in row}
+    fact["available_at"] = available_at
+    benefit = fact.get("benefit") or {}
+    for key in ("notes", "interval_kind", "interval_coverage"):
+        benefit.pop(key, None)
+    conditions = fact.get("execution_conditions")
+    if isinstance(conditions, dict):
+        fact["execution_conditions"] = {k: conditions[k] for k in (
+            "execution_id", "comparison_key") if k in conditions}
+    observation = row.get("implementation_observation") or {}
+    if observation:
+        fact["implementation_observation"] = {k: copy.deepcopy(observation[k])
+            for k in ("execution_id", "observation_rule_version") if k in observation}
+    cost = fact.get("cost_observed_fact") or {}
+    if cost:
+        cost = {k: cost[k] for k in ("values", "values_not_scored", "conditions",
+            "lower_bounds", "dimension_observation_rule_versions", "source_refs") if k in cost}
+        fact["cost_observed_fact"] = cost
+    if isinstance(cost.get("conditions"), dict):
+        cost["conditions"] = {k: v for k, v in cost["conditions"].items() if k in (
+            "scope", "window_coverage", "family", "structure", "solver_conditions",
+            "actual_solving_conditions", "reusable_artifacts", "retry_observation_rule_version")}
+    return fact
 
 
 def _is_material_pair(row: Any) -> bool:

@@ -11,7 +11,10 @@ OR-Harness studies how an agent can adapt its strategies across a stream of opti
 | Variable | Meaning |
 |---|---|
 | **P** | The current externally supplied problem and its task context |
-| **X = (Q, C, R)** | Solution quality, execution cost, and one-attempt technical risk |
+| **G** | Effective original-task completion and sufficient verification by the current Agent, given faithful execution |
+| **C** | Resources expected from the decision point through task completion |
+| **R** | Implementation and runtime technical risk under each event's declared window |
+| **H+** | Frozen binary induction switch, separate from solving utility |
 | **H** | The capability available through memory, prediction, planning, retrieval, and tools |
 
 Changes in demand, capacity, or constraints arrive as new tasks. For the current task, the world model forecasts the consequences of the agent's candidate strategies.

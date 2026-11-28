@@ -76,50 +76,6 @@ class TestEvidenceScope(_Case):
         self.assertEqual(len(self.h.stats.evidence(profile, "S01")), 2)
 
 
-class TestBindOutcomeByExecutionId(_Case):
-    """Defect: `bind-outcome` required the action id, so the natural
-    predict -> execute -> bind loop failed whenever the caller only had the
-    execution id `orx execute` prints (and the two sides' episode ids did
-    not line up). Binding by execution id must resolve the action."""
-
-    def _prediction_and_execution(self, pred_episode=None, action_episode=None):
-        from or_harness.world_model.prediction import ActionSpec
-        task = {"task_id": "t1", "family": "routing", "description": "route"}
-        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
-                          strategy_id="S01")
-        prediction = self.h.predict_outcome(task, spec, pred_episode)
-        pre = self.h.snapshot(task, action_episode)
-        action = self.h.actions.begin_action(
-            "execute_strategy", "t1", action_episode, pre_snapshot=pre,
-            params={"strategy_id": "S01", "solver": "highs"})
-        execution_id = "ex_under_test"
-        self.h.actions.end_action(action.action_id, status="completed",
-                                  linked_execution_id=execution_id,
-                                  rollup="reference")
-        return prediction, action, execution_id
-
-    def test_binding_by_execution_id_resolves_the_action(self):
-        prediction, action, execution_id = self._prediction_and_execution(
-            pred_episode=None, action_episode="EP_workforce_v2_001")
-        bound = self.h.bind_outcome(prediction.prediction_id, execution_id)
-        self.assertEqual(bound.bound_action_id, action.action_id)
-        # No episode on the prediction side means no episode mismatch is
-        # invented — an unknown identity is not a wrong one.
-        self.assertIsNone(bound.binding_mismatch)
-
-    def test_binding_by_action_id_still_works(self):
-        prediction, action, _ = self._prediction_and_execution()
-        bound = self.h.bind_outcome(prediction.prediction_id, action.action_id)
-        self.assertEqual(bound.bound_action_id, action.action_id)
-
-    def test_unknown_id_names_both_possibilities(self):
-        from or_harness.core.storage import StorageError
-        prediction, _, _ = self._prediction_and_execution()
-        with self.assertRaises(StorageError) as ctx:
-            self.h.bind_outcome(prediction.prediction_id, "ex_nope")
-        self.assertIn("execution_id", str(ctx.exception))
-
-
 class TestTaskTextField(_Case):
     """Defect: a task carrying its problem statement in `text` (the natural
     key) was reported as having NO text, so vector recall silently degraded

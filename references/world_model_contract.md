@@ -2,6 +2,8 @@
 
 Use this reference to read a `plan-next` forecast and inspect the evidence behind it. See [strategy selection and execution binding](strategy_outcome.md) for how the planner scores and acts on the forecast.
 
+New predictions use `wm-so/1`. `inspect --bank predictions` reads archived M2 and retired knowledge-evolution records directly, without running their former prediction or feedback services.
+
 ## 1. Prediction inputs
 
 `plan-next` builds one frozen `wm-context/4` context for a decision and shares it across the candidates. Each `wm-so/1` request supplies that context's provider view, the candidate's method, solver, configuration and scope, and the decision's benefit convention and cost window.
@@ -23,6 +25,13 @@ Use `orx context --task task.json --episode E` to inspect a separately assembled
 ## 2. Published prediction feedback
 
 A new decision can draw on published calibration and completed reviews available before its cutoff. It freezes the selected evidence with the context. Per-candidate request selection further matches that evidence to the candidate's metric, scope and execution conditions.
+
+Historical G/C/R facts join recalled executions through the publication's
+internal, window-wide `observation_facts` projection, independently of the
+detailed paired-feedback display budget. Only the selected cases and scalar
+global diagnostics enter the request. This calibration source updates separately
+from the two memory banks, including when those banks remain frozen; legacy
+publications and frozen inputs are read as saved, without filling missing facts.
 
 | Request block | What the model can use |
 |---|---|

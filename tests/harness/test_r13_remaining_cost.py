@@ -267,7 +267,7 @@ class TestHostCostWindow(CCase):
         self.assertNotIn("latency_s", per_dim)
 
     def test_two_candidates_use_the_recorded_shared_decision_anchor(self):
-        from or_harness.world_model.prediction import ActionSpec
+        from or_harness.world_model.contracts import ActionSpec
         self.seed_host("shared")
         self.provider.payload["cost"] = {"tool_calls": 8}
         plan = self.h.plan_next(self.task, "shared", candidates=[

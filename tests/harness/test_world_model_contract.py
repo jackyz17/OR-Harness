@@ -55,7 +55,6 @@ from or_harness.world_model.contracts import (
     detect_payload_version,
     legacy_prediction_view,
     load_contract_payload,
-    prediction_kinds_for_mode,
     validate_capability_evidence,
     validate_strategy_outcome,
 )
@@ -67,7 +66,7 @@ from or_harness.world_model.execution_window import (  # noqa: E402
     window_id_for,
     window_identity_problems,
 )
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec  # noqa: E402
 from or_harness.world_model.provider import (  # noqa: E402
     NotConfiguredProvider,
     WorldModelProvider,
@@ -278,13 +277,6 @@ class TestValidationRules(HarnessTestCase):
         with self.assertRaises(ValueError):
             CandidateRef(action_type="execute_strategy", scope="task_total")
 
-    def test_prediction_kinds_for_legacy_modes(self):
-        self.assertEqual(prediction_kinds_for_mode("x-b-only"),
-                         ("strategy_outcome",))
-        self.assertEqual(prediction_kinds_for_mode("h-x-b-value"),
-                         ("strategy_outcome",))
-        with self.assertRaises(ValueError):
-            prediction_kinds_for_mode("nonsense")
 
 
 class TestCapabilityEvidenceNoScore(HarnessTestCase):
@@ -669,13 +661,16 @@ class TestApiContracts(HarnessTestCase):
         for sid in before:
             self.assertEqual(before[sid].n, after[sid].n)
 
-    def test_legacy_prediction_path_is_unchanged(self):
-        """The old OutcomePrediction path still returns not_configured."""
+    def test_legacy_predictions_are_readable_without_a_generation_service(self):
+        """Archived data does not require the retired runtime service."""
         h = self._harness()
         spec = ActionSpec(action_type="execute_strategy", task_id="t1",
                           strategy_id="S01")
-        prediction = h.predict_outcome(TASK, spec, "ep1")
-        self.assertEqual(prediction.status, "not_configured")
+        from decision_fixtures import seed_legacy_prediction
+        prediction = seed_legacy_prediction(h, TASK, "ep1")
+        self.assertFalse(hasattr(h, "predict_outcome"))
+        self.assertFalse(hasattr(h, "predictions"))
+        self.assertEqual(prediction.status, "valid")
         # And it is NOT reported as a current-contract prediction.
         self.assertEqual(detect_payload_version(prediction.to_dict()),
                          LEGACY_CONTRACT_VERSION)

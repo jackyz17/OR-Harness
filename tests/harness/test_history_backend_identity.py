@@ -30,7 +30,7 @@ from or_harness.world_model.history_retrieval import (
     build_query_views,
     history_config,
 )
-from or_harness.world_model.prediction import ActionSpec
+from or_harness.world_model.contracts import ActionSpec
 from g_fixtures import COUPLED, GProvider
 
 

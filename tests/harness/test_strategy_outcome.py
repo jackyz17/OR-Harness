@@ -43,7 +43,7 @@ from or_harness.strategy.embedding_index import (  # noqa: E402
 from or_harness.world_model.contracts import (  # noqa: E402
     validate_strategy_outcome,
 )
-from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.contracts import ActionSpec  # noqa: E402
 from or_harness.world_model.provider import WorldModelProvider  # noqa: E402
 
 EMBEDDING_ENV_KEYS = ("OR_EMBEDDING_BACKEND", "OR_EMBEDDING_BASE_URL",
@@ -213,7 +213,7 @@ class TestUnifiedSolving(HarnessTestCase):
         self.assertEqual(prediction.trace.model_info['decision_action_id'],plan['decision_action_id'])
         self.assertNotIn('charged_to_parent_action',prediction.trace.model_info)
         self.assertIsNone(plan['planning_cost'])
-        self.assertNotIn('selected_plan',self.h._episode_progress('unified','E'))
+        self.assertEqual(self.h._episode_progress('unified','E')['selected_plan']['value']['prediction_id'],p)
         self.assertIsNotNone(p)
         self.assertAlmostEqual(plan['selected_score']['utility'],.8-math.log1p(3)/math.log1p(30)-.2,places=6)
         decision=self.h.actions.get(plan['decision_action_id'])

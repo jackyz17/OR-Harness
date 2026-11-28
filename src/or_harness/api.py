@@ -104,22 +104,19 @@ from or_harness.world_model.context import (
     build_retrieval_view,
     capability_evidence_with_sources,
     capability_version,
-    cell_evidence_from_stats,
     context_identity_problems,
     effective_input_version,
     evidence_identity,
     frozen_knowledge_available,
     frozen_knowledge_view,
-    knowledge_targets_from_context,
     memory_content_digest,
     problem_identity_version,
     resolve_effective_cir,
     retrieval_reuse_problems,
-    snapshot_from_context,
     structure_problems,
     task_with_effective_cir,
 )
-from or_harness.world_model.prediction import (
+from or_harness.world_model.contracts import (
     ActionSpec,
     OutcomePrediction,
 )
@@ -130,7 +127,6 @@ from or_harness.world_model.provider import (
     NotConfiguredProvider,
     WorldModelProvider,
 )
-from or_harness.world_model.service import PredictionService
 from or_harness.world_model.state import (
     MAINTENANCE_TASK_ID,
     BeliefSnapshot,
@@ -145,15 +141,6 @@ from or_harness.world_model.state import (
 #: outside the entry's interval by more than this fraction of the interval
 #: width (relative slack keeps wide honest intervals meaningful).
 PREDICTION_HIT_SLACK = 0.15
-
-#: The learning-operation types this build can really CARRY OUT through an
-#: existing path. A candidate of another type may be predicted, compared and
-#: deferred, but accepting it must NOT quietly run a different operation:
-#: the binding would then attest to an operation that never happened.
-CAPABILITY_EXECUTABLE_OPERATIONS = ("induce", "revise", "retire")
-#: M6 experiment modes (see ORHarness.__init__).
-PREDICTION_MODES = ("x-b-only", "h-x-b", "h-x-b-value")
-
 
 def _capability_gain_view(prediction: Any) -> Optional[Dict[str, Any]]:
     """The prediction's capability-gain block as READ-ONLY explanatory info.
@@ -216,14 +203,12 @@ def _candidate_reference(spec: Dict[str, Any]) -> tuple:
 class ORHarness:
     def __init__(self, home: Optional[str] = None, *,
                  alpha: float = 1.0, beta: float = 1.0, gamma: float = 1.0,
-                 delta: float = 0.0,
                  cost_weights: Optional[Dict[str, float]] = None,
                  executor: Optional[SafePythonExecutor] = None,
                  world_model: Optional[WorldModelProvider] = None,
                  embedding: Optional[EmbeddingBackend] = None,
                  planning: bool = True,
                  plan_mode: str = "advise",
-                 prediction_mode: str = "h-x-b-value",
                  execution_context: Optional[Dict[str, Any]] = None,
                  induction_mode: Optional[str] = None):
         # The caller can declare the solving phase and interface before its
@@ -271,17 +256,8 @@ class ORHarness:
         # facilities — NOT a third knowledge bank).
         self.actions = ActionLog(self.store)
         self.budget = BudgetLedger(self.bank, self.actions)
-        # World-model M2: structured outcome predictions (shadow mode).
-        # The provider is EXPLICITLY injected by the caller — never a
-        # hidden default model, never an implicit network call. Without one,
-        # predict_outcome returns not_configured and every existing path
-        # is untouched.
+        # One explicitly configured provider for current G/C/R/H+ predictions.
         self.world_model = world_model or NotConfiguredProvider()
-        self.predictions = PredictionService(self.store, self.world_model)
-        # World-model M3 (this round): the strategy-outcome prediction
-        # SERVICE under the wm-so/1 protocol. Same provider, same explicit
-        # injection discipline — the service is what turns a frozen context
-        # + a candidate into a StrategyOutcomePrediction.
         from or_harness.world_model.strategy_prediction import (
             StrategyOutcomeService,
         )
@@ -289,8 +265,7 @@ class ORHarness:
             self.store, self.world_model)
         # The shared prediction freezes the binary H+ signal through this harness.
         self.strategy_predictions.harness = self
-        # World-model M3: bounded planning. ``planning=False`` restores the
-        # exact M2 behaviour (plan_next refuses with status=disabled);
+        # Bounded planning. ``planning=False`` explicitly disables plan_next;
         # ``plan_mode`` is "advise" (a suggestion is produced for the agent
         # to accept or reject) or "shadow" (paths are evaluated and
         # recorded but no suggestion field is emitted — observation only).
@@ -303,26 +278,6 @@ class ORHarness:
         # planning call: a correctable input error reported back with the
         # plan, never a doomed model call. Reset at the start of each
         # ``plan_next``.
-        # World-model M4: offline maintenance assessment.
-        # World-model M6: what the world model is asked to predict, and
-        # whether a knowledge term may influence the choice.
-        #
-        #   x-b-only     predict X/B only: no knowledge targets are
-        #                proposed and knowledge_changes are not requested
-        #   h-x-b        predict H too (targets proposed, changes kept and
-        #                evaluated) but the knowledge term is forced off
-        #   h-x-b-value  the knowledge term is live at the configured delta
-        #
-        # ``delta`` DEFAULTS TO 0.0 on purpose: an unmodified call must
-        # score exactly as it did before the term existed. A positive delta
-        # is a deliberate experimental choice pulled from this instance's
-        # own configuration, never inherited implicitly.
-        if prediction_mode not in PREDICTION_MODES:
-            raise ValueError(
-                f"prediction_mode must be one of {PREDICTION_MODES}")
-        self.prediction_mode = prediction_mode
-        self.delta = float(delta)
-        self.selector.delta = self.delta
         # Retrieval embedding backend: EXPLICITLY injected by the caller
         # (same discipline as ``world_model``), else read from the
         # OR_EMBEDDING_* environment, else None. None is a first-class
@@ -362,7 +317,7 @@ class ORHarness:
         artifact, current solution, verification evidence...). Hypothetical
         snapshots NEVER contribute — an imagined outcome is not progress.
 
-        Task boundary (M6): progress is inherited only from snapshots taken
+        Task boundary: progress is inherited only from snapshots taken
         under the SAME task version. The caller passes the current
         ``task_digest``; a snapshot whose recorded ``problem_state``
         digest differs describes a DIFFERENT task context and must not be
@@ -749,7 +704,7 @@ class ORHarness:
           CURRENT information and freezes it. A snapshot the CALLER supplies
           is the frozen X/B to gather around (``plan_next`` passes its root
           snapshot this way so the whole comparison shares one state); the
-          retrieval, the knowledge view, the reliability table and the cell
+          retrieval, the knowledge view and the cell
           evidence are all read NOW and frozen.
         - ``historical=True`` (the default when an EXTERNAL snapshot is
           supplied without an explicit flag): the snapshot is an HISTORICAL
@@ -916,7 +871,7 @@ class ORHarness:
                     float(getattr(snapshot, "created_at", 0.0) or 0.0))
 
         if historical:
-            # Knowledge and reliability come from the SNAPSHOT's saved
+            # Knowledge comes from the SNAPSHOT's saved
             # content, and a gap is reported as missing.
             if frozen_knowledge_available(snapshot):
                 knowledge = frozen_knowledge_view(snapshot)
@@ -931,17 +886,11 @@ class ORHarness:
                     "MISSING: this snapshot carries no frozen knowledge "
                     "view, so the knowledge component is EMPTY BY ABSENCE — "
                     "today's bank was NOT consulted to fill the gap")
-            reliability = {}
-            history_notes.append(
-                "MISSING: the measured prediction reliability was not saved "
-                "with this snapshot, so none is sent (today's prediction log "
-                "was NOT consulted)")
         else:
             knowledge = verified_knowledge_view(profile, self.sbank)
-            reliability = self.prediction_reliability_table()
         # M4: the published EXPERIENCE calibration of the strategy-outcome
         # service (closed episodes only). Frozen into the context as its
-        # own block — separate from the legacy knowledge reliability, and
+        # own block,
         # carrying the summary's CONTENT (groups, counts, sources) so a
         # later reader of the context sees what the model was told, not
         # just an id. An active episode never sees its own not-yet-closed
@@ -1025,7 +974,6 @@ class ORHarness:
             tools=(getattr(snapshot, "harness_state", None) or {}).get(
                 "tool_config"),
             retrieval_view=retrieval_view,
-            reliability=reliability,
             recorded_choices=recorded_choices)
         if historical:
             constraints = self._historical_constraints_view(snapshot)
@@ -1035,8 +983,7 @@ class ORHarness:
         version_block = capability_version(
             harness_config={
                 "alpha": self.alpha, "beta": self.beta,
-                "gamma": self.gamma, "delta": self.delta,
-                "prediction_mode": self.prediction_mode,
+                "gamma": self.gamma,
                 "plan_mode": self.plan_mode,
             },
             provider=self.world_model.describe(),
@@ -1046,39 +993,9 @@ class ORHarness:
                 knowledge=knowledge, retrieval=retrieval_view,
                 entries=([] if historical
                          else self.sbank.list(include_dormant=True))))
-        # Freeze the structural proposal set and the cell evidence the
-        # proposal was derived from. Both come from live banks, so a reused
-        # context must carry them rather than re-derive them.
         spec_list = ([context_spec] if context_spec is not None
                      else list(candidates or []))
-        frozen_targets: List[Any] = []
-        if historical:
-            # The knowledge-target heuristic reads the cell's REAL evidence
-            # records (``stats.evidence``) — a live bank read. A historical
-            # reconstruction may not consult today's records: an execution
-            # recorded after the snapshot would change the proposal. No
-            # proposal was SAVED with the snapshot, so none is made and the
-            # gap is reported.
-            history_notes.append(
-                "MISSING: the structural knowledge-target proposal was not "
-                "saved with this snapshot, and re-deriving it would read "
-                "today's evidence records, so no target is proposed for a "
-                "historical reconstruction")
-        else:
-            for spec in spec_list:
-                frozen_targets.extend(self.knowledge_targets(snapshot, spec))
         strategies = [s.strategy_id for s in spec_list if s.strategy_id]
-        if historical:
-            # Cell statistics describe the bank as it is NOW, so they are not
-            # part of a reconstruction. The gap is recorded instead.
-            cell_evidence: Dict[str, Any] = {}
-            history_notes.append(
-                "MISSING: per-cell evidence counts were not saved with this "
-                "snapshot, so the reconstruction carries none (today's "
-                "statistics were NOT consulted)")
-        else:
-            cell_evidence = cell_evidence_from_stats(self.stats, profile,
-                                                     strategies)
         # ONE frozen historical-execution retrieval for this decision. It is
         # gathered NOW for a current decision and bounded to the decision
         # moment (the root snapshot's time): an execution recorded after the
@@ -1112,6 +1029,8 @@ class ORHarness:
                 self, task=effective_task, profile=profile,
                 candidates=spec_list, episode_id=episode_id,
                 cutoff=float(getattr(snapshot, "created_at", 0.0) or 0.0),
+                # The published internal observation projection covers the
+                # full calibration window; detailed pairs remain display-bounded.
                 paired_feedback=paired_feedback_block,
                 strategy_calibration=strategy_calibration)
         context = build_context(
@@ -1120,9 +1039,6 @@ class ORHarness:
             cir=resolved_cir, math_declared=math, capability=evidence,
             capability_version_block=version_block,
             execution_constraints=constraints,
-            knowledge_targets=frozen_targets,
-            reliability=reliability,
-            cell_evidence=cell_evidence,
             strategy_calibration=strategy_calibration,
             paired_feedback=paired_feedback,
             history_retrieval=history_retrieval,
@@ -1134,13 +1050,12 @@ class ORHarness:
             retrieval_bounding=bounding,
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
-        selected_entries = {str(target.entry_id) for target in frozen_targets
-                            if getattr(target, "entry_id", None)}
+        # Keep candidate-related frozen knowledge facts independently of
+        # the retired knowledge-change proposal heuristic.
+        selected_entries = {str(ref.get("entry_id")) for refs in knowledge.values()
+                            for ref in refs if ref.get("strategy_id") in strategies}
         selected_entries.update(str(hit.get("content", {}).get("entry_id"))
                                 for hit in context.retrieval.hits)
-        if historical:
-            selected_entries.update(str(ref.get("entry_id")) for refs in knowledge.values()
-                                    for ref in refs if ref.get("strategy_id") in strategies)
         selected_strategies = set(strategies)
         selected_strategies.update(str(hit.get("content", {}).get("strategy_id"))
                                    for hit in context.retrieval.hits)
@@ -1200,8 +1115,8 @@ class ORHarness:
         return out
 
     def _prompt_template_version(self) -> str:
-        from or_harness.world_model.prediction import PROMPT_TEMPLATE_VERSION
-        return PROMPT_TEMPLATE_VERSION
+        from or_harness.world_model.strategy_prediction import STRATEGY_OUTCOME_PROTOCOL_VERSION
+        return STRATEGY_OUTCOME_PROTOCOL_VERSION
 
     def _execution_constraints_view(self, task: Dict[str, Any],
                                     episode_id: Optional[str]
@@ -1873,8 +1788,7 @@ class ORHarness:
 
         Aggregated from the WINDOW's eligible evaluations only — an active
         episode never reads its own not-yet-closed feedback. This is the OR
-        strategy-outcome reliability, kept separate from the legacy
-        knowledge-prediction reliability; it is a measured record, not a
+        strategy-outcome reliability; it is a measured record, not a
         fitted calibrator and not a promise of future accuracy."""
         from or_harness.world_model.episode_closeout import (
             DEFAULT_MIN_CALIBRATION_SAMPLES,
@@ -2629,619 +2543,19 @@ class ORHarness:
         return {"action_id": record.action_id,
                 "cost": record.cost.to_dict() if record.cost else None}
 
-    # -- world-model M2: structured outcome prediction (shadow) ------------------
+    # -- read-only archived outcome predictions --------------------------------
 
-    def predict_outcome(self, task: Dict[str, Any],
-                        action_spec: ActionSpec,
-                        episode_id: Optional[str] = None,
-                        *, parent_action_id: Optional[str] = None,
-                        context: Union[PredictionContext, bool, None] = None,
-                        cir: Optional[Any] = None,
-                        ) -> OutcomePrediction:
-        """Predict the consequences of a CANDIDATE action from the current
-        frozen state — explicitly, in shadow mode.
-
-        The input snapshot is frozen BEFORE anything else happens; the
-        provider is invoked exactly once; the prediction (including its
-        own call cost) is persisted frozen. The existing strategy flow is
-        untouched: this prediction never changes recall, predict_cost,
-        execute, or record behaviour.
-
-        ``parent_action_id`` (optional): the action this prediction call
-        belongs to (e.g. the selection process that is evaluating
-        candidates). The model call's own cost is charged to it as an
-        own-cost amendment — never to the PREDICTED action, which has not
-        happened.
-
-        Identity discipline: the prediction belongs to the SAME task and
-        episode as the snapshot it is conditioned on. Before calling the
-        provider, the spec's task_id/episode_id are reconciled with the
-        call arguments (explicit spec values that disagree are overridden
-        and the adjustment recorded in ``model_info.identity_adjusted``) —
-        an episode-less spec is never persisted as a wildcard that later
-        leaks this call's cost into every episode's budget.
-
-        ``context`` (phase 2) decides what the provider is GIVEN:
-
-        - ``None`` (default): one prediction input context is built for this
-          call (task representation + X/B + retrieval evidence + capability
-          evidence + execution constraints) and passed to the provider;
-        - a :class:`PredictionContext`: that FROZEN context is reused after
-          its identity is verified against this task/version/episode — the
-          way several candidates of one decision share one input, and the
-          way a stored context can be replayed without reading today's banks;
-        - ``False``: no context is assembled and the request is exactly what
-          this call sent before this phase existed (the compatibility
-          escape hatch, and what ``x-b-only`` byte-compatibility rests on).
-
-        ``cir`` (optional) resolves the effective problem input the same way
-        ``build_prediction_context(..., cir=...)`` does. It is what lets a
-        context built with an EXPLICIT CIR be reused: pass the same CIR
-        again here, and the identity check compares the effective inputs
-        (which match) instead of the plain task digests (which differ only
-        because the caller-supplied task JSON differs).
-        """
-        task_id = str(task.get("task_id", ""))
-        # The budget gate: a stopped task must not spend a NEW model call.
-        gate = self._budget_gate(task_id, episode_id)
-        if not gate["allowed"]:
-            raise BudgetExhausted(gate["reason"], gate.get("view"))
-        adjusted: Dict[str, Any] = {}
-        if action_spec.task_id != task_id:
-            adjusted["task_id"] = {"spec": action_spec.task_id,
-                                   "call": task_id}
-            action_spec.task_id = task_id
-        if action_spec.episode_id != episode_id:
-            if action_spec.episode_id is not None:
-                adjusted["episode_id"] = {"spec": action_spec.episode_id,
-                                          "call": episode_id}
-            action_spec.episode_id = episode_id
-        frozen_from_context = False
-        if context is False:
-            resolved_context: Optional[PredictionContext] = None
-            snap = self.snapshot(task, episode_id)
-        elif isinstance(context, PredictionContext):
-            problems = context_identity_problems(
-                context, task_id=task_id,
-                task_digest=task_text_digest(task),
-                episode_id=episode_id,
-                effective_input_digest=effective_input_version(task, cir))
-            # Structure too: a context built under another structural input
-            # may not be reused for this one — its joint representation and
-            # its retrieval would describe a different problem.
-            problems = problems + structure_problems(
-                expected=self.profile(task_with_effective_cir(task, cir)),
-                actual=context.joint.profile,
-                label="the supplied prediction context")
-            if problems:
-                raise ValueError(
-                    "the supplied prediction context does not describe this "
-                    "prediction: " + "; ".join(problems))
-            resolved_context = context
-            # ALL prediction conditions come from the FROZEN context: the
-            # snapshot is rebuilt from the context's own condition blocks
-            # (never a fresh one, which would carry progress that happened
-            # AFTER the context was built), and the recorded
-            # input_snapshot_id is the context's snapshot.
-            snap = snapshot_from_context(context)
-            frozen_from_context = True
-        else:
-            snap = self.snapshot(task, episode_id)
-            # A CURRENT gathering around the snapshot this call just froze:
-            # the retrieval, knowledge view, reliability and cell evidence
-            # are read NOW and frozen into the context. Passing the snapshot
-            # explicitly is what keeps the context's X/B and the prediction's
-            # input_snapshot_id identical.
-            resolved_context = self.build_prediction_context(
-                task, episode_id, snapshot=snap, historical=False,
-                context_spec=action_spec, cir=cir)
-        if frozen_from_context:
-            targets = knowledge_targets_from_context(resolved_context,
-                                                     action_spec)
-            reliability = copy.deepcopy(resolved_context.reliability or {})
-        else:
-            targets = self.knowledge_targets(snap, action_spec)
-            reliability = self.prediction_reliability_table()
-        # The pre-call budget check reads the CURRENT ledger on purpose: the
-        # budget is a real external constraint on whether a call may be made,
-        # not a prediction condition. It is recorded as an override so the
-        # frozen constraint the context carried is never silently replaced.
-        budget_override = self._budget_override_view(
-            task_id, episode_id, resolved_context)
-        prediction = self.predictions.predict_outcome(
-            task, action_spec, snap,
-            knowledge_targets=targets,
-            reliability=reliability,
-            prediction_context=resolved_context)
-        # The full target set is frozen WITH the prediction: a later verdict
-        # needs the claim's interval / entry id / strategy as they were at
-        # prediction time, not a re-read of banks that may have moved since.
-        prediction.model_info["knowledge_targets_proposed"] = [
-            t.strategy_id for t in targets]
-        prediction.model_info["knowledge_targets_proposed_full"] = [
-            t.to_dict() for t in targets]
-        if budget_override:
-            prediction.model_info["budget_checked_at_call_time"] = \
-                budget_override
-        if resolved_context is not None:
-            # Which frozen input this prediction was conditioned on. The
-            # reference is recorded on the prediction, so a later reader can
-            # resolve the CONTENT that was actually used.
-            prediction.model_info["prediction_context_id"] = \
-                resolved_context.context_id
-            prediction.model_info["prediction_context_version"] = \
-                resolved_context.version
-            prediction.model_info["prediction_context_task_digest"] = \
-                resolved_context.task_digest
-            prediction.model_info["conditions_source"] = (
-                "frozen_context" if frozen_from_context
-                else "context_built_for_this_call")
-        self.predictions._save(prediction)
-        if adjusted:
-            prediction.model_info["identity_adjusted"] = adjusted
-            self.predictions._save(prediction)
-        self._charge_call_cost(prediction, parent_action_id)
-        return prediction
-
-    def _budget_override_view(self, task_id: str, episode_id: Optional[str],
-                              context: Optional[PredictionContext]
-                              ) -> Dict[str, Any]:
-        """The CURRENT budget view, when it disagrees with the frozen one.
-
-        A reused context's ``execution_constraints`` recorded the budget
-        condition as it stood at build time. The real ledger may have moved
-        since, and a pre-call check must use the CURRENT state — but it must
-        not silently rewrite what the context froze. So a difference is
-        REPORTED as an override, and a matching view reports nothing.
-        """
-        if context is None:
-            return {}
-        frozen = (context.execution_constraints or {}).get("declared_budget")
-        current = self._load_budget(task_id, episode_id)
-        if (frozen or None) == (current or None):
-            return {}
-        return {
-            "frozen_declared_budget": copy.deepcopy(frozen),
-            "current_declared_budget": copy.deepcopy(current),
-            "note": ("the declared budget moved since this context was "
-                     "built; the pre-call check used the CURRENT value while "
-                     "the frozen constraint is left untouched — a budget is "
-                     "an external limit, not a prediction condition"),
-        }
-
-    @staticmethod
-    def _call_cost_dims(prediction) -> Dict[str, float]:
-        """The model call's OWN measured spend, per dimension (empty when
-        the provider reported no usage — unknown, never zero)."""
-        if prediction.call_cost is None:
-            return {}
-        return {d: getattr(prediction.call_cost, d) for d in
-                prediction.call_cost.measured_dims()}
-
-    def _charge_call_cost(self, prediction,
-                          parent_action_id: Optional[str]
-                          ) -> Dict[str, float]:
-        """Record the model call's own spend, charged to the parent action
-        when one is named.
-
-        INCREMENT semantics throughout: each prediction call is a separate
-        real spend, so two 50-token calls under one selection action total
-        100 rather than overwriting each other. With no parent action the
-        cost stays on the prediction itself and is aggregated into the
-        budget view by ``BudgetLedger.consumption`` — never silently
-        dropped, and never counted twice (the
-        ``charged_to_parent_action`` mark keeps it on one side only)."""
-        dims = self._call_cost_dims(prediction)
-        if not dims or parent_action_id is None:
-            return dims
-        if self.actions.get(parent_action_id) is None:
-            raise StorageError(
-                f"unknown parent_action_id {parent_action_id!r}")
-        self.actions.amend_action_cost_increment(parent_action_id, **dims)
-        prediction.model_info["charged_to_parent_action"] = parent_action_id
-        self.predictions._save(prediction)
-        return dims
-
-    def knowledge_targets(self, snapshot, action_spec) -> List[Any]:
-        """The framework's structural knowledge-target proposals for ONE
-        candidate action (M6).
-
-        A transparent heuristic, not a value estimate: it says what COULD
-        be learned and which quantities a value would need. Under
-        ``x-b-only`` no targets are proposed at all, which is exactly what
-        makes that mode reproduce the pre-M6 request byte for byte.
-
-        The cell's real evidence records are fetched via
-        ``ConditionalStats.evidence`` because ``GroupStats`` carries no
-        distinct-task count, and reuse basis must count INDEPENDENT TASKS
-        (repeat runs of one task are one replication).
-        """
-        if self.prediction_mode == "x-b-only":
-            return []
-        from or_harness.world_model.knowledge import learning_needs
-        strategy_id = getattr(action_spec, "strategy_id", None)
-        records = None
-        if strategy_id:
-            try:
-                profile = ProblemProfile.from_dict(
-                    (snapshot.problem_state or {}).get("profile") or {})
-                records = self.stats.evidence(profile, strategy_id)
-            except Exception:
-                records = None
-        return learning_needs(snapshot, action_spec, records=records)
-
-    def evaluate_knowledge_execution(self, record: ExecutionRecord
-                                     ) -> Dict[str, Any]:
-        """Judge the ``after_execution`` knowledge predictions a REAL
-        execution just made possible (M6, fast channel).
-
-        Finds the predictions bound to this record's action, re-reads the
-        targets those predictions were made against, and records one verdict
-        per unresolved ``after_execution`` item. Stage-partitioned: a
-        prediction whose immediate X/B comparison already ran is still
-        eligible here, and re-running this is a no-op for stages that
-        already have a verdict.
-
-        Prediction-conditioned targets live on the prediction itself
-        (``predicted.knowledge_changes``), so this needs no new linkage: no
-        side table, no event log.
-        """
-        from or_harness.world_model.knowledge_track import (
-            STAGE_EXECUTION,
-            evaluate_execution,
-            unresolved_stages,
-        )
-        action_id = getattr(record, "action_id", None)
-        action = self.actions.get(action_id) if action_id else None
-        if action is None:
-            # The record may have been appended without the action handle
-            # (a bare ``record`` call). Fall back to the action whose
-            # linked execution is this one, matched over the same task.
-            for candidate in self.actions.query(task_id=record.task_id):
-                if candidate.linked_execution_id == record.execution_id:
-                    action = candidate
-                    break
-        if action is None:
-            return {}
-        out: Dict[str, Any] = {}
-        for prediction in self.predictions_query(task_id=record.task_id):
-            if prediction.bound_action_id != action.action_id:
-                continue
-            if prediction.status != "valid":
-                continue
-            # A binding already reported as mismatched means the executed
-            # strategy/solver differs from the predicted candidate: this
-            # execution is evidence about a DIFFERENT claim, so no H verdict
-            # may be drawn from it. (The X/B comparison already records the
-            # mismatch and skips scoring; the knowledge channel must agree.)
-            if prediction.binding_mismatch:
-                continue
-            # The judgement is about THIS execution, so the prediction's
-            # action must be the one that produced it.
-            if action.linked_execution_id != record.execution_id:
-                continue
-            targets = self._prediction_targets(prediction)
-            for index, stage in unresolved_stages(prediction):
-                if stage != STAGE_EXECUTION:
-                    continue
-                item = prediction.predicted["knowledge_changes"][index]
-                target = self._match_target(targets, item)
-                # Let the verdict know which task the prediction was made
-                # for, so an `independent_replication` precondition can be
-                # judged (it needs evidence from a DIFFERENT task).
-                item = dict(item)
-                item["_predicted_for_task"] = prediction.action_spec.task_id
-                status, detail = evaluate_execution(item, target, record)
-                detail["targets_available"] = bool(targets)
-                entry = self._record_knowledge_verdict(
-                    prediction, index, stage, status, detail)
-                if entry is not None:
-                    out[prediction.prediction_id] = entry
-        return out
-
-    @staticmethod
-    def _prediction_targets(prediction) -> List[Any]:
-        """The structural targets a prediction was made against.
-
-        Read from the prediction's own frozen copy, never re-derived from
-        the current banks: a verdict must judge the claim as it stood when
-        the prediction was made, and an entry's interval may have moved
-        since."""
-        from or_harness.world_model.knowledge import KnowledgeTarget
-        return [KnowledgeTarget.from_dict(t) for t in
-                (prediction.model_info.get("knowledge_targets_proposed_full")
-                 or [])]
-
-    def _record_knowledge_verdict(self, prediction, index: int, stage: str,
-                                  status: str, detail: Dict[str, Any]
-                                  ) -> Optional[Dict[str, Any]]:
-        """Persist one stage verdict; return its result entry, or None when
-        that stage already had one (the write is idempotent per stage)."""
-        from or_harness.world_model.knowledge_track import record_stage_verdict
-        if not record_stage_verdict(prediction, index, stage, status, detail):
-            return None
-        self.predictions._save(prediction)
-        return {"change_index": index, "stage": stage, "status": status}
-
-    @staticmethod
-    def _match_target(targets: List[Any], item: Dict[str, Any]):
-        """The proposed target a knowledge-change item refers to, or None."""
-        target = item.get("target") or {}
-        if target.get("kind") == "existing_entry":
-            for candidate in targets:
-                if (candidate.kind == "existing_entry"
-                        and candidate.entry_id == target.get("entry_id")):
-                    return candidate
-        for candidate in targets:
-            if candidate.strategy_id == target.get("strategy_id"):
-                return candidate
-        return None
-
-    @staticmethod
-    def _induction_transition(result: Dict[str, Any]) -> Dict[str, Any]:
-        """The knowledge transition an ``induce`` call recorded.
-
-        Accepts all three shapes the transition travels in: the ``induce``
-        result's own flat keys, the action summary nested under ``action``,
-        and the maintenance action outcome that summary was built from. The
-        delta is a before/after transition, computed where both states are
-        known; this only locates it, and returns empty pieces when the
-        induction never ran (dry run, or a refusal)."""
-        source = result or {}
-        action = source.get("action") or {}
-        outcome = action.get("outcome") or {}
-        delta = (source.get("knowledge_delta")
-                 or action.get("knowledge_delta")
-                 or outcome.get("knowledge_delta") or {})
-        after = (source.get("knowledge_after")
-                 or action.get("knowledge_after")
-                 or outcome.get("knowledge_after") or {})
-        return {
-            "entry_changes": delta.get("entry_changes") or [],
-            "created": delta.get("entries_created") or [],
-            "knowledge_after": after,
-        }
-
-    @staticmethod
-    def _claim_change(before: Any, after: Any) -> Optional[Dict[str, Any]]:
-        """How an entry's stated CLAIM changed (one claim per entry).
-
-        A claim rewrite is a knowledge change and must appear in the delta.
-        Reported field by field (text / conditions / evidence / kind /
-        method) so a revised assertion, a re-scoped condition set and an
-        added evidence reference are distinguishable — a single "claim
-        differs" flag would hide which. Returns None when the claim is
-        unchanged.
-        """
-        if (before or None) == (after or None):
-            return None
-        before = before if isinstance(before, dict) else None
-        after = after if isinstance(after, dict) else None
-        if before is None:
-            return {"added": True, "after": after}
-        if after is None:
-            return {"removed": True, "before": before}
-        fields = {}
-        for field in ("text", "conditions", "evidence", "kind", "method",
-                      "subject"):
-            if before.get(field) != after.get(field):
-                fields[field] = {"before": before.get(field),
-                                 "after": after.get(field)}
-        if not fields:
-            return None
-        return {"fields": fields}
-
-    def evaluate_knowledge_consolidation(self, result: Dict[str, Any],
-                                         execution_ids: Sequence[str] = (),
-                                         strategy_id: Optional[str] = None
-                                         ) -> Dict[str, Any]:
-        """Judge the ``after_consolidation`` knowledge predictions an
-        induction just made possible (M6, slow channel).
-
-        Eligibility has THREE requirements, and dropping any one of them
-        lets an untouched prediction be scored as a hit:
-
-        1. **the prediction was bound to a real action** — an unexecuted
-           prediction describes something that never happened, so no
-           induction can be its outcome;
-        2. **that action's execution is inside the induction's own evidence
-           scope** — the induction must have actually consolidated the
-           evidence the prediction was about, not merely run nearby;
-        3. **the induction touched the entry or strategy the prediction
-           named** — the opportunity window must really be open.
-
-        A prediction failing any of these has not had its chance and stays
-        ``pending``; it is never counted as a miss, and never as a hit.
-        """
-        from or_harness.world_model.knowledge_track import (
-            STAGE_CONSOLIDATION,
-            evaluate_consolidation,
-            unresolved_stages,
-        )
-        delta = self._induction_transition(result)
-        entry_changes = delta["entry_changes"]
-        created = delta["created"]
-        knowledge_after = delta["knowledge_after"]
-        # NOTE: an induction that changed nothing is NOT a no-op for
-        # evaluation purposes. If it genuinely ran over a prediction's own
-        # evidence and its own strategy, the opportunity HAS arrived and the
-        # absence of a change is a real (negative) outcome. Returning early
-        # here would leave such predictions unevaluated forever and bias the
-        # reliability statistics toward the cases that succeeded.
-        created_strategies: List[str] = []
-        # ``knowledge_after`` travels in two shapes: the layered view
-        # (verified/unverified/legacy_unknown, also used by the induction
-        # ACTION) and the flat ``{"entries": [...], "entry_count": N}``
-        # form the action summary carries. Reading both keeps one code path.
-        entries_after: List[Dict[str, Any]] = []
-        for layer in ("verified", "unverified", "legacy_unknown"):
-            entries_after.extend(knowledge_after.get(layer) or [])
-        entries_after.extend(knowledge_after.get("entries") or [])
-        for entry in entries_after:
-            if entry.get("entry_id") in set(created):
-                created_strategies.append(
-                    str(entry.get("strategy_id") or ""))
-        touched = {c.get("entry_id") for c in entry_changes}
-        # The induction's evidence scope. Two shapes, because the caller may
-        # or may not name one:
-        #
-        # - an explicit ``execution_ids`` (the bundle path) is a STRICT
-        #   scope: only those executions took part.
-        # - without one, ``induce`` consolidates whatever evidence the
-        #   covered cells hold, so the scope is every real execution of the
-        #   strategies this induction acted on. Demanding an explicit scope
-        #   there would empty the whole channel on the normal CLI path.
-        #
-        # Either way the scope is about REAL, RECORDED evidence: an
-        # execution that was never banked cannot be inside it.
-        explicit_scope = {str(e) for e in (execution_ids or ())}
-        banked = {r.execution_id for r in self.bank.all()}
-        out: Dict[str, Any] = {}
-        for prediction in self.predictions_query():
-            if prediction.status != "valid":
-                continue
-            if prediction.action_spec.action_type != "execute_strategy":
-                continue
-            # (1) A prediction that was never bound to a real action
-            #     describes an action that never ran: no induction can be
-            #     its outcome, so it is not evaluable at all. Left
-            #     untouched (and therefore still pending), never scored as
-            #     a hit.
-            action = (self.actions.get(prediction.bound_action_id)
-                      if prediction.bound_action_id else None)
-            if action is None:
-                continue
-            # A binding already reported as mismatched means the executed
-            # action differs from the predicted candidate: whatever
-            # evidence exists is evidence about a DIFFERENT claim.
-            if prediction.binding_mismatch:
-                continue
-            # (2) The execution must be real, recorded evidence, and inside
-            #     the induction's scope when one was named.
-            execution_id = action.linked_execution_id
-            if not execution_id or execution_id not in banked:
-                continue
-            if explicit_scope and execution_id not in explicit_scope:
-                continue
-            targets = self._prediction_targets(prediction)
-            for index, stage in unresolved_stages(prediction):
-                if stage != STAGE_CONSOLIDATION:
-                    continue
-                item = prediction.predicted["knowledge_changes"][index]
-                target = self._match_target(targets, item)
-                # (3) Opportunity window: the induction must have touched
-                #     what the prediction named, or covered the strategy it
-                #     named. Otherwise it had no chance to resolve and
-                #     stays pending — never "missed".
-                if target is None:
-                    continue
-                touched_now = (
-                    (target.entry_id is not None
-                     and target.entry_id in touched)
-                    or (target.entry_id is not None
-                        and target.entry_id in set(created))
-                    or (target.strategy_id in created_strategies))
-                # A scoped induction that ran for THIS prediction's own
-                # strategy over its own recorded evidence is an opportunity
-                # even when it changed nothing: the empty transition is
-                # precisely what makes the prediction `missed` rather than
-                # permanently pending. Returning early on "no change" would
-                # leave such predictions unevaluated forever and bias the
-                # reliability statistics toward the successes.
-                scoped_to_this = (strategy_id is not None
-                                  and target.strategy_id == strategy_id)
-                if not (touched_now or scoped_to_this):
-                    continue
-                status, detail = evaluate_consolidation(
-                    item, target, entry_changes, created, created_strategies)
-                detail["consolidated_execution"] = execution_id
-                detail["scope_basis"] = ("explicit execution_ids"
-                                         if explicit_scope
-                                         else "cell evidence of the "
-                                              "covered strategy")
-                if not entry_changes and not created:
-                    detail["induction_changed_nothing"] = True
-                entry = self._record_knowledge_verdict(
-                    prediction, index, stage, status, detail)
-                if entry is not None:
-                    out[prediction.prediction_id] = entry
-        return out
-
-    def prediction_reliability_table(self) -> Dict[str, Any]:
-        """Measured reliability of PAST knowledge predictions, by class.
-
-        This is the self-correction channel: what the model's predictions
-        have actually been worth, computed by the framework from evaluated
-        verdicts. It is deliberately NOT the model's own confidence — that
-        would let a model raise its own standing by asserting it. Classes
-        with too few resolved samples report ``None``, and an unknown
-        reliability grants no knowledge value.
-        """
-        from or_harness.world_model.knowledge_track import (
-            class_reliability,
-            collect_verdicts,
-        )
-        return class_reliability(collect_verdicts(self.predictions_query()))
-
-    def bind_outcome(self, prediction_id: str,
-                     action_id: str) -> OutcomePrediction:
-        """Bind a prediction to the real action that ran. Request identity
-        is checked (type/task/episode/strategy/solver/timing/scope);
-        mismatches recorded, not silently compared.
-
-        ``action_id`` accepts EITHER the action id (``ac_...``) OR the
-        ``execution_id`` (``ex_...``) that the action produced — the latter
-        is what ``orx execute`` prints, and requiring the caller to first
-        look up the action id made the normal predict -> execute -> bind
-        loop fail whenever the two sides' episode ids did not line up. An
-        execution id is resolved through the action's ``linked_execution_id``
-        link; an ambiguous or unknown id raises rather than guessing."""
-        action = self.actions.get(action_id)
-        if action is None:
-            action = self.actions.by_execution(action_id)
-        if action is None:
-            raise StorageError(
-                f"unknown action_id/execution_id {action_id!r}: no action "
-                "carries that id and no action links to that execution")
-        # The linked execution's measurement scope (when the execution is
-        # already staged/recorded) — an attempt-scope prediction must not
-        # be scored against a task-scope total.
-        record_scope = None
-        if action.linked_execution_id is not None:
-            record_scope = (self.bank.get_pending(action.linked_execution_id)
-                            or self.bank.get(action.linked_execution_id))
-        return self.predictions.bind_outcome(prediction_id, action,
-                                             record_scope=record_scope)
-
-    def compare_prediction(self, prediction_id: str) -> OutcomePrediction:
-        """Compare the frozen prediction against the bound action's real
-        execution (appended feedback; idempotent; never re-invokes the
-        model)."""
-        prediction = self.predictions.get(prediction_id)
-        if prediction is None:
-            raise StorageError(
-                f"unknown prediction_id {prediction_id!r}")
-        if prediction.bound_action_id is None:
-            raise StorageError(
-                f"prediction {prediction_id!r} is not bound to an action")
-        action = self.actions.get(prediction.bound_action_id)
-        if action is None or action.linked_execution_id is None:
-            raise StorageError(
-                f"bound action has no linked execution to compare against")
-        record = self.bank.get_pending(action.linked_execution_id) \
-            or self.bank.get(action.linked_execution_id)
-        if record is None:
-            raise StorageError(
-                f"linked execution {action.linked_execution_id!r} not found")
-        return self.predictions.compare_prediction(prediction_id, record)
 
     def get_prediction(self, prediction_id: str) -> Optional[OutcomePrediction]:
-        return self.predictions.get(prediction_id)
+        raw = self.store.get_world_model_prediction(prediction_id)
+        return OutcomePrediction.from_dict(self.store.loads(raw)) if raw is not None else None
 
     def predictions_query(self, *, task_id: Optional[str] = None,
                           episode_id: Optional[str] = None
                           ) -> List[OutcomePrediction]:
-        return self.predictions.query(task_id=task_id, episode_id=episode_id)
+        return [OutcomePrediction.from_dict(self.store.loads(raw))
+                for raw in self.store.world_model_predictions_for(
+                    task_id=task_id, episode_id=episode_id)]
 
     # -- world-model M3: bounded planning ----------------------------------------
 
@@ -3320,12 +2634,6 @@ class ORHarness:
             limits.gamma = self.gamma
         if limits.cost_weights is None:
             limits.cost_weights = dict(self.cost_weights)
-        # Retain legacy experiment settings in the record; they do not
-        # enter the one-step G/C/R utility.
-        if limits.delta is None:
-            limits.delta = (0.0 if self.prediction_mode == "x-b-only" else self.delta)
-        if self.prediction_mode != "h-x-b-value":
-            limits.delta = 0.0
         specs, rejections = self._candidate_specs(
             task, episode_id, candidates, limits.max_root_candidates)
         result = self._plan_next_strategy_outcome(
@@ -5452,14 +4760,6 @@ class ORHarness:
             result["cost_completeness"] = completeness
         if cost_feedback is not None:
             result["cost_feedback"] = cost_feedback
-        # M6: a NORMAL solving action's knowledge prediction is evaluated
-        # here, against the evidence this very execution produced. This is
-        # the fast channel of the H loop — without it the knowledge
-        # predictions of ordinary executions would never be judged, which
-        # was the largest gap in the M6 plan's first version.
-        knowledge_feedback = self.evaluate_knowledge_execution(record)
-        if knowledge_feedback:
-            result["knowledge_feedback"] = knowledge_feedback
         # Index sync happens AFTER the fact is durable: the memory exists
         # whether or not the embedding call works, and the outcome is always
         # reported (never a silent divergence between bank and index).
@@ -5846,7 +5146,7 @@ class ORHarness:
             return result
         # A relation write is a knowledge write like any other: it gets a
         # maintenance action with PRE and POST knowledge state, a knowledge
-        # delta, an index result and the same M6 feedback.
+        # transition and an index result.
         #
         # ORDER (r21): VALIDATE the effect attributions FIRST (a bad payload
         # must not leave a half-written state), begin the action, then submit
@@ -5909,21 +5209,6 @@ class ORHarness:
         if not dry_run:
             from or_harness.strategy.rule_versions import sync_rule_entries
             result["index_sync"] = sync_rule_entries(self,result.get("index_entry_ids") or [],result.get("affected_entry_ids") or [])
-            # The consolidation-stage feedback is scoped to the EVIDENCE this
-            # write actually consolidated: the executions the submitted
-            # strategies cite. That is the relation-path equivalent of the
-            # statistical path's ``execution_ids``.
-            cited: List[str] = []
-            for relation in result.get("relations") or []:
-                cited.extend(relation.get("execution_ids") or [])
-            try:
-                consolidation = self.evaluate_knowledge_consolidation(
-                    result, cited, strategy_id=strategy_id)
-                if consolidation:
-                    result["knowledge_feedback"] = consolidation
-            except Exception as exc:  # never fail a real write for this
-                result["knowledge_feedback_error"] = (
-                    f"{type(exc).__name__}: {exc}")
         return result
 
     def _submit_relations(self, relations: Sequence[Dict[str, Any]], *,
@@ -6425,7 +5710,7 @@ class ORHarness:
         if raw_capability is not None:
             return {"kind": "capability_evolution", "retired": True,
                     "prediction": self.store.loads(raw_capability)}
-        legacy = self.predictions.get(prediction_id)
+        legacy = self.get_prediction(prediction_id)
         if legacy is not None:
             return {"kind": "legacy_outcome",
                     "prediction": legacy.to_dict()}

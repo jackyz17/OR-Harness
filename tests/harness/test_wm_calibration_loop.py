@@ -302,7 +302,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
             " 'method_performed': {'action_id': os.environ['OR_ACTION_ID'],"
             " 'name': 'fallback enumeration', 'steps': ['enumerate']}}, fh)\n",
             encoding="utf-8")
-        from or_harness.world_model.prediction import ActionSpec  # noqa
+        from or_harness.world_model.contracts import ActionSpec  # noqa
         record = execute_scored(self.h,
             task, "S04", str(script), str(work), solver="highs",
             episode_id="ep1", prediction_id=prediction.prediction_id)

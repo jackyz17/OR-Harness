@@ -23,7 +23,7 @@ from or_harness.world_model.conditions import (
 )
 from or_harness.world_model.context import PredictionContext
 from or_harness.world_model.conditions import available_entry_ids
-from or_harness.world_model.prediction import ActionSpec
+from or_harness.world_model.contracts import ActionSpec
 from or_harness.world_model.provider import WorldModelProvider
 from or_harness.world_model.snapshot_maintenance import fork_memory, maintain_snapshots
 from or_harness.world_model.state import BeliefSnapshot, task_text_digest

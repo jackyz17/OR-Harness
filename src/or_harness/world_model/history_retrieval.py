@@ -618,8 +618,13 @@ def _attach_evaluation_facts(pool: List[Dict[str, Any]],
             bound_rows += 1
         if fact.get("cost_carrier_execution_id") == str(row.get("execution_id")):
             cost_rows += 1
+    pool_ids = {str(row.get("execution_id")) for row in pool}
+    missing_carriers = {str(pair.get("evaluation_id")) for pair in pairs
+        if _pair_cost_carrier_id(pair) not in pool_ids
+        and pool_ids.intersection(str(eid) for eid in (pair.get("execution_ids") or []))
+        and pair.get("cost_observed_fact")}
     return {"attached_rows": attached, "bound_rows": bound_rows,
-            "cost_rows": cost_rows}
+            "cost_rows": cost_rows, "cost_carriers_not_recalled": len(missing_carriers)}
 
 
 def _pair_rank(pair: Dict[str, Any]) -> Tuple[int, int, int, str]:
@@ -723,10 +728,39 @@ def _evaluation_fact(pair: Dict[str, Any]) -> Dict[str, Any]:
 # global (pre-decision) statistics
 # ---------------------------------------------------------------------------
 
-def _pairs_of(paired_feedback: Optional[Dict[str, Any]]
+def _pairs_of(paired_feedback: Optional[Dict[str, Any]], *,
+              cutoff: Optional[float] = None, model_identity: Optional[str] = None
               ) -> List[Dict[str, Any]]:
-    return [pair for pair in ((paired_feedback or {}).get("pairs") or [])
-            if isinstance(pair, dict)]
+    """Published observation rows, independently of the detailed pair budget.
+
+    Legacy publications can offer only the bodies they saved. Never rebuild a
+    missing projection by reading today's evaluations into an older context.
+    """
+    block = paired_feedback or {}
+    projection = block.get("observation_facts")
+    if projection is not None:
+        if not isinstance(projection, dict) or projection.get("version") != "wm-observation-facts/1":
+            return []
+        rows = projection.get("rows") or []
+    else:
+        rows = block.get("pairs") or []
+    published = _number(block.get("published_at"))
+    if cutoff is not None and published is not None and published > cutoff:
+        return []
+    kept = []
+    for pair in rows:
+        if not isinstance(pair, dict):
+            continue
+        identity = pair.get("model_identity") or (
+            block.get("model_identity") if projection is None else None) or "(unknown)"
+        if model_identity is not None and str(identity) != str(model_identity):
+            continue
+        if projection is not None and cutoff is not None:
+            available = _number(pair.get("available_at"))
+            if available is None or available > cutoff:
+                continue
+        kept.append(pair)
+    return kept
 
 
 def _compact_global(value: Any, *, keep_empty: bool = False) -> Any:
@@ -1243,7 +1277,8 @@ def build_history_retrieval(
     config = history_config(backend)
     if pool_size is not None:
         config["pool_size"] = int(pool_size)
-    pairs = _pairs_of(paired_feedback)
+    pairs = _pairs_of(paired_feedback, cutoff=cutoff, model_identity=getattr(
+        getattr(harness, "strategy_predictions", None), "model_identity_label", None))
     block: Dict[str, Any] = {
         "version": HISTORY_RETRIEVAL_VERSION,
         "generated_at": time.time(),
@@ -1259,6 +1294,10 @@ def build_history_retrieval(
             "r": global_r_statistics(strategy_calibration),
         },
         "accounting": {},
+        "observation_source": {
+            "source": "observation_facts" if "observation_facts" in (paired_feedback or {}) else "legacy_pairs",
+            "n_available": len(pairs),
+        },
         "degraded": [],
         "missing": [],
         "notes": [
@@ -1417,6 +1456,7 @@ def build_history_retrieval(
         "n_with_closed_evaluation": attached["attached_rows"],
         "n_bound_evaluation_rows": attached["bound_rows"],
         "n_cost_reference_rows": attached["cost_rows"],
+        "n_cost_carriers_not_recalled": attached["cost_carriers_not_recalled"],
         "excluded_after_cutoff": dropped.get("after_cutoff", 0),
         "excluded_invalid_source": dropped.get("invalid_source", 0),
         "excluded_stale_index": dropped.get("stale_index", 0),

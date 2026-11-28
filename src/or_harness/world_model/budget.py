@@ -201,7 +201,7 @@ class BudgetLedger:
         except Exception:
             capability_rows = []
         for row in pred_rows:
-            from or_harness.world_model.prediction import \
+            from or_harness.world_model.contracts import \
                 OutcomePrediction
             try:
                 pred = OutcomePrediction.from_dict(
