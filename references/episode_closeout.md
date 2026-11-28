@@ -175,14 +175,12 @@ request and material budgets.
 G/R labels stay with the bound execution. A remaining-task C observation has
 one canonical carrier; recalling another execution from that window does not
 move the cost onto it. Global G/C diagnostics use the eligible, model-filtered,
-pre-cutoff facts across the calibration window, rather than the budget-selected
-detailed pairs. Their sample range can therefore grow when detailed feedback
-is truncated; the calibration window and observation eligibility stay the same.
+pre-cutoff facts across the calibration window, rather than the detailed pairs
+selected for display. P2 leaves this P0 population and its eligibility unchanged.
 Unknowns and cost lower bounds remain distinct from complete observations.
 
-Detailed pairs use `material_version=wm-pair-material/1`. Before the existing
-publication budget is applied, deterministic field extraction removes declared
-audit scaffolding and shares exactly repeated values within each pair. Method
+Detailed pairs use `material_version=wm-pair-material/1`. Deterministic field
+extraction removes declared audit scaffolding and shares exactly repeated values within each pair. Method
 steps, recorded differences/causes and cost-comparison conditions stay readable;
 the Harness does not summarise them or decide their importance. One `detail_ref`
 opens the original Evaluation; `#cost.observed_fact...` and similar references
@@ -191,9 +189,30 @@ Unknown fields are retained. Selection metadata and same-task comparisons come
 from the pre-compaction material, and mixed-model windows retain row identities;
 only verified common model/rule values are shared at block level.
 
+Publication retains every eligible pair in the existing calibration window,
+in the original label/recency order. The published `selection_meta` directory
+and same-task comparisons describe those bodies using their original facts.
+For a new decision, model filtering and the existing relevance selection run
+before the display ceiling (default 12), provider history budget (default 30k
+characters), and whole-request budget. Only the selection is frozen in the
+prediction context and shared by its candidates; the full publication, its
+directory and `observation_facts` do not enter the LLM request.
+
+`OR_HARNESS_PAIRED_FEEDBACK_CHARS` is retired. The former builder argument
+`budget_chars` remains accepted with a visible `FutureWarning`, as does the old
+environment setting; neither limits publication. Remove these settings rather
+than moving their values to the unchanged provider budget. In new publications,
+`budget_chars=null`, `used_chars` measures the pair bodies, `n_pairs_total` and
+`n_pairs_included` count all eligible pairs, and `n_pairs_omitted=0`. Selections
+retain original `n_pairs_publish_*` counts, report model `n_pairs_withheld` and
+post-filter `n_pairs_available`, then selected `n_pairs_included`/`n_pairs_omitted`.
+Provider views add `n_pairs_selected` and `n_pairs_provider_dropped`; their own
+`n_pairs_included` counts delivered cases. Old budget-trimmed publications remain
+readable as saved until a normal calibration publication replaces them.
+
 `observation_facts` is generated before this representation step and is
 unchanged. New pairs are recognised during provider projection, preserving
-complete methods and recorded causes through repeated reads. Existing budgets
+complete methods and recorded causes through repeated reads. Final display budgets
 can omit whole cases; they do not mechanically clip these core fields. Legacy
 pair/context reads retain their prior compatibility path without migration or
 read-time database rebuilding. No extra model call is involved.

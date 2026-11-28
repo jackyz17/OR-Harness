@@ -1223,7 +1223,7 @@ class TestCFourDimensionContract(unittest.TestCase):
 
 
 class TestPublishedObservationJoin(unittest.TestCase):
-    """A full published window survives a tiny detailed-pair display budget."""
+    """Window-wide facts remain independent of detailed-pair selection/display."""
 
     def setUp(self):
         import tempfile
@@ -1247,12 +1247,13 @@ class TestPublishedObservationJoin(unittest.TestCase):
                        method_planned={'name': 'large detailed method', 'steps': ['detail ' * 1000]})
             self.rows.append(row)
 
-    def publish(self, budget=14000, indexes=None):
+    def publish(self, budget=None, indexes=None):
         from unittest.mock import patch
         from or_harness.world_model.episode_closeout import build_paired_feedback, publish_paired_feedback
         rows = [self.rows[i] for i in (range(len(self.rows)) if indexes is None else indexes)]
         evaluations = [SimpleNamespace(evaluation_id=r['evaluation_id'], prediction_id=r['prediction_id'],
-            task_id=r['task_id'], episode_id=r['episode_id'], created_at=1., state='evaluated') for r in rows]
+            task_id=r['task_id'], episode_id=r['episode_id'],
+            created_at=float(r.get('created_at', 1.)), state='evaluated') for r in rows]
         window = [{'task_id': r['task_id'], 'episode_id': r['episode_id'], 'closed_at': 1.} for r in rows]
         derived = {'window': window, 'evaluations': evaluations,
                    'by_id': {e.evaluation_id: (e, None) for e in evaluations}}
@@ -1263,7 +1264,11 @@ class TestPublishedObservationJoin(unittest.TestCase):
              patch.object(self.h.strategy_predictions, 'get', return_value=prediction), \
              patch('or_harness.world_model.episode_closeout._paired_feedback_row',
                    side_effect=lambda e, p: copy.deepcopy(by_id[e.evaluation_id])):
-            block = build_paired_feedback(self.h, budget_chars=budget, derived=derived)
+            if budget is None:
+                block = build_paired_feedback(self.h, derived=derived)
+            else:
+                with self.assertWarnsRegex(FutureWarning, 'publication budget.*retired'):
+                    block = build_paired_feedback(self.h, budget_chars=budget, derived=derived)
         publish_paired_feedback(self.h, block)
         return block
 
@@ -1289,12 +1294,12 @@ class TestPublishedObservationJoin(unittest.TestCase):
         import json
         from or_harness.world_model.episode_closeout import paired_feedback_selection_from_block
         block = self.publish()
-        self.assertLess(block['n_pairs_included'], 5)
+        self.assertEqual(block['n_pairs_included'], 20)
         self.assertEqual(len(block['observation_facts']['rows']), 20)
         self.assertLess(len(json.dumps(block['observation_facts'])), 40000)
         history = self.history(self.read())
         self.assertEqual(history['accounting']['n_with_closed_evaluation'], 20)
-        displayed = {p['evaluation_id'] for p in block['pairs']}
+        displayed = {p['evaluation_id'] for p in paired_feedback_selection_from_block(block)['pairs']}
         joined = {r['evaluation']['evaluation_id'] for r in history['pool']}
         self.assertEqual(joined, {f'ev{i}' for i in range(20)})
         self.assertTrue(joined - displayed)
@@ -1326,12 +1331,13 @@ class TestPublishedObservationJoin(unittest.TestCase):
         self.assertLessEqual(size['bound_tokens'], 80000)
         self.assertNotIn('observation_facts', view)
 
-    def test_budget_changes_display_but_not_joins_or_global_population(self):
+    def test_retired_publication_budget_changes_neither_pairs_nor_global_population(self):
         small = self.publish(0)
         a = self.history(self.read())
         large = self.publish(1000000)
         b = self.history(self.read())
-        self.assertEqual(small['pairs'], [])
+        self.assertEqual(small['pairs'], large['pairs'])
+        self.assertEqual(small['n_pairs_included'], 20)
         self.assertEqual(large['n_pairs_included'], 20)
         self.assertEqual(a['pool'], b['pool'])
         self.assertEqual(a['global'], b['global'])

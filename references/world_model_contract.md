@@ -33,8 +33,15 @@ global diagnostics enter the request. This calibration source updates separately
 from the two memory banks, including when those banks remain frozen; legacy
 publications and frozen inputs are read as saved, without filling missing facts.
 
-Detailed paired-feedback bodies are deterministically compacted before their
-existing publication budget, then selected by the existing relevance rules.
+Detailed paired-feedback bodies are deterministically compacted and published
+for the full eligible calibration window, then selected by the existing relevance
+rules. Publication has no character ceiling; only the selected subset is frozen
+in a new prediction context and shared by its candidates. The existing selection
+ceiling (default 12), provider history budget (default 30k characters) and final request budget bound
+delivery. The full publication and selection directory never enter the request.
+`OR_HARNESS_PAIRED_FEEDBACK_CHARS` is retired with a visible warning; new
+publications report `budget_chars=null`. Old publications and contexts retain
+their saved content without read-time rebuilding or migration.
 Versioned bodies keep all recorded method steps, differences, failure
 assessments and comparison conditions; exact duplicates may use local links and
 audit details use the pair's Evaluation reference. Provider projection recognises

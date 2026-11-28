@@ -19,6 +19,21 @@ from or_harness.world_model.episode_closeout import (
 )
 
 
+def publication_rows():
+    """The oldest case matches; newer, large cases exhaust the former 112k cap."""
+    rows = []
+    for i in range(32):
+        row = _pair(i, task_id=f'closed-{i}')
+        row['model_identity'] = '(unknown)'
+        row['created_at'] = i + 1.
+        row['method_planned'] = {
+            'name': 'retainedneedle' if i == 0 else 'unrelatedbackground',
+            'steps': ['retainedneedle ' * 600 if i == 0 else 'unrelatedbackground ' * 600]}
+        row['method_actual'] = copy.deepcopy(row['method_planned'])
+        rows.append(row)
+    return rows
+
+
 def material_pair(index=0):
     row = _pair(index, big=True)
     row['model_identity'] = '(unknown)'
@@ -179,16 +194,21 @@ class TestPublicationMaterial(unittest.TestCase):
             row['method_actual']['steps'][-1] = row['evaluation_id']
         expected = same_task_comparisons(self.rows)
         self.assertEqual(len(expected), 1)
-        block = self.publish(budget=10**7)
+        block = self.publish()
         self.assertEqual(block['same_task_comparisons'], expected)
         self.assertEqual(_filter_pairs_by_model(block, '(unknown)')['same_task_comparisons'], expected)
         self.rows[1]['execution_conditions']['comparison_key']['config']['time_limit'] = 99
-        self.assertEqual(self.publish(budget=10**7)['same_task_comparisons'], [])
+        self.assertEqual(self.publish()['same_task_comparisons'], [])
         self.rows[1]['execution_conditions']['comparison_key']['config']['time_limit'] = 20
         first_size = len(json.dumps(provider_feedback_pair(self.rows[0], for_publication=True), ensure_ascii=False))
-        limited = self.publish(budget=first_size)
-        self.assertEqual(limited['n_pairs_included'], 1)
-        self.assertEqual(limited['same_task_comparisons'], [])
+        complete = self.publish(budget=first_size)
+        self.assertEqual(complete['n_pairs_included'], 2)
+        self.assertEqual(complete['same_task_comparisons'], expected)
+        other_model = copy.deepcopy(complete)
+        other_model['pairs'][0]['model_identity'] = 'other-model'
+        filtered = _filter_pairs_by_model(other_model, '(unknown)')
+        self.assertEqual(filtered['n_pairs_included'], 1)
+        self.assertEqual(filtered['same_task_comparisons'], [])
 
     def test_budget_reduction_omits_cases_instead_of_cutting_core_content(self):
         pair = provider_feedback_pair(material_pair(), for_publication=True)
@@ -243,11 +263,13 @@ class TestMaterialFrozenLifecycle(CCase):
             # Counterfactual original publication: bypass ONLY the new P1 representation.
             with patch('or_harness.strategy.evidence_views.provider_feedback_pair',
                        side_effect=lambda row, **kw: copy.deepcopy(row)):
-                original = build_paired_feedback(self.h, budget_chars=10**7)
-            compact = build_paired_feedback(self.h, budget_chars=10**7)
-            empty = build_paired_feedback(self.h, budget_chars=0)
+                original = build_paired_feedback(self.h)
+            compact = build_paired_feedback(self.h)
+            with self.assertWarnsRegex(FutureWarning, 'publication budget.*retired'):
+                retired_budget = build_paired_feedback(self.h, budget_chars=0)
         self.assertEqual(original['observation_facts'], compact['observation_facts'])
-        self.assertEqual(compact['observation_facts'], empty['observation_facts'])
+        self.assertEqual(compact['observation_facts'], retired_budget['observation_facts'])
+        self.assertEqual(compact['pairs'], retired_budget['pairs'])
         for statistic in (global_g_statistics, global_c_statistics):
             self.assertEqual(statistic(_pairs_of(original)), statistic(_pairs_of(compact)))
         pool = [history_tests._pool_row(execution.execution_id)]
@@ -262,6 +284,143 @@ class TestMaterialFrozenLifecycle(CCase):
         self.assertEqual(len(self.provider.requests), saved_calls)
         self.assertTrue(compact['pairs'][0]['method_planned']['steps'])
         self.assertTrue(compact['pairs'][0]['detail_ref'].startswith('orx inspect --bank evaluations'))
+
+
+class TestCompletePublication(unittest.TestCase):
+    setUp = history_tests.TestPublishedObservationJoin.setUp
+    publish = history_tests.TestPublishedObservationJoin.publish
+    read = history_tests.TestPublishedObservationJoin.read
+
+    def test_old_budget_lost_relevant_case_but_selection_now_delivers_it(self):
+        from or_harness.strategy.evidence_views import chars
+        self.rows = publication_rows()
+        block = self.publish()
+        self.assertEqual(block['n_pairs_total'], 32)
+        self.assertEqual(block['n_pairs_included'], 32)
+        self.assertEqual(block['n_pairs_omitted'], 0)
+        self.assertIsNone(block['budget_chars'])
+        self.assertEqual(block['used_chars'], sum(
+            len(json.dumps(row, ensure_ascii=False, default=str)) for row in block['pairs']))
+        self.assertGreater(block['used_chars'], 112000)
+        target = self.rows[0]['evaluation_id']
+        self.assertEqual(block['pairs'][-1]['evaluation_id'], target)
+        self.assertEqual(len(block['selection_meta']), len(block['pairs']))
+        for i, (row, entry) in enumerate(zip(block['pairs'], block['selection_meta'])):
+            self.assertEqual(entry['index'], i)
+            self.assertEqual(entry['pair_ref'], row['evaluation_id'])
+        # Exact former publication algorithm over the same P1 bodies/order.
+        legacy = copy.deepcopy(block)
+        legacy['pairs'], used = [], 0
+        for row in block['pairs']:
+            size = len(json.dumps(row, ensure_ascii=False, default=str))
+            if used + size <= 112000:
+                legacy['pairs'].append(row)
+                used += size
+        ids = {row['evaluation_id'] for row in legacy['pairs']}
+        legacy['selection_meta'] = [entry for entry in block['selection_meta'] if entry['pair_ref'] in ids]
+        legacy.update(n_pairs_included=len(ids), n_pairs_omitted=32-len(ids), budget_chars=112000)
+        query = {'candidates': [{'method': {'name': 'retainedneedle'}}]}
+        old = paired_feedback_selection_from_block(legacy, **query)
+        selected = paired_feedback_selection_from_block(self.read(), **query)
+        self.assertNotIn(target, {row['evaluation_id'] for row in old['pairs']})
+        self.assertEqual(selected['n_pairs_available'], 32)
+        self.assertEqual(selected['pairs'][0]['evaluation_id'], target)
+        self.assertEqual(selected['pairs'][0]['method_planned']['steps'], self.rows[0]['method_planned']['steps'])
+        sent = provider_paired_feedback(selected)
+        self.assertIn(target, {row['evaluation_id'] for row in sent['pairs']})
+        self.assertLessEqual(len(selected['pairs']), 12)
+        self.assertLessEqual(chars(sent), 30000)
+        self.assertNotIn('selection_meta', selected)
+        self.assertNotIn('observation_facts', selected)
+        self.assertNotIn('selection_meta', sent)
+        self.assertNotIn('observation_facts', sent)
+
+    def test_retired_configuration_warns_and_never_caps_publication(self):
+        self.rows = publication_rows()
+        with patch.dict('os.environ', {'OR_HARNESS_PAIRED_FEEDBACK_CHARS': '1'}):
+            with self.assertWarnsRegex(FutureWarning, 'publication budget.*retired'):
+                full = self.publish()
+        zero = self.publish(budget=0)  # helper asserts the explicit-argument warning
+        self.assertEqual(len(full['pairs']), 32)
+        self.assertEqual(full['pairs'], zero['pairs'])
+
+    def test_model_filter_and_scope_keep_source_counts_and_original_directory(self):
+        self.rows = publication_rows()
+        self.rows[1]['model_identity'] = 'other-model'
+        self.rows[2]['scope'] = 'strategy_window'
+        block = self.publish()
+        filtered = self.read()
+        selected = paired_feedback_selection_from_block(filtered, scope='attempt')
+        self.assertEqual(selected['n_pairs_total'], 32)
+        self.assertEqual(selected['n_pairs_publish_included'], 32)
+        self.assertEqual(selected['n_pairs_publish_omitted'], 0)
+        self.assertEqual(selected['n_pairs_withheld'], 1)
+        self.assertEqual(selected['n_pairs_available'], 30)
+        original = {entry['pair_ref']: entry for entry in block['selection_meta']}
+        for i, entry in enumerate(filtered['selection_meta']):
+            self.assertEqual(entry, {**original[entry['pair_ref']], 'index': i})
+            self.assertEqual(entry['pair_ref'], filtered['pairs'][i]['evaluation_id'])
+        no_model = _filter_pairs_by_model(block, 'absent-model')
+        empty = paired_feedback_selection_from_block(no_model)
+        self.assertEqual(empty['n_pairs_publish_included'], 32)
+        self.assertEqual(empty['n_pairs_withheld'], 32)
+        self.assertEqual(empty['n_pairs_available'], 0)
+
+
+from tests.harness.test_prediction_context import ContextCase, RecordingProvider, _task
+
+
+class TestCompletePublicationContext(ContextCase):
+    def test_only_selection_is_frozen_and_shared_with_no_read_time_rebuild(self):
+        from or_harness.api import ORHarness
+        from or_harness.world_model.contracts import ActionSpec
+        from or_harness.world_model.episode_closeout import (
+            paired_feedback_for_context, publish_paired_feedback,
+        )
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider, embedding=self.backend)
+        self.addCleanup(h.close)
+        publisher = TestCompletePublication()
+        publisher.h, publisher.rows = h, publication_rows()
+        for row in publisher.rows:
+            row['model_identity'] = h.strategy_predictions.model_identity_label
+        block = publisher.publish()
+        original = copy.deepcopy(block)
+        task = _task('current')
+        specs = [ActionSpec('execute_strategy', task['task_id'], strategy_id=s,
+                            method={'name': 'retainedneedle'}) for s in ('S01', 'S02')]
+        with patch('or_harness.world_model.episode_closeout.build_paired_feedback',
+                   side_effect=AssertionError('read must not republish')), \
+             patch('or_harness.world_model.episode_closeout.calibration_window',
+                   side_effect=AssertionError('read must not scan history')), \
+             patch('or_harness.world_model.episode_closeout.paired_feedback_for_context',
+                   wraps=paired_feedback_for_context) as reader:
+            context = h.build_prediction_context(task, 'current', candidates=specs)
+            for spec in specs:
+                h.predict_strategy_outcome(task, spec, 'current', context=context)
+        self.assertEqual(reader.call_count, 1)
+        self.assertEqual(len(provider.requests), 2)
+        self.assertEqual(h.get_prediction_context(context.context_id).to_dict(), context.to_dict())
+        saved = context.to_dict()
+        selected = context.paired_feedback
+        self.assertLessEqual(len(selected['pairs']), 12)
+        self.assertEqual(selected['n_pairs_available'], 32)
+        self.assertEqual(selected['pairs'][0]['evaluation_id'], publisher.rows[0]['evaluation_id'])
+        self.assertNotIn('selection_meta', selected)
+        self.assertNotIn('observation_facts', selected)
+        self.assertLess(len(json.dumps(saved)), len(json.dumps(block)))
+        requests = [r['prediction_context']['prediction_execution_pairs'] for r in provider.requests]
+        self.assertEqual(requests[0], requests[1])
+        self.assertTrue(requests[0]['pairs'])
+        self.assertEqual(requests[0]['pairs'][0]['evaluation_id'], publisher.rows[0]['evaluation_id'])
+        changed = copy.deepcopy(block)
+        changed['pairs'] = []
+        publish_paired_feedback(h, changed)
+        self.assertEqual(h.get_prediction_context(context.context_id).to_dict(), saved)
+        self.assertEqual(block, original)
+        historical = h.build_prediction_context(task, 'historical', snapshot=h.snapshot(task, 'historical'))
+        self.assertEqual(historical.paired_feedback, {})
+        self.assertEqual(len(provider.requests), 2)
 
 
 if __name__ == '__main__':

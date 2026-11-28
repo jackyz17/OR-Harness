@@ -44,9 +44,7 @@ from or_harness.world_model.context import (  # noqa: E402
     evidence_identity,
 )
 from or_harness.world_model.episode_closeout import (  # noqa: E402
-    DEFAULT_PAIRED_FEEDBACK_CHARS,
     DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS,
-    _paired_feedback_budget,
     _paired_feedback_max_pairs,
     _paired_feedback_order_key,
     select_paired_feedback,
@@ -560,7 +558,6 @@ class TestLabelFirstPairedDisplay(unittest.TestCase):
     # T4 ------------------------------------------------------------------
     def test_display_ceiling_and_defaults(self):
         self.assertEqual(DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS, 12)
-        self.assertEqual(DEFAULT_PAIRED_FEEDBACK_CHARS, 112000)
         pairs = [_pair(i, task_id="t_cur", strategy_id=f"S{i:02d}",
                        executions=[f"ex_{i}"],
                        method_name="exact milp solve", observed=1.0,
@@ -576,21 +573,14 @@ class TestLabelFirstPairedDisplay(unittest.TestCase):
         self.assertEqual(sel["n_pairs_omitted"], 8)
         # The environment overrides keep working.
         old_max = os.environ.get("OR_HARNESS_PAIRED_FEEDBACK_MAX")
-        old_chars = os.environ.get("OR_HARNESS_PAIRED_FEEDBACK_CHARS")
         try:
             os.environ["OR_HARNESS_PAIRED_FEEDBACK_MAX"] = "7"
-            os.environ["OR_HARNESS_PAIRED_FEEDBACK_CHARS"] = "9000"
             self.assertEqual(_paired_feedback_max_pairs(), 7)
-            self.assertEqual(_paired_feedback_budget(), 9000)
         finally:
             if old_max is None:
                 os.environ.pop("OR_HARNESS_PAIRED_FEEDBACK_MAX", None)
             else:
                 os.environ["OR_HARNESS_PAIRED_FEEDBACK_MAX"] = old_max
-            if old_chars is None:
-                os.environ.pop("OR_HARNESS_PAIRED_FEEDBACK_CHARS", None)
-            else:
-                os.environ["OR_HARNESS_PAIRED_FEEDBACK_CHARS"] = old_chars
 
     # T5 ------------------------------------------------------------------
     def test_execution_errors_are_capped_at_two_display_slots(self):

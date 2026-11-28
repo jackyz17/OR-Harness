@@ -62,6 +62,7 @@ import math
 import os
 import time
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -4640,10 +4641,16 @@ def _filter_pairs_by_model(block: Dict[str, Any],
     filtered["same_task_comparisons"] = _retained_comparisons(block, kept)
     filtered["filtered"] = True
     filtered["model_identity"] = str(model_identity)
+    # Publication counts describe the full stored source, before this model
+    # filter. Keep them separate from the readable bodies offered to selection.
+    filtered["n_pairs_publish_included"] = block.get(
+        "n_pairs_publish_included", block.get("n_pairs_included"))
+    filtered["n_pairs_publish_omitted"] = block.get(
+        "n_pairs_publish_omitted", block.get("n_pairs_omitted"))
     filtered["n_pairs_included"] = len(kept)
     filtered["n_pairs_unreadable"] = unreadable
+    filtered["n_pairs_withheld"] = withheld
     if withheld:
-        filtered["n_pairs_withheld"] = withheld
         filtered["filter_note"] = (
             f"{withheld} pair(s) from a different model identity were "
             f"withheld: they describe another model's past predictions and "
@@ -5123,25 +5130,6 @@ def calibration_summary_for_context(harness, *,
 # 5b. paired prediction-execution feedback (compact, per-episode)
 # ---------------------------------------------------------------------------
 
-#: Default character budget for the compact paired-feedback block a
-#: prediction context carries. Overridden by
-#: ``OR_HARNESS_PAIRED_FEEDBACK_CHARS``.
-#:
-#: r12 raises the default well above the old 8000: the deployed model has a
-#: 256k context, and 8000 characters (a couple of pairs) starved the model of
-#: its OWN past accuracy. 112000 covers a full 12-pair display with roughly
-#: 15% headroom (the 26-pair window's 8 largest pairs used 63,507 chars).
-#: This is a CEILING, not a target — the block is only as large as the
-#: material it has, and it is reported with used/n-omitted. A smaller
-#: deployment overrides it downward.
-DEFAULT_PAIRED_FEEDBACK_CHARS = 112000
-
-
-def _paired_feedback_budget() -> int:
-    return _env_int("OR_HARNESS_PAIRED_FEEDBACK_CHARS",
-                    DEFAULT_PAIRED_FEEDBACK_CHARS)
-
-
 def _compact_problem_conditions(evaluation, prediction) -> Dict[str, Any]:
     """The KEY conditions of the problem a past pair was made under.
 
@@ -5208,9 +5196,8 @@ def build_paired_feedback(
 
     This is the EXPENSIVE, O(window) derivation. It is called at PUBLISH
     time (see :func:`republish_calibration`), never from the prediction read
-    path: the read path serves the stored block so a prediction read stays
-    O(1) however long the history is (see
-    :func:`paired_feedback_for_context`).
+    path: the read path parses one stored block, bounded by the calibration
+    window, rather than scanning history (see :func:`paired_feedback_for_context`).
 
     What it deliberately does NOT do:
 
@@ -5225,8 +5212,7 @@ def build_paired_feedback(
     - a single unknown or not-comparable FIELD does not drop the row: the
       other fields are still carried.
 
-    r12 ORDERING and SHARING (so a small budget shows the most useful
-    material, and the block does not repeat itself):
+    ORDERING and SHARING (retained as tie-breaks for later selection):
 
     - rows are ordered LABELS FIRST, EXECUTION ERRORS LAST: a pair with an
       observed G label (a real failure or success) comes before an unlabeled
@@ -5242,12 +5228,22 @@ def build_paired_feedback(
     It returns a block with an empty ``pairs`` list and a note when there is
     nothing to show (no closed episodes).
 
-    ``observation_facts`` preserves a compact internal projection of every
-    eligible row before the detailed display budget is applied. It shares this
-    publication's window and live derivation, not a separate retrieval channel.
+    Every eligible pair is published. Relevance selection precedes display
+    count/character budgets; only that bounded selection is frozen in a new
+    prediction context. ``observation_facts`` keeps its independent P0 projection.
+
+    ``budget_chars`` and ``OR_HARNESS_PAIRED_FEEDBACK_CHARS`` are retired:
+    callers may still supply them for compatibility, with a visible warning.
+    Neither limits publication. Provider and whole-request budgets are unchanged.
     """
-    budget = budget_chars if budget_chars is not None else \
-        _paired_feedback_budget()
+    if budget_chars is not None or "OR_HARNESS_PAIRED_FEEDBACK_CHARS" in os.environ:
+        warnings.warn(
+            "The paired-feedback publication budget (budget_chars / "
+            "OR_HARNESS_PAIRED_FEEDBACK_CHARS) is retired and no longer "
+            "limits publication; remove this setting. Display budgets still "
+            "apply after relevance selection (OR_HARNESS_HISTORY_FEEDBACK_CHARS "
+            "and the whole-request budget).",
+            FutureWarning, stacklevel=2)
     policy = policy or CalibrationPolicy.from_env()
     window = calibration_window(harness, policy, readonly=True)
     if derived is not None and derived.get("window") is not None:
@@ -5312,8 +5308,8 @@ def build_paired_feedback(
     # null) and only speaks to R. Order:
     #   labeled first, labeled failures before labeled successes,
     #   then unlabeled/execution-error rows, then most RECENT.
-    # This stops an early long record from holding the budget forever, and
-    # stops crashes from filling the block ahead of labeled cases.
+    # This order remains the tie-break for relevance selection; crashes
+    # continue to follow labeled cases.
     def _recency(stored_evaluation) -> float:
         return float(getattr(stored_evaluation, "created_at", 0.0) or 0.0)
 
@@ -5329,7 +5325,6 @@ def build_paired_feedback(
     included: List[Dict[str, Any]] = []
     included_originals: List[Dict[str, Any]] = []
     used = 0
-    omitted = 0
     identities = {row.get("model_identity") for _, _, row in rows}
     rules = {row.get("observation_rule_version") for _, _, row in rows}
     ident = next(iter(identities)) if len(identities) == 1 else None
@@ -5346,18 +5341,12 @@ def build_paired_feedback(
         if len(rules) == 1:
             material.pop("observation_rule_version", None)
         size = len(json.dumps(material, ensure_ascii=False, default=str))
-        if used + size > budget:
-            omitted += 1
-            continue
         used += size
         included.append(material)
         included_originals.append(row)
     # The rows the SELECTION may consider are exactly the rows whose bodies
-    # this block carries. An index over the full window would name pairs the
-    # block does not include (budget-trimmed rows), and a later lookup by
-    # position would then return another case or nothing at all. The order is
-    # the same relevance order as ``pairs``; ``pair_ref`` (the evaluation id)
-    # is the identity a selection resolves, never the numeric position.
+    # this block carries: now the full eligible window. The original directory
+    # retains method signatures; identity, never position, resolves each body.
     out: Dict[str, Any] = {
         "feedback_version": PAIRED_FEEDBACK_VERSION,
         "pair_material_version": PAIR_MATERIAL_VERSION,
@@ -5367,9 +5356,9 @@ def build_paired_feedback(
                           "block fields state a common value only when shared"),
         "n_pairs_total": n_total,
         "n_pairs_included": len(included),
-        "n_pairs_omitted": omitted,
+        "n_pairs_omitted": 0,
         "n_pairs_unreadable": 0,
-        "budget_chars": budget,
+        "budget_chars": None,  # no publication ceiling; legacy blocks keep theirs
         "used_chars": used,
         "ordering": ("labels first, execution errors last: a labeled failure "
                      "or labeled success is calibration material, while an "
@@ -5393,13 +5382,6 @@ def build_paired_feedback(
         },
         "same_task_comparisons": same_task_comparisons(included_originals),
     }
-    if omitted:
-        out["omission_note"] = (
-            f"{omitted} pair(s) were omitted to stay within the character "
-            f"budget after {len(included)} were included (labeled cases "
-            "first, execution errors last, then most recent); they remain "
-            "available through `orx calibration` and the evaluation store — "
-            "the omission is reported, never silent")
     if not rows:
         out["note"] = ("no closed-episode prediction-execution pairs exist "
                        "in the window yet: a cold start carries no paired "
@@ -5759,6 +5741,11 @@ def select_paired_feedback(
         "risk_reason_legend": copy.deepcopy(block.get("risk_reason_legend")
                                             or RISK_REASON_LEGEND),
         "n_pairs_total": block.get("n_pairs_total", len(pairs)),
+        "n_pairs_publish_total": block.get("n_pairs_total"),
+        "n_pairs_publish_included": block.get(
+            "n_pairs_publish_included", block.get("n_pairs_included")),
+        "n_pairs_publish_omitted": block.get(
+            "n_pairs_publish_omitted", block.get("n_pairs_omitted")),
         "n_pairs_withheld": block.get("n_pairs_withheld"),
         "filter_note": block.get("filter_note"),
         "pairs": [],
@@ -5839,12 +5826,6 @@ def select_paired_feedback(
         1 for item in scored if item[4].get("is_execution_error"))
     out["n_pairs_unreadable"] = unreadable
     out["n_pairs_readable"] = len(pairs)
-    # The published block's OWN budget counts are not this selection's
-    # counts: keep them apart so "43 in the window, 12 carried, 12 readable,
-    # 12 displayed" can never be collapsed into one misleading number.
-    out["n_pairs_publish_total"] = block.get("n_pairs_total")
-    out["n_pairs_publish_included"] = block.get("n_pairs_included")
-    out["n_pairs_publish_omitted"] = block.get("n_pairs_omitted")
     if stale_index:
         out["n_pairs_index_without_body"] = stale_index
     if unreadable or stale_index:
@@ -5860,9 +5841,10 @@ def select_paired_feedback(
             "to republish its index)")
     out["counts_note"] = (
         "n_pairs_total is the calibration window; n_pairs_publish_included / "
-        "n_pairs_publish_omitted are how many bodies the published block kept "
-        "or left out for its size budget; n_pairs_readable / n_pairs_available "
-        "are what THIS block can actually offer; n_pairs_execution_error "
+        "n_pairs_publish_omitted describe the stored publication (new "
+        "publications retain all eligible pairs; legacy blocks may be trimmed); "
+        "n_pairs_readable / n_pairs_available are the bodies after model/scope "
+        "filtering; n_pairs_execution_error "
         "counts the execution-error pairs among those available (unobserved "
         "for G, never a failure label); n_pairs_included is what was selected "
         "for display and n_pairs_omitted is what the label order, relevance, "
